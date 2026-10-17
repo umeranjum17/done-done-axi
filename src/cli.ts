@@ -1195,7 +1195,7 @@ function skillFeatures(repo: string, cfg: Config): string[] {
 // failed run later. Returns the author and the feature to drive.
 async function agentDrive(repo: string, cfg: Config, feature?: string): Promise<{ author: { agent: string; model: string }; feature?: string }> {
   const skill = join(cfg.skill, 'SKILL.md');
-  if (!existsSync(join(repo, skill))) throw new UsageError(`verify needs a journey or a verify skill to drive the app, and this repo has neither (no ${skill})`, 'Scaffold the verify skill: done-done init, or record a journey: done-done init --journey <name> -- <command that drives the real app>');
+  if (!existsSync(join(repo, skill))) throw new UsageError(`verify needs a journey or a verify skill to drive the app, and this repo has neither (no ${skill})`, 'Write the verify skill by hand, with a launch that never touches real accounts or your own state, or record a journey: done-done init --journey <name> -- <command that drives the real app>');
   const features = skillFeatures(repo, cfg);
   const name = feature?.replace(/^features\//, '').replace(/\.md$/, '');
   if (name !== undefined && !features.includes(name)) throw new UsageError(`no feature ${feature} in ${cfg.skill}/features; it has: ${features.join(', ') || 'none'}`, `Run: done-done verify --feature <${features.join('|') || 'name'}> --outcome "<what a user can now do>"`);
@@ -1829,7 +1829,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
       : run.result === 'drift' ? [`Fix the findings in ${cfg.skill} (--full lists them all), commit, then run again: ${again}`, `Or let done-done's agent fix them on a branch: set auto_fix: { maintain: 2 } in .done-done.yaml, then run again: ${again}`]
       : /^ask-user:/.test(run.reason ?? '') ? ['Ask the user about each ask-user finding: is the product or the skill wrong? Never decide it for them', `Product wrong: fix the product (maintain never edits product code). Skill wrong: fix ${cfg.skill}, commit, then run again: ${again}`]
       : /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${run.run_id}`, `Fix the findings in ${cfg.skill} by hand, commit, then run again: ${again}`]
-      : /^locate: no verify skill/.test(run.reason ?? '') ? ['Create the verify skill: done-done init']
+      : /^locate: no verify skill/.test(run.reason ?? '') ? ['Write the verify skill by hand, with a launch that never touches real accounts or your own state']
       : /^locate:/.test(run.reason ?? '') ? [`Make ${cfg.skill} a real folder inside the repository (not a link), commit, then run again: ${again}`]
       : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, `Fix the cause, then run again: ${again}`])
     : code === PASS ? [`Verify this receipt (CI or merge): done-done receipt --verify ${rec!.commit}`]
