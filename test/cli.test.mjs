@@ -1977,11 +1977,12 @@ const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
 const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
 const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
 const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
+if (stub.stderr) process.stderr.write(stub.stderr);
 process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason } } }) + after);
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn, events = [], after = []) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events, after }));
+  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events, after, stderr }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\nagent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
@@ -2114,6 +2115,16 @@ test('a claude judge answer is read from its result event even when events follo
   j.stub(CORRECT, true, [], [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
   const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 0, r.out);
+  assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
+});
+
+test('a claude rate-limit banner on stderr does not stop the judge call, which claude may retry itself', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  j.stub(CORRECT, true, [], [], 'Error: 429 rate limit, retrying in 10s\n');
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /hit a rate limit and stopped/);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
 });
 

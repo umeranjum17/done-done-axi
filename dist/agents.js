@@ -362,11 +362,13 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
         let idle;
         // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
         // so an answer that only quotes a 429 from the app's code does not stop the call. A claude call with images streams JSON lines,
-        // and only a rejected rate_limit_event stops it, so its complete lines are parsed one at a time.
+        // and only a rejected rate_limit_event on stdout stops it, so its complete lines are parsed one at a time.
         let pendingStdout = '';
         const limited = (chunk, stdoutLine) => {
             let line;
-            if (stdoutLine && c.agent === 'claude' && c.images?.length) {
+            if (c.agent === 'claude' && c.images?.length) {
+                if (!stdoutLine)
+                    return;
                 const text = pendingStdout + chunk;
                 const end = text.lastIndexOf('\n') + 1;
                 pendingStdout = text.slice(end);
