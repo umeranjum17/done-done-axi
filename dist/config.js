@@ -65,12 +65,9 @@ const KEYS = {
     'evidence.ignore_paths': { scope: 'repo', type: 'string[]' },
     'secrets.patterns': { scope: 'repo', type: 'regexes' },
     'secrets.allow': { scope: 'repo', type: 'regexes' },
-    'checks.not_proven': { scope: 'repo', type: 'string' },
     'checks.fix_title': { scope: 'repo', type: 'string' },
-    'judge.enabled': { scope: 'repo', type: 'boolean' },
     'judge.model': { scope: 'global', type: 'string' },
     'judge.route': { scope: 'global', type: 'route' },
-    'judge.allow_same': { scope: 'global', type: 'boolean' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -138,6 +135,10 @@ function apply(target, text, file, scope) {
             continue;
         }
         const spec = KEYS[key];
+        if (key === 'judge.enabled' || key === 'checks.not_proven')
+            throw new UsageError(`${file}: ${key} is gone: done-done never gives a result without its judge`, `Delete the ${key} line in ${file}`);
+        if (key === 'judge.allow_same')
+            throw new UsageError(`${file}: judge.allow_same is gone: any judge the user sets runs, the author's own agent and model too`, `Delete the judge.allow_same line in ${file}`);
         if (!spec)
             throw new UsageError(`${file}: unknown key ${key}`);
         if (spec.scope !== scope && spec.scope !== 'any')
@@ -204,8 +205,6 @@ function apply(target, text, file, scope) {
         }
         if (!ok)
             throw new UsageError(`${file}: ${key} must be ${want[spec.type] ?? `a ${spec.type}`}${key === 'matrix' ? `: ${checkMatrix(value)}` : ''}`);
-        if (key === 'checks.not_proven' && value !== 'inconclusive' && value !== 'allow')
-            throw new UsageError(`${file}: checks.not_proven must be inconclusive or allow`);
         if (key === 'agent_config')
             for (const [a, c] of Object.entries(value)) {
                 if (c.effort && !EFFORT_FLAGS[a])
@@ -267,8 +266,8 @@ function defaultConfig(repo) {
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
-        checks: { not_proven: 'inconclusive', fix_title: '^(fix|bugfix|hotfix)\\b' },
-        judge: { route: '', model: '', allow_same: false },
+        checks: { fix_title: '^(fix|bugfix|hotfix)\\b' },
+        judge: { route: '', model: '' },
         trusted: false,
         from: {},
     };
@@ -339,16 +338,13 @@ evidence:
   # Where evidence and receipts live, one folder per app, outside every checkout.
   local_root: ${short(join(home(), 'evidence'))}
 
-# The judge: a fresh agent that says whether each capture shows the outcome. verify starts it by default (turn it
-# off with --no-judge or judge.enabled: false in .done-done.yaml); check and receipt start it only with --judge.
-# done-done never picks one: while none is set it asks you in a terminal, or stops with the command that sets it:
+# The judge: a fresh agent that says whether each capture shows the outcome. check, receipt, verify and design always
+# start it, and nothing turns it off. done-done never picks one: while none is set it asks you in a terminal, or stops with the command that sets it:
 # done-done init --judge <agent> --judge-model <model>.
 judge:
-  # Which agent judges: claude-code (claude) or answerer:opencode. Never the agent and model that did the work.
+  # Which agent judges: claude-code (claude) or answerer:opencode. Any agent and model you choose, the author's own too.
   # route: answerer:opencode
   # The judge's model; empty means that agent's agent_config model.
   model: ""
-  # Accept a judge that is the author's own agent and model in a fresh session.
-  allow_same: false
 `;
 }
