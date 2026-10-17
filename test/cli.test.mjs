@@ -1973,13 +1973,15 @@ if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 're
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
 if (p === 'error') process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 0);
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
-// stream-json prints one event per line, and the result is the last one.
-const streamed = process.argv.includes('stream-json') ? [{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])].map((e) => JSON.stringify(e) + '\\n').join('') : '';
-process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason } } }));
+// stream-json prints one event per line; the after events come after the result.
+const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
+const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
+const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
+process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason } } }) + after);
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn, events = []) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events }));
+  const stub = (a, li = loggedIn, events = [], after = []) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events, after }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\nagent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
@@ -2071,6 +2073,27 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
   assert.equal(j.calls().length, 2, 'one request per image: the warning did not end either call');
+});
+
+test('a claude judge answer is read from its result event even when events follow it', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  j.stub(CORRECT, true, [], [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
+});
+
+test('a rejected claude rate-limit event split across output chunks still stops the judge call', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  const init = JSON.stringify({ type: 'system', subtype: 'init' }).length + 1;
+  const padFrame = JSON.stringify({ type: 'system', subtype: 'pad', text: '' }).length + 1;
+  const pad = 65476 - init - padFrame;
+  j.stub(CORRECT, true, [{ type: 'system', subtype: 'pad', text: 'x'.repeat(pad) }, { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1792692000 } }]);
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 3, 'the rejection starts 60 bytes before a 64 KiB chunk boundary, so it is split across two reads');
+  assert.match(toon(r).judge.judged[0].reason, /hit a rate limit and stopped/);
 });
 
 test('a rejected claude rate-limit event stops the judge call and names the reset', () => {

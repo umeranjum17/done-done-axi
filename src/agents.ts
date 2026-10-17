@@ -133,7 +133,7 @@ const ADAPTERS: Record<string, Adapter> = {
   // claude -p: --json-schema puts the validated object in structured_output; --tools '' turns every tool off.
   // An edit step accepts edits only in cwd and --add-dir folders, and may run commands (the drive launches the app).
   // The judge's call runs with the user's own sign-in, and with --safe-mode when safeMode is set.
-  // A call with images sends them as stream-json content blocks, as claude's SDK does, and its result is the last event.
+  // A call with images sends them as stream-json content blocks, as claude's SDK does, and its result is the event of type result.
   claude: {
     argv: (c) => ['-p', '--output-format', c.images?.length ? 'stream-json' : 'json', ...(c.images?.length ? ['--verbose', '--input-format', 'stream-json'] : []),
       '--json-schema', JSON.stringify(c.schema), '--model', c.model, '--no-session-persistence',
@@ -143,7 +143,8 @@ const ADAPTERS: Record<string, Adapter> = {
       ...c.images.flatMap((i) => [{ type: 'text', text: `Image: ${i.name.replace(/\.[^.]+$/, '')}` }, { type: 'image', source: { type: 'base64', media_type: `image/${extname(i.name).slice(1)}`, data: i.bytes.toString('base64') } }]),
       { type: 'text', text: prompt }] } })}\n` : prompt),
     answer: (out, c) => {
-      const r = JSON.parse(c.images?.length ? out.trim().split('\n').at(-1)! : out);
+      const r = c.images?.length ? out.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l)).findLast((e) => e.type === 'result') : JSON.parse(out);
+      if (!r) throw new ProviderError('claude printed no result');
       if (r.is_error) throw new ProviderError(String(r.result || r.subtype));
       return r.structured_output;
     },
@@ -371,7 +372,11 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
     // so an answer that only quotes a 429 from the app's code does not stop the call.
     // claude reports its quota state as a rate_limit_event line; only a rejection stops the call, an allowed or warning event does not.
-    const limited = (text: string, stdoutLine: boolean) => {
+    const pending = { stdout: '', stderr: '' };
+    const limited = (chunk: string, stdoutLine: boolean) => {
+      const key = stdoutLine ? 'stdout' : 'stderr';
+      const text = pending[key] + chunk;
+      pending[key] = text.slice(text.lastIndexOf('\n') + 1);
       const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => (/rate_limit_event/.test(l) ? /"status":\s*"rejected"/.test(l) : RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))));
       if (!line || error) return;
       error = new Error(`${c.agent} hit a rate limit and stopped: ${line.trim().slice(0, 200)}`);
