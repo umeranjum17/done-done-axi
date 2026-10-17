@@ -1951,7 +1951,7 @@ function judgeSetup(answer, { loggedIn = true, projectYaml = JUDGED } = {}) {
   writeFileSync(
     bin,
     `#!${process.execPath}
-const { appendFileSync, readFileSync } = require('node:fs');
+const { appendFileSync, readdirSync, readFileSync } = require('node:fs');
 const dir = process.env.JUDGE_STUB;
 const stub = JSON.parse(readFileSync(dir + '/stub.json', 'utf8'));
 if (process.argv.includes('auth')) {
@@ -1968,7 +1968,7 @@ const img = images[0] && Buffer.from(images[0].source.data, 'base64');
 const prompt = content.at(-1).text;
 const begin = 'BEGIN DATA (JSON)\\n';
 const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prompt.indexOf('\\nEND DATA'))).state;
-appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), prompt, state }) + '\\n');
+appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
 if (p === 'error') process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 0);
@@ -2073,6 +2073,15 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
   assert.equal(j.calls().length, 2, 'one request per image: the warning did not end either call');
+});
+
+test('the claude judge sends its images on stdin and leaves no copy in its scratch folder', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(j.calls()[0].images, 1);
+  assert.deepEqual(j.calls()[0].scratch, []);
 });
 
 test('a claude answer that quotes a rate-limit banner is not stopped as a rate limit', () => {

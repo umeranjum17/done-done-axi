@@ -51,10 +51,10 @@ function errorLine(text: string): string {
 }
 // A provider's rate limit (HTTP 429, a usage limit with its reset time). The CLI may retry it for many minutes, so the call stops at the first line that says so.
 const RATE_LIMIT = /\b429\b|rate[ -]?limit|usage limit|too many requests/i;
-const CLAUDE_ANSWER_EVENTS = new Set(['assistant', 'user', 'result']);
-const isClaudeAnswerEvent = (l: string) => {
+const isRejectedRateLimit = (l: string) => {
   try {
-    return CLAUDE_ANSWER_EVENTS.has(JSON.parse(l).type);
+    const e = JSON.parse(l);
+    return e.type === 'rate_limit_event' && e.rate_limit_info?.status === 'rejected';
   } catch {
     return false;
   }
@@ -81,7 +81,7 @@ class ProviderError extends Error {
 // editNote: what an edit step's prompt adds about how this agent's own shell runs commands.
 // streams: the CLI writes its events as it works, so silence means it is stuck (AGENT_IDLE_MS applies).
 // stdin: what the CLI reads, given the prompt text; the prompt itself when absent.
-type Adapter = { argv: (c: AgentCall, dir: string) => string[]; answer: (stdout: string, c: AgentCall) => unknown; file?: boolean; streams?: boolean; hint?: string; editOnly?: string; editNote?: string; env?: (c: AgentCall) => Record<string, string>; files?: (c: AgentCall) => Record<string, string>; reject?: (stderr: string) => string; stdin?: (c: AgentCall, prompt: string) => string };
+type Adapter = { argv: (c: AgentCall, dir: string) => string[]; answer: (stdout: string, c: AgentCall) => unknown; file?: boolean; streams?: boolean; hint?: string; editOnly?: string; editNote?: string; env?: (c: AgentCall) => Record<string, string>; files?: (c: AgentCall) => Record<string, string>; reject?: (stderr: string) => string; stdin?: (c: AgentCall, prompt: string) => string; readsImages?: boolean };
 
 // The answer object in an agent's free text: the first top-level '{'..'}' span that parses to an object with every
 // required key, skipping braces and quotes in narration. With no such span, the last span that parsed is returned, so
@@ -162,6 +162,7 @@ const ADAPTERS: Record<string, Adapter> = {
   opencode: {
     file: true,
     streams: true,
+    readsImages: true,
     argv: (c, dir) => ['run', 'Follow the attached instructions.', '--format', 'json', '-m', c.model, '-f', join(dir, 'prompt.md'), ...(c.images ?? []).flatMap((i) => ['-f', join(dir, i.name)])],
     answer: (out, c) => {
       const events = out.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
@@ -203,6 +204,7 @@ const ADAPTERS: Record<string, Adapter> = {
   // Pi has no permission gate for edit steps, so doctor warns about it. Without a model, pi runs its own default.
   pi: {
     streams: true,
+    readsImages: true,
     argv: (c, dir) => ['-p', '--mode', 'json', '--no-session', ...(c.tools === 'edit' ? [] : PI_TOOL_LESS), ...(c.model ? ['--model', c.model] : []), ...(c.images ?? []).map((i) => `@${join(dir, i.name)}`)],
     answer: (out, c) => {
       let text = '';
@@ -263,6 +265,7 @@ const ADAPTERS: Record<string, Adapter> = {
   // policy folder and removes every tool, MCP ones too, from the model (its policy-engine.md). An @<file> in the -p text
   // attaches an image: per Gemini CLI's source, its own @-command code reads it, outside the tool policy, and only inside the cwd, the call's scratch folder; not yet proven live (Gemini CLI was not signed in on the test machine).
   gemini: {
+    readsImages: true,
     argv: (c, dir) => ['-p', ['Follow the instructions on stdin.', ...(c.images ?? []).map((i) => `@${i.name}`)].join(' '), '-o', 'json', '-m', c.model, '--approval-mode', c.tools === 'edit' ? 'auto_edit' : 'plan',
       ...(c.tools === 'none' ? ['--policy', join(dir, 'deny-all.toml'), '--skip-trust'] : []),
       ...(c.tools === 'edit' ? ['--allowed-tools', 'run_shell_command', ...(c.dirs ?? []).flatMap((d) => ['--include-directories', d])] : [])],
@@ -378,19 +381,19 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     let drain: NodeJS.Timeout | undefined;
     let idle: NodeJS.Timeout | undefined;
     // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
-    // so an answer that only quotes a 429 from the app's code does not stop the call.
-    // claude reports its quota state as a rate_limit_event line; only a rejection stops the call, an allowed or warning event does not.
-    const pending = { stdout: '', stderr: '' };
+    // so an answer that only quotes a 429 from the app's code does not stop the call. A claude call with images streams JSON lines,
+    // and only a rejected rate_limit_event stops it, so its complete lines are parsed one at a time.
+    let pendingStdout = '';
     const limited = (chunk: string, stdoutLine: boolean) => {
-      const key = stdoutLine ? 'stdout' : 'stderr';
-      const text = pending[key] + chunk;
-      const end = text.lastIndexOf('\n') + 1;
-      pending[key] = text.slice(end);
-      const scanned = stdoutLine ? text.slice(0, end) : text;
-      const line = stripVTControlCharacters(scanned).split(/\r?\n/).find((l) => {
-        if (stdoutLine && c.agent === 'claude' && isClaudeAnswerEvent(l)) return false;
-        return /rate_limit_event/.test(l) ? /"status":\s*"rejected"/.test(l) : RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l));
-      });
+      let line: string | undefined;
+      if (stdoutLine && c.agent === 'claude' && c.images?.length) {
+        const text = pendingStdout + chunk;
+        const end = text.lastIndexOf('\n') + 1;
+        pendingStdout = text.slice(end);
+        line = text.slice(0, end).split('\n').find(isRejectedRateLimit);
+      } else {
+        line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+      }
       if (!line || error) return;
       error = new Error(`${c.agent} hit a rate limit and stopped: ${line.trim().slice(0, 200)}`);
       kill();
@@ -473,7 +476,7 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
     cwd = c.tools === 'none' ? dir : c.cwd;
     if (!adapter) throw new Error(`no adapter for ${c.agent} yet`);
     if (adapter.editOnly && c.tools !== 'edit') throw new Error(adapter.editOnly);
-    for (const i of c.images ?? []) writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
+    if (adapter.readsImages) for (const i of c.images ?? []) writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
     for (const [name, text] of Object.entries(adapter.files?.(c) ?? {})) writeFileSync(join(dir, name), text, { mode: 0o600 });
     const bin = c.path;
     if (!bin) throw new Error(c.agent.startsWith('acp:') ? `${c.agent} needs acpx, and acpx is not startable; ${ACPX_INSTALL}` : notStartable(c.agent, c.override));
