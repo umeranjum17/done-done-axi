@@ -3357,7 +3357,8 @@ test('doctor reports the judge ok with a claude binary alone: its sign-in is che
   const globalYml = join(env.DONE_DONE_HOME, 'config.yaml');
   writeFileSync(globalYml, 'judge:\n  claude_code: { config_dir: /somewhere/claude }\n');
   const leftover = dd('doctor');
-  assert.ok(leftover.out.includes(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${globalYml}\n`), 'the old folder key is ignored with one line naming the file');
+  const leftoverLine = `judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${globalYml}\n`;
+  assert.equal(leftover.out.split(leftoverLine).length - 1, 1, 'the old folder key is ignored with one line naming the file, once per command');
   assert.doesNotMatch(leftover.out, /is gone|UsageError/, 'a leftover key does not stop the command');
 });
 

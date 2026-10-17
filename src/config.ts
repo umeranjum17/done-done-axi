@@ -146,6 +146,8 @@ const isRegex = (v: unknown) => {
   try { return typeof v === 'string' && !!new RegExp(v); } catch { return false; }
 };
 
+const leftoverNoticed = new Set<string>();
+
 function apply(target: Config, text: string | undefined, file: string, scope: 'global' | 'repo') {
   if (text === undefined) return;
   let doc: unknown;
@@ -157,7 +159,10 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
   for (const [key, value] of flatten(doc, file)) {
     // The claude judge runs the user's own claude sign-in now, so the folder key of older configs is only a leftover.
     if (key === 'judge.claude_code') {
-      process.stderr.write(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${file}\n`);
+      if (!leftoverNoticed.has(file)) {
+        leftoverNoticed.add(file);
+        process.stderr.write(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${file}\n`);
+      }
       continue;
     }
     const spec = KEYS[key];

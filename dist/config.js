@@ -117,6 +117,7 @@ const isRegex = (v) => {
         return false;
     }
 };
+const leftoverNoticed = new Set();
 function apply(target, text, file, scope) {
     if (text === undefined)
         return;
@@ -130,7 +131,10 @@ function apply(target, text, file, scope) {
     for (const [key, value] of flatten(doc, file)) {
         // The claude judge runs the user's own claude sign-in now, so the folder key of older configs is only a leftover.
         if (key === 'judge.claude_code') {
-            process.stderr.write(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${file}\n`);
+            if (!leftoverNoticed.has(file)) {
+                leftoverNoticed.add(file);
+                process.stderr.write(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${file}\n`);
+            }
             continue;
         }
         const spec = KEYS[key];
