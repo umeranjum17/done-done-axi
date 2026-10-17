@@ -51,6 +51,14 @@ function errorLine(text: string): string {
 }
 // A provider's rate limit (HTTP 429, a usage limit with its reset time). The CLI may retry it for many minutes, so the call stops at the first line that says so.
 const RATE_LIMIT = /\b429\b|rate[ -]?limit|usage limit|too many requests/i;
+const CLAUDE_ANSWER_EVENTS = new Set(['assistant', 'user', 'result']);
+const isClaudeAnswerEvent = (l: string) => {
+  try {
+    return CLAUDE_ANSWER_EVENTS.has(JSON.parse(l).type);
+  } catch {
+    return false;
+  }
+};
 // The first lines of an agent's stderr, one line: what it said before it failed or went quiet. Indented lines (stack frames, fields) are
 // left out, as in errorLine. '' when it said nothing.
 function stderrHead(stderr: string): string {
@@ -377,7 +385,10 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
       const key = stdoutLine ? 'stdout' : 'stderr';
       const text = pending[key] + chunk;
       pending[key] = text.slice(text.lastIndexOf('\n') + 1);
-      const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => (/rate_limit_event/.test(l) ? /"status":\s*"rejected"/.test(l) : RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))));
+      const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => {
+        if (stdoutLine && c.agent === 'claude' && isClaudeAnswerEvent(l)) return false;
+        return /rate_limit_event/.test(l) ? /"status":\s*"rejected"/.test(l) : RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l));
+      });
       if (!line || error) return;
       error = new Error(`${c.agent} hit a rate limit and stopped: ${line.trim().slice(0, 200)}`);
       kill();

@@ -2075,6 +2075,15 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
   assert.equal(j.calls().length, 2, 'one request per image: the warning did not end either call');
 });
 
+test('a claude answer that quotes a rate-limit banner is not stopped as a rate limit', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  j.stub(CORRECT, true, [{ type: 'assistant', message: { content: [{ type: 'text', text: 'The banner reads: Rate limit reached, retry in 60s.' }] } }]);
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
+});
+
 test('a claude judge answer is read from its result event even when events follow it', () => {
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
