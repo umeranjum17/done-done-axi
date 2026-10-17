@@ -4719,7 +4719,7 @@ test('maintain reports a dead link, a wrong file:line and drift from read-only r
   const dd = (...args) => doctorIn(repo, s.env, ...args);
   const none = dd('maintain', '--foreground');
   assert.equal(none.code, 3, none.out);
-  assert.deepEqual([toon(none).result, toon(none).help[0]], ['blocked', 'Create the verify skill: done-done init']);
+  assert.deepEqual([toon(none).result, toon(none).help[0]], ['blocked', 'Write the verify skill by hand, with a launch that never touches real accounts or your own state']);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nThe map: [features](features/README.md). See https://example.com:443/x and localhost:3000.\n');
