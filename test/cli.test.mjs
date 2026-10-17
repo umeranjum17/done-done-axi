@@ -2519,6 +2519,45 @@ test('a rerun refused by the judge preflight exits 2 and creates no run folder',
   assert.deepEqual(readdirSync(runs).sort(), before, 'the refused rerun leaves no new run folder');
 });
 
+// A pi that lists claude-bridge models only when its bridge extension is loaded, as pi does under --no-extensions:
+// the judge's own call must load that one extension, or pi says the model is not found.
+function stubPiBridge(env, answer) {
+  const log = join(env.PATH, 'calls.jsonl');
+  const fenced = '```json\n' + answer + '\n```';
+  writeFileSync(join(env.PATH, 'pi'), `#!${process.execPath}
+const { appendFileSync, readFileSync } = require('node:fs');
+const argv = process.argv.slice(2);
+const stdin = readFileSync(0, 'utf8');
+const attached = argv.filter((a) => a.startsWith('@')).map((a) => readFileSync(a.slice(1)).subarray(1, 4).toString());
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ agent: 'pi', argv, stdin, attached, cwd: process.cwd() }) + '\\n');
+const model = argv[argv.indexOf('--model') + 1] ?? '';
+if (model.startsWith('claude-bridge/') && !argv.includes('npm:pi-claude-bridge')) {
+  console.log(JSON.stringify({ type: 'error', error: { message: 'Model "' + model + '" not found' } }));
+  process.exit(1);
+}
+for (const t of ['session', 'agent_start', 'turn_start']) console.log(JSON.stringify({ type: t }));
+console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: ${JSON.stringify(fenced)} }] } }));
+console.log(JSON.stringify({ type: 'agent_end' }));
+`, { mode: 0o755 });
+}
+
+test('a pi judge on a claude-bridge model loads only that provider extension: the stub lists the model, and the call stays tools-off', () => {
+  const t = setup();
+  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:pi\n  model: claude-bridge/claude-haiku-4-5\n');
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const s = stubAgents(t.env, verdict);
+  stubPiBridge(s.env, verdict);
+  symlinkSync(process.execPath, join(s.env.PATH, 'node'));
+  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const judged = s.calls().filter((c) => c.agent === 'pi');
+  assert.equal(judged.length, 2, 'one tools-off call per capture');
+  for (const c of judged) {
+    assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', 'npm:pi-claude-bridge', '--model', 'claude-bridge/claude-haiku-4-5', `@${join(c.cwd, 'capture.png')}`]);
+  }
+});
+
 test('verify --judge through pi and gemini: each judges tools-off with the capture attached; a right screen passes, a wrong one fails', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
