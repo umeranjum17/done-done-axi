@@ -768,7 +768,7 @@ async function runCheck(argv, run) {
             judged = { skipped: 'the check already failed, so no capture was judged' };
         else {
             run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
-            const j = await judge(cfg, () => selectJudge(cfg, run?.author ? agentRun(cfg, run.author.agent, run.author.model) : cfg.agent ? selectAgent(cfg) : NO_AUTHOR), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+            const j = await judge(cfg, () => selectJudge(cfg, run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg)), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
             // The judge's next step leads the help when its verdict decides the result.
             if (j.judged.some((r) => r.verdict === 'fail'))
                 judgeLevel = 'fail';
@@ -1904,7 +1904,10 @@ async function preflightJudge(cfg, needsAgent = true) {
     if (needsAgent)
         await withChoice('agent', cfg);
     await withChoice('judge', cfg);
-    return selectJudge(cfg, cfg.agent ? selectAgent(cfg) : NO_AUTHOR);
+    return selectJudge(cfg, judgeAuthor(cfg));
+}
+function judgeAuthor(cfg) {
+    return cfg.agent ? selectAgent(cfg) : NO_AUTHOR;
 }
 const NO_AUTHOR = { agent: '', model: '' };
 // A run waiting at its gate is the user's call, so a new verify or rerun is refused until the user answers that run or it is
@@ -3057,7 +3060,7 @@ async function cmdDoctor(argv) {
     let choiceError;
     if (cfg)
         try {
-            choice = selectJudge(cfg, agent ?? NO_AUTHOR);
+            choice = selectJudge(cfg, judgeAuthor(cfg));
         }
         catch (e) {
             choiceError = e;

@@ -772,7 +772,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     if (findings.some((f) => f.level === 'fail')) judged = { skipped: 'the check already failed, so no capture was judged' };
     else {
       run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
-      const j = await judge(cfg, () => selectJudge(cfg, run?.author ? agentRun(cfg, run.author.agent, run.author.model) : cfg.agent ? selectAgent(cfg) : NO_AUTHOR), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+      const j = await judge(cfg, () => selectJudge(cfg, run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg)), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
       // The judge's next step leads the help when its verdict decides the result.
       if (j.judged.some((r) => r.verdict === 'fail')) judgeLevel = 'fail';
       else if (!findings.length && j.judged.some((r) => r.verdict === 'unsure')) judgeLevel = 'inconclusive';
@@ -1843,7 +1843,10 @@ async function waitRun(dir: string, pid: number): Promise<void> {
 async function preflightJudge(cfg: Config, needsAgent = true): Promise<JudgeChoice> {
   if (needsAgent) await withChoice('agent', cfg);
   await withChoice('judge', cfg);
-  return selectJudge(cfg, cfg.agent ? selectAgent(cfg) : NO_AUTHOR);
+  return selectJudge(cfg, judgeAuthor(cfg));
+}
+function judgeAuthor(cfg: Config): { agent: string; model: string } {
+  return cfg.agent ? selectAgent(cfg) : NO_AUTHOR;
 }
 const NO_AUTHOR = { agent: '', model: '' };
 
@@ -2887,7 +2890,7 @@ async function cmdDoctor(argv: string[]): Promise<number> {
   let choiceError: UsageError | undefined;
   if (cfg)
     try {
-      choice = selectJudge(cfg, agent ?? NO_AUTHOR);
+      choice = selectJudge(cfg, judgeAuthor(cfg));
     } catch (e) {
       choiceError = e as UsageError;
     }
