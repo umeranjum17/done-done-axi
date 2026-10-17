@@ -1974,12 +1974,12 @@ const p = 'before' in state && state.before === state.capture ? { correct: 0.04,
 if (p === 'error') process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 0);
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
 // stream-json prints one event per line, and the result is the last one.
-const streamed = process.argv.includes('stream-json') ? JSON.stringify({ type: 'system', subtype: 'init' }) + '\\n' : '';
+const streamed = process.argv.includes('stream-json') ? [{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])].map((e) => JSON.stringify(e) + '\\n').join('') : '';
 process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason } } }));
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.' }));
+  const stub = (a, li = loggedIn, events = []) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\nagent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
@@ -2060,6 +2060,26 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
   assert.equal(err.code, 3, 'a model error while signed in is inconclusive, not a sign-in error');
   assert.match(toon(err).judge.judged[0].reason, /did not answer.*judge.model claude-test-1 and your plan's usage limit/);
   assert.doesNotMatch(err.out, /auth login/);
+});
+
+test('an allowed claude rate-limit event does not stop the judge call, and its answer is used', () => {
+  const j = judgeSetup(CORRECT);
+  writeFileSync(join(j.dir, 'screen2.png'), png(2000, 1000, (x, y) => [x % 256, y % 256, 90]));
+  const { files: cited } = j.shots();
+  j.stub(CORRECT, true, [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
+  const r = j.dd('check', '--judge', '--outcome', 'the notes list shows three notes', ...cited);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
+  assert.equal(j.calls().length, 2, 'one request per image: the warning did not end either call');
+});
+
+test('a rejected claude rate-limit event stops the judge call and names the reset', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  j.stub(CORRECT, true, [{ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1792692000 } }]);
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 3, 'a rejected quota is inconclusive, not a sign-in error');
+  assert.match(toon(r).judge.judged[0].reason, /hit a rate limit and stopped: .*"status":"rejected".*"resetsAt":1792692000/);
 });
 
 test('judge.enabled turns the judge on; text evidence is judged too; a failed check is not judged', () => {

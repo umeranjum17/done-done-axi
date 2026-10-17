@@ -369,8 +369,9 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     let idle: NodeJS.Timeout | undefined;
     // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
     // so an answer that only quotes a 429 from the app's code does not stop the call.
+    // claude reports its quota state as a rate_limit_event line; only a rejection stops the call, an allowed or warning event does not.
     const limited = (text: string, stdoutLine: boolean) => {
-      const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+      const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => (/rate_limit_event/.test(l) ? /"status":\s*"rejected"/.test(l) : RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))));
       if (!line || error) return;
       error = new Error(`${c.agent} hit a rate limit and stopped: ${line.trim().slice(0, 200)}`);
       kill();
