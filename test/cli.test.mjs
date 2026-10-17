@@ -2068,9 +2068,10 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
   const j = judgeSetup(CORRECT);
   writeFileSync(join(j.dir, 'screen2.png'), png(2000, 1000, (x, y) => [x % 256, y % 256, 90]));
   const { files: cited } = j.shots();
-  j.stub(CORRECT, true, [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
+  j.stub(CORRECT, true, [{ type: 'system', subtype: 'api_retry', error_status: 429, error: 'rate_limit' }, { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
   const r = j.dd('check', '--judge', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /hit a rate limit and stopped/, 'claude retrying a 429 itself is not a stop');
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
   assert.equal(j.calls().length, 2, 'one request per image: the warning did not end either call');
 });
