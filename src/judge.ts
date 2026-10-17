@@ -1,6 +1,5 @@
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import type { Backend, Question } from '@byokit/decide';
@@ -93,20 +92,6 @@ export function onPath(name: string): string {
   return '';
 }
 
-// Is claude signed in, the user's own way? Reads only the binary's non-secret auth status, in a scratch folder, with the
-// user's own environment, as the judge's calls run.
-export function claudeLoggedIn(bin: string): boolean {
-  const scratch = mkdtempSync(join(tmpdir(), 'done-done-judge-'));
-  try {
-    const r = spawnSync(bin, ['--safe-mode', '--setting-sources', '', 'auth', 'status'], { cwd: scratch, encoding: 'utf8', timeout: 30_000 });
-    return r.status === 0 && JSON.parse(r.stdout).loggedIn === true;
-  } catch {
-    return false;
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
 const KIT = '@byokit/decide@0.8.0';
 export const quote = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`);
 
@@ -126,7 +111,7 @@ async function kit() {
   }
 }
 
-export type Judge = { ask: Backend['ask']; resolve: typeof import('@byokit/decide/slim').resolve; lastError: () => string; signIn: string; signedIn: () => boolean };
+export type Judge = { ask: Backend['ask']; resolve: typeof import('@byokit/decide/slim').resolve; lastError: () => string };
 
 // The backend for one judge choice. It checks everything that needs no model call, so doctor can use it too.
 // record: where each agent call writes its call record (the claude-code and answerer routes both run a real agent call);
@@ -140,7 +125,7 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
     if (!key) throw new UsageError(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, then re-run this command`);
     const { openai, resolve } = await kit();
     const ask = openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 }).ask;
-    return { ask, resolve, lastError: () => '', signIn: '', signedIn: () => true, detail: `${name} is set and the judge kit is present` };
+    return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
   }
   const override = cfg.agent_path_override[choice.agent];
   const run = agentRun(cfg, choice.agent, choice.model);
@@ -160,14 +145,13 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
       requests++;
       const attached = images.map((img) => ({ name: `${img.id}.${img.mime.split('/')[1]}`, bytes: Buffer.from(img.dataUrl.slice(img.dataUrl.indexOf(',') + 1), 'base64') }));
       // A tool-less call runs in its own scratch folder, so the CLI sees the attached capture and nothing else.
-      const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), tools: 'none', attempts, record: record(requests), images: attached });
+      const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
       lastError = a.ok ? '' : a.error ?? 'no answer';
       if (!a.ok) throw new Error(lastError);
       return JSON.stringify(a.answer);
     },
   }).ask;
-  // claude runs with the user's own sign-in, so it is checked only when a call fails.
-  return { ask, resolve, lastError: () => lastError, signIn: claude ? `${bin} auth login` : '', signedIn: () => !claude || claudeLoggedIn(bin), detail: claude ? `claude binary at ${bin} and the judge kit are present (login is checked only when a capture is judged)` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
+  return { ask, resolve, lastError: () => lastError, detail: claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
 }
 
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
@@ -193,9 +177,8 @@ export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, stat
     return Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, raw[k])]));
   } catch (e) {
     const why = be.lastError() || (e as Error).message;
-    // A failed claude call is a signed-out claude or a bad model, a used-up plan or a limit: ask the binary which.
-    if (choice.route === 'claude-code' && !be.signedIn())
-      throw new UsageError(`judge: claude is not signed in (${why})`, `Sign in to Claude Code as you normally do: ${be.signIn}, then re-run this command`);
+    if (choice.route === 'claude-code' && /not logged in/i.test(why))
+      throw new UsageError(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
     const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : '';
     return `the judge did not answer: ${why}${hint}`;
   }

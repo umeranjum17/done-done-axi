@@ -156,7 +156,10 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
   }
   for (const [key, value] of flatten(doc, file)) {
     // The claude judge runs the user's own claude sign-in now, so the folder key of older configs is only a leftover.
-    if (key === 'judge.claude_code') throw new UsageError(`${file}: judge.claude_code is gone, so delete it: the claude judge uses your own claude sign-in`, `Delete the judge.claude_code lines from ${file}`);
+    if (key === 'judge.claude_code') {
+      process.stderr.write(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${file}\n`);
+      continue;
+    }
     const spec = KEYS[key];
     if (!spec) throw new UsageError(`${file}: unknown key ${key}`);
     if (spec.scope !== scope && spec.scope !== 'any') throw new UsageError(`${file}: ${key} may only be set in the ${spec.scope === 'global' ? 'global config' : 'project .done-done.yaml'}`);

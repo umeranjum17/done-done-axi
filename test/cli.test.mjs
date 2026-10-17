@@ -2182,7 +2182,7 @@ test('judge with a claude that is not signed in is a config error naming your no
   assert.equal(r.code, 2, r.out);
   const e = toon(r);
   assert.match(e.error, /^judge: claude is not signed in \(claude exited 1: Not logged in/);
-  assert.match(e.help[0], /^Sign in to Claude Code as you normally do: .+ auth login, then re-run this command$/);
+  assert.equal(e.help[0], 'sign in with: claude auth login, then re-run this command');
   assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
   assert.doesNotMatch(r.out, /CLAUDE_CONFIG_DIR|token|secret/i, 'no sign-in folder of done-done\'s is named');
   j.stub(CORRECT, true);
@@ -3349,13 +3349,16 @@ test('doctor reports the judge ok with a claude binary alone: its sign-in is che
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: claude-code\n');
   const alone = toon(doctorIn(repo, pathEnv(env, ['claude']), 'doctor'));
   assert.equal(alone.checks[5].status, 'ok');
-  assert.match(alone.checks[5].detail, /claude binary at .* and the judge kit are present \(login is checked only when a capture is judged\)/);
+  assert.match(alone.checks[5].detail, /claude binary at .* and the judge kit are present; it judges with your own claude sign-in/);
   assert.doesNotMatch(JSON.stringify(alone.checks[5]), /auth login|CLAUDE_CONFIG_DIR/, 'no separate sign-in step is asked for');
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: claude-code\nagent_path_override: { claude: claude }\n');
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  bin: /usr/bin/claude\n');
   assert.match(toon(dd('doctor')).checks[1].detail, /unknown key judge\.bin/, 'a key that never shipped is unknown');
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  claude_code: { config_dir: /somewhere/claude }\n');
-  assert.match(toon(dd('doctor')).checks[1].detail, /judge\.claude_code is gone, so delete it/, 'the old folder key is one clear line, not a crash');
+  const globalYml = join(env.DONE_DONE_HOME, 'config.yaml');
+  writeFileSync(globalYml, 'judge:\n  claude_code: { config_dir: /somewhere/claude }\n');
+  const leftover = dd('doctor');
+  assert.ok(leftover.out.includes(`judge.claude_code is no longer used (the judge uses your normal claude sign-in); delete it from ${globalYml}\n`), 'the old folder key is ignored with one line naming the file');
+  assert.doesNotMatch(leftover.out, /is gone|UsageError/, 'a leftover key does not stop the command');
 });
 
 test('doctor reports the judge missing when agent_path_override.claude does not exist', () => {
@@ -3545,6 +3548,7 @@ test('the agent comes from config, and doctor --probe asks it one schema questio
   assert.equal(c.agent, 'claude');
   assert.notEqual(c.cwd, repo, 'a tool-less probe runs in a scratch dir, never the repo');
   assert.deepEqual(['--model', '--tools', '--setting-sources'].map((f) => c.argv[c.argv.indexOf(f) + 1]), ['claude-haiku-5-5', '', ''], 'no project or user settings load');
+  assert.ok(!c.argv.includes('--safe-mode'), 'a doctor probe runs your normal claude setup, not the judge\'s safe mode');
   assert.ok(c.argv.includes('-p') && c.argv.includes('--no-session-persistence') && JSON.parse(c.argv[c.argv.indexOf('--json-schema') + 1]).required[0] === 'ok');
   assert.match(c.stdin, /connectivity probe/);
   assert.deepEqual(c.argv.slice(-2), ['--effort', 'low'], 'the cheap default effort goes to claude --effort');

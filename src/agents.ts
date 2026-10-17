@@ -24,6 +24,7 @@ export type AgentCall = {
   timeoutMs: number;
   idleMs?: number; // a streaming agent that prints nothing (stdout or stderr) this long is stopped; default AGENT_IDLE_MS
   tools: 'none' | 'read' | 'edit'; // none for the judge and most readers; read for the claude reader; edit (the drive) may also run commands
+  safeMode?: boolean; // claude's --safe-mode (no CLAUDE.md, hooks, plugins or MCP servers), set for the judge's call only
   record: string; // where the call record is written
   images?: { name: string; bytes: Buffer }[]; // attached to the prompt for the answerer judge, written into the call's scratch folder
   attempts?: number; // asks allowed for a bad tool-less answer, default ASK_ATTEMPTS
@@ -131,13 +132,13 @@ const PI_TOOL_LESS = ['--no-tools', '--no-extensions', '--no-skills', '--no-prom
 const ADAPTERS: Record<string, Adapter> = {
   // claude -p: --json-schema puts the validated object in structured_output; --tools '' turns every tool off.
   // An edit step accepts edits only in cwd and --add-dir folders, and may run commands (the drive launches the app).
-  // A tool-less call runs with --safe-mode too (no CLAUDE.md, hooks, plugins or MCP servers) and with the user's own sign-in.
+  // The judge's call runs with the user's own sign-in, and with --safe-mode when safeMode is set.
   // A call with images sends them as stream-json content blocks, as claude's SDK does, and its result is the last event.
   claude: {
     argv: (c) => ['-p', '--output-format', c.images?.length ? 'stream-json' : 'json', ...(c.images?.length ? ['--verbose', '--input-format', 'stream-json'] : []),
       '--json-schema', JSON.stringify(c.schema), '--model', c.model, '--no-session-persistence',
       ...(c.tools === 'edit' ? ['--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', ...(c.dirs ?? []).flatMap((d) => ['--add-dir', d])] : ['--tools', c.tools === 'read' ? 'Read,Grep,Glob' : '']),
-      ...(c.tools === 'edit' ? [] : ['--setting-sources', '']), ...(c.tools === 'read' ? ['--strict-mcp-config'] : []), ...(c.tools === 'none' ? ['--safe-mode'] : [])],
+      ...(c.tools === 'edit' ? [] : ['--setting-sources', '']), ...(c.tools === 'read' ? ['--strict-mcp-config'] : []), ...(c.safeMode ? ['--safe-mode'] : [])],
     stdin: (c, prompt) => (c.images?.length ? `${JSON.stringify({ type: 'user', session_id: '', parent_tool_use_id: null, message: { role: 'user', content: [
       ...c.images.flatMap((i) => [{ type: 'text', text: `Image: ${i.name.replace(/\.[^.]+$/, '')}` }, { type: 'image', source: { type: 'base64', media_type: `image/${extname(i.name).slice(1)}`, data: i.bytes.toString('base64') } }]),
       { type: 'text', text: prompt }] } })}\n` : prompt),
