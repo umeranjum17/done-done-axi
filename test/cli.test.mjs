@@ -1136,21 +1136,22 @@ test('init --hook gemini and --hook pi give the model the bare state at the star
   }
 });
 
-// Fixture repos of three shapes for init's verify-skill scaffold: a web app, a CLI tool and a repo with nothing to detect.
+// Fixture repos for init's verify-skill tests: a CLI tool, and a repo whose own proof drives a stub engine with
+// its own state (scripts/verify/drive.sh, run by a .done-done.yaml journey) while `npm start` runs the real engine.
 function shapeRepo(kind, name) {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-shape-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, name);
   const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
-  if (kind === 'web') {
-    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, scripts: { dev: 'vite --port 5173' }, dependencies: { react: '^19.0.0' }, devDependencies: { '@playwright/test': '^1.0.0' } }));
-    mkdirSync(join(repo, 'src'));
-    writeFileSync(join(repo, 'src', 'App.jsx'), 'export const App = () => <h1>shop</h1>;\n');
-    writeFileSync(join(repo, 'server.js'), "app.get('/cart', show);\napp.post('/checkout', pay);\n");
-    writeFileSync(join(repo, 'README.md'), '# shop\n');
-  } else if (kind === 'bare') writeFileSync(join(repo, 'README.md'), `# ${name}\n`);
-  else {
+  if (kind === 'proof') {
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, scripts: { start: 'node engine.js' } }));
+    writeFileSync(join(repo, 'engine.js'), "const home = process.env.ENGINE_HOME ?? require('node:os').homedir();\nconst engine = process.env.ENGINE === 'stub' ? 'stub' : 'real';\nconsole.log(engine, home, process.argv.slice(2).join(' '));\n");
+    mkdirSync(join(repo, 'scripts', 'verify'), { recursive: true });
+    writeFileSync(join(repo, 'scripts', 'verify', 'drive.sh'), '#!/bin/sh\n# The proof drive: a stub engine and a throwaway state folder.\nENGINE=stub ENGINE_HOME="$(mktemp -d)" node engine.js "$@"\n', { mode: 0o755 });
+    writeFileSync(join(repo, '.done-done.yaml'), `app: ${name}\njourneys:\n  add:\n    command: scripts/verify/drive.sh add milk > $DONE_DONE_EVIDENCE_ROOT/\${RUN_ID}.log\n`);
+    writeFileSync(join(repo, 'README.md'), `# ${name}\n\nnpm start runs the engine on your own account.\n`);
+  } else {
     writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, bin: { [name]: 'bin/cli.js' }, dependencies: { commander: '^12.0.0' } }));
     mkdirSync(join(repo, 'bin'));
     writeFileSync(join(repo, 'bin', 'cli.js'), `#!/usr/bin/env node\nprogram.command('add').command('list');\n`);
@@ -1167,110 +1168,12 @@ function shapeRepo(kind, name) {
   return { dir, repo, env, dd };
 }
 
-// An API repo (express, no CLI signal): its routes drive over curl, so route features are written.
-function apiShape(name) {
-  const s = shapeRepo('bare', name);
-  writeFileSync(join(s.repo, 'package.json'), JSON.stringify({ name, dependencies: { express: '^4.0.0' } }));
-  return s;
-}
-
-const featureFiles = (skillDir) => readdirSync(join(skillDir, 'features')).sort();
-
-test('init scaffolds a verify skill with real launch and features for a web app', () => {
-  const { repo, dd } = shapeRepo('web', 'shop');
+test('init writes no verify skill, so it never launches the real engine from the start script', () => {
+  const { repo, dd } = shapeRepo('proof', 'notes');
   const r = dd('init');
   assert.equal(r.code, 2, r.out);
-  assert.equal(toon(r).verify_skill, 'written');
-  const dir = join(repo, '.agents', 'skills', 'verify-shop');
-  assert.deepEqual(featureFiles(dir), ['README.md', 'get-cart.md', 'post-checkout.md'], 'each route becomes a feature');
-  const body = readFileSync(join(dir, 'SKILL.md'), 'utf8');
-  assert.match(body, /^name: verify-shop$/m, 'frontmatter registers the skill');
-  assert.match(body, /npm run dev \(vite --port 5173\)/, 'launch comes from the repo scripts');
-  assert.match(body, /localhost:5173/, 'the detected port becomes the readiness check');
-  assert.match(body, /browser\/CDP \(Playwright\)/, 'the harness comes from the repo deps');
-  for (const f of ['get-cart', 'post-checkout']) {
-    const feat = readFileSync(join(dir, 'features', `${f}.md`), 'utf8');
-    assert.match(feat, /## Driving it with/, 'each feature keeps the four-H2 shape');
-  }
-  assert.match(readFileSync(join(dir, 'features', 'README.md'), 'utf8'), /get-cart\.md/, 'the map indexes its features');
-  const before = body;
-  assert.equal(toon(dd('init')).verify_skill, 'unchanged');
-  assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), before, 're-run is idempotent');
-});
-
-for (const kind of ['web', 'bare'])
-  test(`init scaffolds a ${kind} repo's verify skill with a step on every line that passes maintain hygiene`, () => {
-    const { repo, env, dd } = shapeRepo(kind, 'shop');
-    assert.equal(dd('init').code, 2);
-    const dir = join(repo, '.agents', 'skills', 'verify-shop');
-    for (const f of readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.md'))) assert.doesNotMatch(readFileSync(join(dir, f), 'utf8'), /TODO/, f);
-    const feats = featureFiles(dir).filter((f) => f !== 'README.md');
-    assert.ok(feats.length > 0, 'a repo with nothing detected still gets a feature to drive');
-    for (const f of feats) assert.match(readFileSync(join(dir, 'features', f), 'utf8'), /^2\. \S.+\n3\. Capture: .+\$DONE_DONE_EVIDENCE_ROOT\/\S+\.(png|txt)/m, `${f} has drive and capture steps`);
-    execFileSync('git', ['add', '-A'], { cwd: repo, env });
-    execFileSync('git', ['commit', '-qm', 'skill'], { cwd: repo, env });
-    writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
-    const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-    const r = doctorIn(repo, s.env, 'maintain', '--foreground');
-    assert.deepEqual([r.code, toon(r).result, toon(r).findings?.length ?? 0], [0, 'clean', 0], r.out);
-  });
-
-test('init scaffolds a verify skill with real bin and commands for a CLI tool', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  assert.equal(dd('init').code, 2);
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
-  const body = readFileSync(join(dir, 'SKILL.md'), 'utf8');
-  assert.match(body, /^name: verify-notes$/m);
-  assert.match(body, /node bin\/cli\.js --help/, 'launch comes from package.json bin');
-  assert.match(body, /tmux\/PTY/, 'a CLI is driven over a PTY');
-  assert.ok(existsSync(join(dir, 'features', 'add.md')) && existsSync(join(dir, 'features', 'list.md')), 'subcommands become features');
-});
-
-test('init drives a CLI with a web build tool over a PTY, not a browser', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { webpack: '^5.0.0' } }));
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  const body = readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8');
-  assert.match(body, /^Harness: tmux\/PTY/m);
-});
-
-test('init names one driver for a react and express app: the harness, the route drive and its capture agree', () => {
-  const { repo, dd } = shapeRepo('bare', 'shop');
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^19.0.0', express: '^4.0.0' } }));
-  writeFileSync(join(repo, 'server.js'), "app.get('/api/items', list);\n");
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  const dir = join(repo, '.agents', 'skills', 'verify-shop');
-  assert.match(readFileSync(join(dir, 'SKILL.md'), 'utf8'), /^Harness: plain HTTP \(curl\)/m);
-  const [feat] = featureFiles(dir).filter((f) => f !== 'README.md');
-  const body = readFileSync(join(dir, 'features', feat), 'utf8');
-  assert.match(body, /^## Driving it with plain HTTP \(curl\)$/m, 'the feature names the harness driver');
-  assert.match(body, /^2\. Send it with `curl -sS -X GET -w '\\nstatus %{http_code}\\n' "BASE\/api\/items"`/m, 'the route is driven with curl, not a browser');
-  assert.match(body, /^3\. Capture: save the output and exit status to \$DONE_DONE_EVIDENCE_ROOT\/\S+\.txt/m, 'the capture is text');
-});
-
-test('init drives a CLI with routes over its commands only, never with curl', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ ...pkg, dependencies: { ...pkg.dependencies, express: '^4.0.0' } }));
-  writeFileSync(join(repo, 'server.js'), "app.get('/api/items', list);\n");
-  assert.equal(dd('init').code, 2);
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
-  assert.deepEqual(featureFiles(dir), ['README.md', 'add.md', 'list.md'], 'a route is not a feature under a PTY harness');
-  for (const f of ['add', 'list']) assert.doesNotMatch(readFileSync(join(dir, 'features', `${f}.md`), 'utf8'), /curl/, `${f} names no curl driver`);
-});
-
-test('init drives a repo with no detected surface through a shell, with a text capture', () => {
-  const { repo, dd } = shapeRepo('bare', 'shop');
-  assert.equal(dd('init').code, 2);
-  const dir = join(repo, '.agents', 'skills', 'verify-shop');
-  assert.deepEqual(featureFiles(dir), ['README.md', 'main.md']);
-  const body = readFileSync(join(dir, 'features', 'main.md'), 'utf8');
-  assert.match(body, /^## Driving it with a shell \(run the launch command and read its output\)$/m, 'the feature names the shell harness');
-  assert.match(body, /^2\. Read README\.md and the entry file.*run it in a shell/m, 'the drive runs in the shell');
-  assert.match(body, /^3\. Capture: save the output and exit status to \$DONE_DONE_EVIDENCE_ROOT\/main\.txt,/m, 'the capture is text');
+  assert.equal(toon(r).verify_skill, 'not written: write .agents/skills/verify-notes/SKILL.md by hand, with a launch that never touches real accounts or your own state');
+  assert.equal(existsSync(join(repo, '.agents')), false, 'no skill, not even a template');
 });
 
 test('init never overwrites an existing verify skill', () => {
@@ -1284,122 +1187,6 @@ test('init never overwrites an existing verify skill', () => {
   assert.equal(readFileSync(skill, 'utf8'), '# hand-written\n', 'the existing file is kept');
 });
 
-test('init maps the app, not its dependencies, and lists each feature slug once', () => {
-  const { repo, dd } = apiShape('notes');
-  mkdirSync(join(repo, 'node_modules', 'lib'), { recursive: true });
-  writeFileSync(join(repo, 'node_modules', 'lib', 'index.js'), "router.get('/vendored/route');\n");
-  writeFileSync(join(repo, 'routes.js'), "app.get('/a/b');\napp.get('/a-b');\n");
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
-  assert.deepEqual(featureFiles(dir), ['README.md', 'get-a-b-2.md', 'get-a-b.md'], 'node_modules is skipped and each distinct route keeps its own file');
-  assert.match(readFileSync(join(dir, 'features', 'get-a-b-2.md'), 'utf8'), /^# GET \/a-b$/m);
-});
-
-test('init skips a dependency command when it maps a CLI', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  mkdirSync(join(repo, 'node_modules', 'lib'), { recursive: true });
-  writeFileSync(join(repo, 'node_modules', 'lib', 'index.js'), "program.command('vendored');\n");
-  assert.equal(dd('init').code, 2);
-  assert.deepEqual(featureFiles(join(repo, '.agents', 'skills', 'verify-notes')), ['README.md', 'add.md', 'list.md'], 'node_modules commands are not features');
-});
-
-test('init keeps distinct routes whose slugs collide after truncation', () => {
-  const { repo, dd } = apiShape('notes');
-  writeFileSync(join(repo, 'routes.js'), "app.get('/api/organizations/:id/members/invitations/pending');\napp.get('/api/organizations/:id/members/invitations/expired');\n");
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
-  const feats = featureFiles(dir).filter((f) => f.startsWith('get-api-organizations'));
-  assert.equal(feats.length, 2, 'both routes get a feature file');
-  const titles = feats.map((f) => readFileSync(join(dir, 'features', f), 'utf8').split('\n')[0]).sort();
-  assert.deepEqual(titles, ['# GET /api/organizations/:id/members/invitations/expired', '# GET /api/organizations/:id/members/invitations/pending']);
-});
-
-test('init maps app.del as DELETE and does not turn a middleware mount into an endpoint', () => {
-  const { repo, dd } = apiShape('notes');
-  writeFileSync(join(repo, 'routes.js'), "app.use('/static');\napp.del('/items/1');\n");
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
-  const routeFeats = featureFiles(dir).filter((f) => !['README.md', 'add.md', 'list.md'].includes(f));
-  assert.deepEqual(routeFeats.map((f) => readFileSync(join(dir, 'features', f), 'utf8').split('\n')[0]), ['# DELETE /items/1']);
-});
-
-test('init does not read a README that is a symlink out of the repo', () => {
-  const { dir, repo, dd } = shapeRepo('cli', 'notes');
-  writeFileSync(join(dir, 'secret.md'), "app.get('/secret');\n");
-  rmSync(join(repo, 'README.md'));
-  symlinkSync(join(dir, 'secret.md'), join(repo, 'README.md'));
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  assert.deepEqual(featureFiles(join(repo, '.agents', 'skills', 'verify-notes')), ['README.md', 'add.md', 'list.md'], 'the symlink target is not scanned');
-});
-
-test('init keeps a command in the feature map and says how many features it left out', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  writeFileSync(join(repo, 'commands.js'), ['1', '2', '3', '4', '5', '6'].map((n) => `program.command('c${n}');`).join('\n') + '\n');
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
-  assert.equal(featureFiles(dir).length, 6, 'README plus five features');
-  assert.match(readFileSync(join(dir, 'features', 'README.md'), 'utf8'), /3 more found and not listed/, 'eight commands show five, and say three were left out');
-});
-
-test('init reads server routes only, not client calls or component files', () => {
-  const { repo, dd } = apiShape('notes');
-  mkdirSync(join(repo, 'src', 'components'), { recursive: true });
-  writeFileSync(join(repo, 'src', 'components', 'Cart.js'), "app.get('/from-component');\n");
-  writeFileSync(join(repo, 'src', 'Page.jsx'), "app.get('/from-jsx');\n");
-  writeFileSync(join(repo, 'client.js'), "axios.get('/api/cart');\n");
-  writeFileSync(join(repo, 'server.js'), "app.get('/server');\n");
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  assert.deepEqual(featureFiles(join(repo, '.agents', 'skills', 'verify-notes')), ['README.md', 'get-server.md']);
-});
-
-test('init takes the readiness port only from the dev script', () => {
-  const { repo, dd } = shapeRepo('web', 'shop');
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'shop', scripts: { dev: 'next dev' }, dependencies: { react: '^19.0.0' } }));
-  writeFileSync(join(repo, 'README.md'), '# shop\nDATABASE_URL=postgres://localhost:5432/app\n');
-  assert.equal(dd('init').code, 2);
-  const body = readFileSync(join(repo, '.agents', 'skills', 'verify-shop', 'SKILL.md'), 'utf8');
-  assert.doesNotMatch(body, /localhost:5432/, 'a database URL in the README is not the app port');
-});
-
-test('init gives a tty CLI no curl readiness check when its start script carries a port', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'notes', bin: { notes: 'bin/cli.js' }, scripts: { start: 'node bin/cli.js daemon --port 9090' }, dependencies: { commander: '^12.0.0' } }));
-  assert.equal(dd('init').code, 2);
-  const body = readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8');
-  assert.doesNotMatch(body, /localhost:9090/, 'a PTY harness gets no curl-on-localhost readiness check');
-  assert.match(body, /Ready when the launch command runs with no error \(exit 0, or a prompt waiting for input\)/, 'a PTY harness waits on the launch command itself');
-});
-
-test('init does not map README code samples as routes or commands', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  writeFileSync(join(repo, 'README.md'), "# notes\n\n```js\napp.get('/docs-example');\nprogram.command('demo');\n```\n");
-  assert.equal(dd('init').code, 2);
-  assert.deepEqual(featureFiles(join(repo, '.agents', 'skills', 'verify-notes')), ['README.md', 'add.md', 'list.md'], 'only source and bin commands become features');
-});
-
-test('init keeps the config when the verify skill cannot be written', () => {
-  const { repo, dd } = shapeRepo('cli', 'notes');
-  writeFileSync(join(repo, '.agents'), 'not a directory\n');
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  assert.match(toon(r).verify_skill, /^skipped, .*could not be written/, 'the scaffold is skipped with a reason');
-  assert.equal(existsSync(join(repo, '.done-done.yaml')), true, 'the config written before the scaffold is kept');
-});
-
-test('init reads a package.json larger than 20 KB', () => {
-  const { repo, dd } = shapeRepo('web', 'shop');
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'shop', scripts: { dev: 'vite --port 5173' }, dependencies: { react: '^19.0.0' }, description: 'x'.repeat(30000) }));
-  assert.equal(dd('init').code, 2);
-  const body = readFileSync(join(repo, '.agents', 'skills', 'verify-shop', 'SKILL.md'), 'utf8');
-  assert.match(body, /npm run dev \(vite --port 5173\)/, 'scripts past the old 20000-character cut are still read');
-});
-
 test('init refuses a verify skill path that leaves the repo', () => {
   const { dir, repo, dd } = shapeRepo('cli', 'notes');
   writeFileSync(join(repo, '.done-done.yaml'), 'skill: ../escaped/verify\n');
@@ -1408,30 +1195,6 @@ test('init refuses a verify skill path that leaves the repo', () => {
   assert.match(r.out, /has a \.\. segment/);
   assert.match(r.out, /\.\.\/escaped\/verify/, 'the message names the bad value');
   assert.equal(existsSync(join(dir, 'escaped')), false, 'nothing is written outside the repo');
-});
-
-test('init skips the verify skill behind a symlinked ancestor and writes the rest', () => {
-  const { dir, repo, dd } = shapeRepo('cli', 'notes');
-  mkdirSync(join(dir, 'elsewhere'));
-  symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents'));
-  writeFileSync(join(repo, '.done-done.yaml'), 'skill: .agents/skills/verify-notes\n');
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  assert.match(toon(r).verify_skill, /^skipped, \.agents is a symlink/);
-  assert.equal(existsSync(join(dir, 'elsewhere', 'skills')), false, 'nothing is written through the symlink');
-  assert.equal(existsSync(join(repo, '.done-done.yaml')), true, 'the rest of init still ran');
-});
-
-test('init skips the verify skill when a symlink sits beneath the skill dir', () => {
-  const { dir, repo, dd } = shapeRepo('cli', 'notes');
-  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
-  mkdirSync(join(dir, 'elsewhere'));
-  symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents', 'skills', 'verify-notes', 'features'));
-  const r = dd('init');
-  assert.equal(r.code, 2, r.out);
-  assert.match(toon(r).verify_skill, /features is a symlink/);
-  assert.deepEqual(readdirSync(join(dir, 'elsewhere')), [], 'no feature file is written through the symlink');
-  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md')), false, 'no partial scaffold');
 });
 
 test('init outside a git repository reports a clear usage error', () => {
