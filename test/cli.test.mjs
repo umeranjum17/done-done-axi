@@ -2084,6 +2084,20 @@ test('a claude answer that quotes a rate-limit banner is not stopped as a rate l
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
 });
 
+test('a claude answer that quotes a rate-limit banner, split across output chunks, is not stopped as a rate limit', () => {
+  const j = judgeSetup(CORRECT);
+  const { files } = j.shots();
+  const answer = { type: 'assistant', message: { content: [{ type: 'text', text: 'The banner reads: Rate limit reached, retry in 60s.' }] } };
+  const init = JSON.stringify({ type: 'system', subtype: 'init' }).length + 1;
+  const padFrame = JSON.stringify({ type: 'system', subtype: 'pad', text: '' }).length + 1;
+  const line = JSON.stringify(answer);
+  const pad = 65536 - (line.indexOf('retry') + 'retry'.length) - init - padFrame;
+  j.stub(CORRECT, true, [{ type: 'system', subtype: 'pad', text: 'x'.repeat(pad) }, answer]);
+  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
+});
+
 test('a claude judge answer is read from its result event even when events follow it', () => {
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();

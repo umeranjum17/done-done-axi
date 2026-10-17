@@ -384,8 +384,10 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     const limited = (chunk: string, stdoutLine: boolean) => {
       const key = stdoutLine ? 'stdout' : 'stderr';
       const text = pending[key] + chunk;
-      pending[key] = text.slice(text.lastIndexOf('\n') + 1);
-      const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => {
+      const end = text.lastIndexOf('\n') + 1;
+      pending[key] = text.slice(end);
+      const scanned = stdoutLine ? text.slice(0, end) : text;
+      const line = stripVTControlCharacters(scanned).split(/\r?\n/).find((l) => {
         if (stdoutLine && c.agent === 'claude' && isClaudeAnswerEvent(l)) return false;
         return /rate_limit_event/.test(l) ? /"status":\s*"rejected"/.test(l) : RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l));
       });
