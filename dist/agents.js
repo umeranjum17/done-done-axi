@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, extname, isAbsolute, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 import { AGENTS, ANSWERER_JUDGES, CHEAP, EFFORT_FLAGS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
@@ -22,6 +22,15 @@ function errorLine(text) {
 }
 // A provider's rate limit (HTTP 429, a usage limit with its reset time). The CLI may retry it for many minutes, so the call stops at the first line that says so.
 const RATE_LIMIT = /\b429\b|rate[ -]?limit|usage limit|too many requests/i;
+const isRejectedRateLimit = (l) => {
+    try {
+        const e = JSON.parse(l);
+        return e.type === 'rate_limit_event' && e.rate_limit_info?.status === 'rejected';
+    }
+    catch {
+        return false;
+    }
+};
 // The first lines of an agent's stderr, one line: what it said before it failed or went quiet. Indented lines (stack frames, fields) are
 // left out, as in errorLine. '' when it said nothing.
 function stderrHead(stderr) {
@@ -112,12 +121,21 @@ const PI_TOOL_LESS = ['--no-tools', '--no-extensions', '--no-skills', '--no-prom
 const ADAPTERS = {
     // claude -p: --json-schema puts the validated object in structured_output; --tools '' turns every tool off.
     // An edit step accepts edits only in cwd and --add-dir folders, and may run commands (the drive launches the app).
+    // The judge's call runs with the user's own sign-in, and with --safe-mode when safeMode is set.
+    // A call with images sends them as stream-json content blocks, as claude's SDK does, and its result is the event of type result.
     claude: {
-        argv: (c) => ['-p', '--output-format', 'json', '--json-schema', JSON.stringify(c.schema), '--model', c.model, '--no-session-persistence',
+        argv: (c) => ['-p', '--output-format', c.images?.length ? 'stream-json' : 'json', ...(c.images?.length ? ['--verbose', '--input-format', 'stream-json'] : []),
+            '--json-schema', JSON.stringify(c.schema), '--model', c.model, '--no-session-persistence',
             ...(c.tools === 'edit' ? ['--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', ...(c.dirs ?? []).flatMap((d) => ['--add-dir', d])] : ['--tools', c.tools === 'read' ? 'Read,Grep,Glob' : '']),
-            ...(c.tools === 'edit' ? [] : ['--setting-sources', '']), ...(c.tools === 'read' ? ['--strict-mcp-config'] : [])],
-        answer: (out) => {
-            const r = JSON.parse(out);
+            ...(c.tools === 'edit' ? [] : ['--setting-sources', '']), ...(c.tools === 'read' ? ['--strict-mcp-config'] : []), ...(c.safeMode ? ['--safe-mode'] : [])],
+        stdin: (c, prompt) => (c.images?.length ? `${JSON.stringify({ type: 'user', session_id: '', parent_tool_use_id: null, message: { role: 'user', content: [
+                    ...c.images.flatMap((i) => [{ type: 'text', text: `Image: ${i.name.replace(/\.[^.]+$/, '')}` }, { type: 'image', source: { type: 'base64', media_type: `image/${extname(i.name).slice(1)}`, data: i.bytes.toString('base64') } }]),
+                    { type: 'text', text: prompt }
+                ] } })}\n` : prompt),
+        answer: (out, c) => {
+            const r = c.images?.length ? out.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l)).findLast((e) => e.type === 'result') : JSON.parse(out);
+            if (!r)
+                throw new ProviderError('claude printed no result');
             if (r.is_error)
                 throw new ProviderError(String(r.result || r.subtype));
             return r.structured_output;
@@ -128,6 +146,7 @@ const ADAPTERS = {
     opencode: {
         file: true,
         streams: true,
+        readsImages: true,
         argv: (c, dir) => ['run', 'Follow the attached instructions.', '--format', 'json', '-m', c.model, '-f', join(dir, 'prompt.md'), ...(c.images ?? []).flatMap((i) => ['-f', join(dir, i.name)])],
         answer: (out, c) => {
             const events = out.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
@@ -173,6 +192,7 @@ const ADAPTERS = {
     // Pi has no permission gate for edit steps, so doctor warns about it. Without a model, pi runs its own default.
     pi: {
         streams: true,
+        readsImages: true,
         argv: (c, dir) => ['-p', '--mode', 'json', '--no-session', ...(c.tools === 'edit' ? [] : PI_TOOL_LESS), ...(c.model ? ['--model', c.model] : []), ...(c.images ?? []).map((i) => `@${join(dir, i.name)}`)],
         answer: (out, c) => {
             let text = '';
@@ -243,6 +263,7 @@ const ADAPTERS = {
     // policy folder and removes every tool, MCP ones too, from the model (its policy-engine.md). An @<file> in the -p text
     // attaches an image: per Gemini CLI's source, its own @-command code reads it, outside the tool policy, and only inside the cwd, the call's scratch folder; not yet proven live (Gemini CLI was not signed in on the test machine).
     gemini: {
+        readsImages: true,
         argv: (c, dir) => ['-p', ['Follow the instructions on stdin.', ...(c.images ?? []).map((i) => `@${i.name}`)].join(' '), '-o', 'json', '-m', c.model, '--approval-mode', c.tools === 'edit' ? 'auto_edit' : 'plan',
             ...(c.tools === 'none' ? ['--policy', join(dir, 'deny-all.toml'), '--skip-trust'] : []),
             ...(c.tools === 'edit' ? ['--allowed-tools', 'run_shell_command', ...(c.dirs ?? []).flatMap((d) => ['--include-directories', d])] : [])],
@@ -298,7 +319,6 @@ export function agentPath(agent, cfg) {
         acpxRuns.set(acpx, spawnSync(acpx, ['--version'], { stdio: 'ignore', timeout: 5_000 }).status === 0);
     return acpxRuns.get(acpx) ? acpx : '';
 }
-export const claudeBin = (cfg) => agentPath('claude', cfg);
 export const routeOf = (agent) => (agent === 'claude' ? 'claude-code' : `answerer:${agent}`);
 export const JUDGES = AGENTS.filter((a) => a === 'claude' || ANSWERER_JUDGES.includes(a));
 // Like the agent, the judge is exactly the one the user set; with none, done-done asks the user (in a terminal) or
@@ -341,9 +361,22 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
         let drain;
         let idle;
         // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
-        // so an answer that only quotes a 429 from the app's code does not stop the call.
-        const limited = (text, stdoutLine) => {
-            const line = stripVTControlCharacters(text).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+        // so an answer that only quotes a 429 from the app's code does not stop the call. A claude call with images streams JSON lines,
+        // and only a rejected rate_limit_event on stdout stops it, so its complete lines are parsed one at a time.
+        let pendingStdout = '';
+        const limited = (chunk, stdoutLine) => {
+            let line;
+            if (c.agent === 'claude' && c.images?.length) {
+                if (!stdoutLine)
+                    return;
+                const text = pendingStdout + chunk;
+                const end = text.lastIndexOf('\n') + 1;
+                pendingStdout = text.slice(end);
+                line = text.slice(0, end).split('\n').find(isRejectedRateLimit);
+            }
+            else {
+                line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+            }
             if (!line || error)
                 return;
             error = new Error(`${c.agent} hit a rate limit and stopped: ${line.trim().slice(0, 200)}`);
@@ -437,8 +470,9 @@ export async function askAgent(c) {
             throw new Error(`no adapter for ${c.agent} yet`);
         if (adapter.editOnly && c.tools !== 'edit')
             throw new Error(adapter.editOnly);
-        for (const i of c.images ?? [])
-            writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
+        if (adapter.readsImages)
+            for (const i of c.images ?? [])
+                writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
         for (const [name, text] of Object.entries(adapter.files?.(c) ?? {}))
             writeFileSync(join(dir, name), text, { mode: 0o600 });
         const bin = c.path;
@@ -454,7 +488,8 @@ export async function askAgent(c) {
             const promptText = (attempts === 1 ? prompt : `${prompt}\n\nYour previous answer was not valid (${lastError}).`) + schemaTrailer;
             if (adapter.file)
                 writeFileSync(join(dir, 'prompt.md'), promptText, { mode: 0o600 });
-            res = await start(bin, argv(dir), c, cwd, adapter.file ? '' : promptText, { ...process.env, ...c.env, ...adapter.env?.(c) }, adapter.streams ? c.idleMs ?? AGENT_IDLE_MS : 0);
+            const input = adapter.file ? '' : adapter.stdin ? adapter.stdin(c, promptText) : promptText;
+            res = await start(bin, argv(dir), c, cwd, input, { ...process.env, ...c.env, ...adapter.env?.(c) }, adapter.streams ? c.idleMs ?? AGENT_IDLE_MS : 0);
             if (res.error)
                 throw res.error;
             // A permission the run refused explains a call with no answer; name it rather than the exit code text.
