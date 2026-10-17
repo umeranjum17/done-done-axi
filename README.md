@@ -143,7 +143,7 @@ done-done receipt --outcome "it starts" ~/.done-done/evidence/your-app/*/*.log
 done-done receipt --verify "$(git rev-parse HEAD)"
 ```
 
-No journey yet? `done-done verify --outcome "<what a user can now do>"` has your coding agent drive one feature of the verify skill the way a user does (`--feature <name>` picks it). Your judge then checks the captures. When it says a capture is wrong or unclear, or a capture it cannot read (a video or other file) is not judged, the run waits at its gate (exit 4) until you answer with `done-done respond --action approve|skip --reason "<why>"` or `--action fix`. Until then, a new `verify` or `rerun` of the same claim in that checkout is refused, so nothing goes around the gate. Approve and skip are logged with who and why, and they end the run `overridden`, never `pass`, so `receipt --verify` still refuses it ([details](docs/reference.md#drive-by-agent)).
+No journey yet? `done-done verify --outcome "<what a user can now do>"` has your coding agent drive one feature of the verify skill the way a user does (`--feature <name>` picks it). Your judge then checks the captures. When it says a capture is wrong or unclear, or a capture it cannot read (a video or other file) is not judged, the run waits at its gate (exit 4) until you answer with `done-done respond --action fix`, which ends it `fail` so you fix the product or the recipe and run again: nothing moves a run past its judge, and no receipt is written without a judge pass. Until then, a new `verify` or `rerun` of the same claim in that checkout is refused, so nothing goes around the gate ([details](docs/reference.md#drive-by-agent)).
 
 With `auto_fix: { verify: <n> }` (0, the default, reports only), a failed verify is fixed with your own agent: your judge first sorts each wrong screen (a product bug to fix, or a question that waits at the gate for you), then your agent fixes the product in a done-done worktree with your ignored files copied in, and verify runs again there, up to n times. A pass ends `changed`, with the fix on a `done-done/verify-<run-id>` branch and your branch untouched ([details](docs/reference.md#fix-the-product)).
 
@@ -165,7 +165,7 @@ Run `done-done` with no arguments to see the current config and the next step.
 - 🧩 **Page is clean** (with a `dom` block): each captured screen also needs its page-check record. A page that overflows the viewport, logs a console error, has a failed request or shows squashed, clipped or cut-off UI fails, unless an allow list names it ([how](docs/reference.md#dom-assertions)).
 - 🔒 **Safe in CI**: `--trusted-ref origin/main` reads the rules from your main branch, so a pull request can't loosen them.
 
-Every answer is an exit code: **0** pass, **1** fail (or overridden at the gate), **2** usage or config error (including no agent or judge set, or a judge that did not answer: never a result), **3** can't tell either way, **4** a `verify`, `maintain` or `rerun` run is still running, or a `verify` run waits at its gate.
+Every answer is an exit code: **0** pass, **1** fail, **2** usage or config error (including no agent or judge set, a check that fails before its judge, a capture the judge cannot be sent, or a judge that did not answer: never a result), **3** can't tell either way, **4** a `verify`, `maintain` or `rerun` run is still running, or a `verify` run waits at its gate.
 
 ## Use with Firstmate or another agent fleet
 

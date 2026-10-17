@@ -94,7 +94,7 @@ try {
   mkdirSync(base);
   copyFileSync(shot, join(base, 'home.png'));
   writeFileSync(join(repo, 'home.png'), 'wrong same-named file\n');
-  drive(1, 'check', '--outcome', 'fixture home renders', 'home.png');
+  drive(2, 'check', '--outcome', 'fixture home renders', 'home.png');
   const selected = JSON.parse(dd('--json', 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'home.png'));
   assert.deepEqual(selected.evidence, [join(base, 'home.png')]);
   const follow = (result, source) => {
@@ -107,7 +107,7 @@ try {
   };
   follow(selected);
   dd('check', '--citation-base', repo, '--outcome', 'fixture home renders', shot);
-  drive(1, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'missing.png');
+  drive(2, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'missing.png');
   writeFileSync(join(base, 'stray.log'), 'unrecorded output\n');
   drive(3, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'stray.log');
   const body = join(tmp, 'checks.md');

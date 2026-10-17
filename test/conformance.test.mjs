@@ -143,7 +143,7 @@ test('citations resolve from any cwd in the repo: repo-root first, caller cwd se
   writeFileSync(wrong, 'tampered\n');
   assert.equal(at(join(repo, 'src'), 'check', '--outcome', 'home renders', cited).code, 0, 'repo-root evidence wins over a same-named cwd file');
   const missing = at(join(repo, 'src'), 'check', '--outcome', 'home renders', `.proof/${id}/nope.png`);
-  assert.equal(missing.code, 1, missing.out);
+  assert.equal(missing.code, 2, missing.out);
   assert.match(missing.out, new RegExp(`looked for ${repo.replace(/[./]/g, (c) => `\\${c}`)}.*nope\\.png`), 'a true miss names the looked-for path');
 });
 

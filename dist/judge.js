@@ -215,10 +215,9 @@ export async function judge(cfg, choose, outcome, captures, records) {
         const text = (x) => (x.bytes.length > MAX_TEXT ? `text is ${x.bytes.length} bytes, over the ${MAX_TEXT} bytes the judge reads, so capture only the output the outcome is about` : { text: x.bytes.toString('utf8') });
         const input = screen(c) ? prepare(c) : text(c);
         const before = pair && (screen(pair) ? prepare(pair) : text(pair));
-        if (typeof input === 'string' || typeof before === 'string') {
-            judged.push({ ...row, verdict: 'unsure', reason: typeof input === 'string' ? input : `its base capture ${pair.name}: ${before}`, cached: false });
-            continue;
-        }
+        // A capture the judge cannot be sent is an error with its cause, never a verdict.
+        if (typeof input === 'string' || typeof before === 'string')
+            throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${typeof input === 'string' ? input : `its base capture ${pair.name}: ${before}`}`, 'Capture it again as the error says, then re-run this command');
         if (calls++ >= MAX_CALLS) {
             judged.push({ ...row, verdict: 'unsure', reason: `not judged: one check sends at most ${MAX_CALLS} captures to the model, so cite fewer`, cached: false });
             continue;

@@ -47,7 +47,7 @@ Custom behaviour from a project becomes a new primitive in done-done.
 ## Works with
 
 - **sign-off.** sign-off owns the communication contract: the schema doc and the validator. When sign-off is present, done-done consumes them and sends asks, reports and evidence through the contract. Without sign-off, done-done works alone.
-- **learn-from-mistakes.** It reads failed, overridden and waiting runs.
+- **learn-from-mistakes.** It reads failed and waiting runs.
 - **[Firstmate](https://github.com/kunchenguid/firstmate).** A supervisor can call done-done. A supervisor is not necessary.
 - **[no-mistakes](https://github.com/kunchenguid/no-mistakes).** done-done uses the same config shape and the same fix-loop idea.
 - **quota-axi.** It follows the same Kun tool patterns.
