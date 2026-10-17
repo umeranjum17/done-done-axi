@@ -1703,7 +1703,7 @@ test('bare done-done in a repo with no config points at init', () => {
 // The relevance judge runs the user's own claude binary (agent_path_override.claude) with the user's sign-in. The stub
 // answers `auth status` and the one request the judge sends (stream-json with images, text without), and logs the HOME,
 // CLAUDE_CONFIG_DIR and argv it ran with, so a test can see what the judge was run with. Its state is in JUDGE_STUB.
-function judgeSetup(answer, { loggedIn = true, projectYaml = JUDGED } = {}) {
+function judgeSetup(answer, { loggedIn = true, projectYaml = JUDGED, floor } = {}) {
   const t = setup(projectYaml);
   // The config's author agent (opencode) must be installed on any host, so the receipt names it.
   t.env.PATH = `${pathEnv(t.env, ['opencode']).PATH}:${t.env.PATH}`;
@@ -1748,7 +1748,8 @@ process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'succe
   const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events, after, stderr }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\nagent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
+  const floorLine = floor === undefined ? '' : `  floor: ${floor}\n`;
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\n${floorLine}agent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
   const calls = () => (existsSync(join(stubDir, 'calls.jsonl')) ? readFileSync(join(stubDir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   return { ...t, stubDir, stub, calls };
 }
@@ -1819,7 +1820,7 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
   j.stub({ correct: 0.6, wrong: 0.3, unclear: 0.1 });
   const low = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(low.code, 3, low.out);
-  assert.match(toon(low).judge.judged[0].reason, /not confident enough \(confidence 0.6 below floor 0.8\)/);
+  assert.match(toon(low).judge.judged[0].reason, /not confident enough \(confidence 0.6 below floor 0.7\)/);
   assert.equal(j.calls().length, 3);
   j.stub('error');
   const err = j.dd('check', '--judge', '--outcome', 'the home screen shows the sync banner', files[0]);
@@ -1910,6 +1911,53 @@ test('a rejected claude rate-limit event stops the judge call and names the rese
   const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 3, 'a rejected quota is inconclusive, not a sign-in error');
   assert.match(toon(r).judge.judged[0].reason, /hit a rate limit and stopped: .*"status":"rejected".*"resetsAt":1792692000/);
+});
+
+test('judge.floor is config: the default 0.7 counts a supported pick, a higher floor makes it inconclusive, and a wrong pick is never a pass', () => {
+  const supported = { correct: 0.75, wrong: 0.2, unclear: 0.05 };
+  const outcome = 'the home screen shows the notes';
+  const pass = judgeSetup(supported);
+  const { files } = pass.shots();
+  const ok = pass.dd('check', '--judge', '--outcome', outcome, files[0]);
+  assert.equal(ok.code, 0, ok.out);
+  assert.equal(toon(ok).judge.judged[0].verdict, 'pass');
+  const strict = judgeSetup(supported, { floor: 0.8 });
+  const { files: strictFiles } = strict.shots();
+  const unsure = strict.dd('check', '--judge', '--outcome', outcome, strictFiles[0]);
+  assert.equal(unsure.code, 3, unsure.out);
+  assert.match(toon(unsure).judge.judged[0].reason, /not confident enough \(confidence 0.75 below floor 0.8\)/);
+  const wrong = judgeSetup({ correct: 0.2, wrong: 0.75, unclear: 0.05 }, { floor: 0.8 });
+  const { files: wrongFiles } = wrong.shots();
+  const notFail = wrong.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', wrongFiles[0]);
+  assert.equal(notFail.code, 3, 'a wrong pick below the floor is inconclusive, never a pass');
+  assert.equal(toon(notFail).judge.judged[0].verdict, 'unsure');
+  const bad = judgeSetup(supported, { floor: 1.5 });
+  const badFloor = bad.dd('check', '--judge', '--outcome', outcome, 'missing.png');
+  assert.equal(badFloor.code, 2, badFloor.out);
+  assert.match(badFloor.out, /judge\.floor must be a number from 0 to 1/);
+});
+
+test('a chat screenshot with the newest bubble at the bottom passes, and a two-width JSON capture reaches the judge whole', () => {
+  const j = judgeSetup(CORRECT);
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const chat = join(j.dir, 'chat-1440.png');
+  writeFileSync(chat, png(1440, 900, (x, y) => (y > 760 && y < 800 && x > 700 && x < 1380 ? [40, 110, 230] : [245, 245, 245])));
+  const widths = join(j.dir, 'widths.json');
+  const checks = [
+    { width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] },
+    { width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }, { name: 'after-scroll', newest_message: 'hello', at: 'bottom' }] },
+  ];
+  writeFileSync(widths, JSON.stringify({ checks }));
+  const r = j.dd('run', '--', `${cp(chat, 'chat-1440.png')} && ${cp(widths, 'widths.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const ok = j.dd('check', '--judge', '--outcome', 'the sent message shows as the newest bubble at the bottom of the thread', `${mixed}/chat-1440.png`, `${mixed}/widths.json`);
+  assert.equal(ok.code, 0, ok.out);
+  assert.deepEqual(toon(ok).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
+  const text = j.calls().find((c) => c.images === 0);
+  assert.ok(text, 'the JSON capture is sent as text');
+  const sent = JSON.parse(text.state.capture);
+  assert.deepEqual(sent, { checks }, 'every width and frame reaches the judge, none cut');
 });
 
 test('judge.enabled turns the judge on; text evidence is judged too; a failed check is not judged', () => {
