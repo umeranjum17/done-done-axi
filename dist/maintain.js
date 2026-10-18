@@ -442,7 +442,7 @@ const excerpt = (repo, tracked, s) => {
 export async function triage(cfg, choice, findings, flow, state, record) {
     if (!findings.length)
         return [];
-    const questions = Object.fromEntries(findings.map((f) => [f.id, { kind: 'choice', instructions: `Finding ${f.id} ${flow.question}`, options: flow.options, floor: 0.8, personReason: true }]));
+    const questions = Object.fromEntries(findings.map((f) => [f.id, { kind: 'choice', instructions: `Finding ${f.id} ${flow.question}`, options: flow.options, floor: cfg.judge.floor, personReason: true }]));
     const answers = await askJudge(cfg, await backend(cfg, choice, () => record, questions, TRIAGE_ATTEMPTS), choice, state, questions, {});
     return findings.flatMap((f) => {
         const a = answers[f.id];

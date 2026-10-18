@@ -449,7 +449,7 @@ const excerpt = (repo: string, tracked: string[], s: Source | undefined) => {
 // Triage (see Triage): the findings the judge does not answer `fix` for, each marked ask-user. A judge that does not answer throws.
 export async function triage(cfg: Config, choice: JudgeChoice, findings: Finding[], flow: Triage, state: unknown, record: string): Promise<Finding[]> {
   if (!findings.length) return [];
-  const questions: Record<string, Question> = Object.fromEntries(findings.map((f) => [f.id, { kind: 'choice', instructions: `Finding ${f.id} ${flow.question}`, options: flow.options, floor: 0.8, personReason: true }]));
+  const questions: Record<string, Question> = Object.fromEntries(findings.map((f) => [f.id, { kind: 'choice', instructions: `Finding ${f.id} ${flow.question}`, options: flow.options, floor: cfg.judge.floor, personReason: true }]));
   const answers = await askJudge(cfg, await backend(cfg, choice, () => record, questions, TRIAGE_ATTEMPTS), choice, state, questions, {});
   return findings.flatMap((f) => {
     const a = answers[f.id];

@@ -41,7 +41,7 @@ export type Config = {
   checks: { fix_title: string };
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or openai:key, set by the user ('' until they do); model: '' for that agent's agent_config model.
-  // floor: the check and receipt judge's own probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass; triage and the design check keep their own floors.
+  // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
   judge: { route: string; model: string; floor: number };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
@@ -364,7 +364,7 @@ judge:
   # route: answerer:opencode
   # The judge's model; empty means that agent's agent_config model, or Luna for pi.
   model: ""
-  # The check and receipt judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass. Triage and the design check keep their own floors.
+  # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.
   floor: 0.7
 `;
 }
