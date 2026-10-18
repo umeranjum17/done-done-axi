@@ -204,7 +204,7 @@ test('open and close a hand-driven run', () => {
   mkdirSync(base);
   cpSync(join(repo, folder, 'cli.log'), join(base, 'cli.log'));
   writeFileSync(join(repo, 'cli.log'), 'wrong same-named output\n');
-  assert.equal(dd('check', '--outcome', 'notes add works', 'cli.log').code, 3, 'default still reads cwd, not the citation base');
+  assert.equal(dd('check', '--outcome', 'notes add works', 'cli.log').code, 2, 'default still reads cwd, not the citation base');
   const checked = dd('--json', 'check', '--citation-base', base, '--outcome', 'notes add works', 'cli.log');
   assert.equal(checked.code, 0, checked.out);
   assert.deepEqual(json(checked).evidence, [join(base, 'cli.log')]);
@@ -213,7 +213,7 @@ test('open and close a hand-driven run', () => {
   assert.equal(missing.code, 2, missing.out);
   assert.match(missing.out, /ENOENT/);
   writeFileSync(join(base, 'stray.log'), 'unrecorded output\n');
-  assert.equal(dd('check', '--citation-base', base, '--outcome', 'notes add works', 'stray.log').code, 3, 'base does not bypass provenance');
+  assert.equal(dd('check', '--citation-base', base, '--outcome', 'notes add works', 'stray.log').code, 2, 'base does not bypass provenance');
   const body = join(dir, 'checks.md');
   writeFileSync(body, '## Checks\noutcome: notes add works\nrepro: n/a: no bug\nproof: no verify skill - done-done run --open\nevidence: cli.log\n');
   const receipt = dd('receipt', '--citation-base', base, '--from', body);
@@ -334,7 +334,8 @@ test('Checks block: form rules, not-proven and trusted config', () => {
   assert.match(dd('check', '--from', '../pr.md').out, /missing repro, evidence/);
   write('## Checks\noutcome: x\nrepro: n/a\nproof: no verify skill - `done-done run shots`\nevidence: not proven: no device here\n');
   const np = dd('check', '--from', '../pr.md');
-  assert.equal(np.code, 3, np.out);
+  assert.equal(np.code, 2, np.out);
+  assert.match(toon(np).error, /^check: the judge was not asked, so there is no verdict: not proven: no device here/);
   // "not proven" is never a pass: the old allowance is a config error, even from a trusted ref.
   writeFileSync(join(repo, '.done-done.yaml'), 'app: notes\nevidence:\n  root: .proof\nchecks:\n  not_proven: allow\n');
   sh('commit', '-qam', 'allow not proven');
@@ -1979,8 +1980,8 @@ test('check judges text evidence too, and a failed plain check stops with its ca
   assert.match(toon(bad).error, /^check: the judge was not asked, so there is no verdict: \.proof\/nope\.png: no such file/);
   writeFileSync(join(j.repo, 'stray.png'), screen(11));
   const stray = j.dd('check', '--outcome', 'three notes are saved', 'stray.png');
-  assert.equal(stray.code, 3, stray.out);
-  assert.deepEqual(toon(stray).judge.judged, [], 'a capture with no run record is never sent');
+  assert.equal(stray.code, 2, stray.out);
+  assert.match(toon(stray).error, /^check: the judge was not asked, so there is no verdict: stray\.png: not in any done-done run record/, 'a capture with no run record is never sent');
   assert.equal(j.calls().length, 2);
 });
 
@@ -2185,7 +2186,7 @@ test('verify on the answerer route: a malformed judge answer fails the run at it
   const calls = s.calls();
   assert.equal(calls.length, 1, 'the first unreadable answer stops the judge: no more requests');
   assert.ok(calls.every((c) => c.agent === 'opencode'));
-  assert.equal(r.status, 1, r.stdout);
+  assert.equal(r.status, 2, r.stdout);
   assert.deepEqual([o.status, o.result, o.steps.find((x) => x.name === 'judge').status], ['failed', undefined, 'failed'], 'a judge that does not answer gives no verdict');
   assert.match(o.reason, /^judge: the judge did not answer: the agent did not answer with valid JSON after 1 try/, r.stdout);
   assert.equal(spawnSync(process.execPath, [CLI, 'receipt', '--verify', t.head()], { cwd: t.repo, env: s.env }).status, 1, 'no receipt was written');
@@ -2572,9 +2573,9 @@ globalThis.fetch = async (url, init) => {
   assert.equal(toon(bad).status, 'awaiting_approval');
   assert.match(toon(bad).findings[0].what, /judge says wrong screen/);
   assert.equal(t.dd('respond', '--run', toon(bad).run_id, '--action', 'fix').code, 1);
-  // A refused key gives no verdict: the run fails at its judge step, and the reason names the real cause and where the key comes from.
+  // A refused key gives no verdict: the run stops at its judge step (exit 2), and the reason names the real cause and where the key comes from.
   const refused = verify(withKey('401'), 'the home screen shows the sync banner');
-  assert.equal(refused.code, 1, refused.out);
+  assert.equal(refused.code, 2, refused.out);
   assert.deepEqual([toon(refused).status, toon(refused).result], ['failed', undefined]);
   assert.match(toon(refused).reason, /^judge: the judge did not answer: http 401 \(check judge\.model vision-test-1 and the key in OPENAI_API_KEY\)/);
   assert.equal(spawnSync('grep', ['-rl', key, t.env.DONE_DONE_HOME, t.repo], { encoding: 'utf8' }).stdout, '', 'the key is written nowhere');
@@ -3346,7 +3347,7 @@ test('a receipt citing nothing the judge reads is no pass and writes no receipt'
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 1, 'no receipt was written');
 });
 
-test('verify on evidence the judge does not read waits for the user and writes no receipt', () => {
+test('verify on evidence the judge does not read stops with no verdict and writes no receipt', () => {
   const t = setup(`app: notes
 evidence:
   root: .proof
@@ -3355,8 +3356,9 @@ journeys:
     command: node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin', 'saved 3 notes')"
 `);
   const r = t.dd('verify', 'shots', '--outcome', 'three notes are saved', '--foreground');
-  assert.equal(r.code, 4, r.out);
-  assert.deepEqual([toon(r).status, toon(r).step], ['awaiting_approval', 'gate'], 'the user decides; it never passes');
+  assert.equal(r.code, 2, r.out);
+  assert.deepEqual([toon(r).status, toon(r).result], ['failed', undefined], 'the judge was not asked: no verdict, it never passes');
+  assert.match(toon(r).reason, /^check: the judge was not asked, so there is no verdict: no cited capture is one the judge reads/);
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 1, 'no receipt was written');
 });
 
@@ -5392,7 +5394,7 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
   const m = toon(r);
   if (triageFails) {
     // A judge that cannot sort the result gives no verdict: the run fails with the cause, and nothing waits at the gate.
-    assert.deepEqual([r.code, m.status], [1, 'failed'], r.out);
+    assert.deepEqual([r.code, m.status], [2, 'failed'], r.out);
     assert.match(m.reason, /^triage: judge: the judge did not answer: /);
     assert.deepEqual(m.steps.map((x) => [x.name, x.status]).filter(([n]) => n === 'triage' || n === 'fix' || n === 'gate' || n === 'receipt'), [['triage', 'failed'], ['fix', 'skipped'], ['gate', 'skipped'], ['receipt', 'skipped']]);
   } else {
@@ -5590,8 +5592,8 @@ test('without an inputs key the guard stays off and the run behaves as before', 
   assert.equal(a.code, 0, a.out, 'an added file with no inputs key still passes');
   assert.equal(JSON.parse(readFileSync(guardRun(t, toon(a).run_id), 'utf8')).guarded, undefined);
   const e = t.dd('verify', 'edit', '--outcome', 'home renders', '--foreground');
-  assert.equal(e.code, 1, e.out);
-  assert.match(toon(e).reason, /tracked files have uncommitted changes/, 'an edited file still fails only at the receipt, as before');
+  assert.equal(e.code, 2, e.out);
+  assert.match(toon(e).reason, /tracked files have uncommitted changes/, 'an edited file still stops only at the receipt, as before');
   assert.ok(!e.out.includes('input guard'), 'the guard says nothing with no inputs key');
 });
 
@@ -5707,7 +5709,7 @@ test('a dom block passes when every capture has a clean page-check record', () =
 
 test('a dom block stops the run naming the capture and each overflow, console error and failed request', () => {
   const { r, d, why } = domVerify('dom: {}\n', { light: CLEAN, dark: BROKEN });
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.deepEqual([d.status, d.result], ['failed', undefined], 'a failed page check is no verdict');
   assert.deepEqual(why.filter((w) => w.includes('home.dark.png')).map((w) => w.replace(/^.*home\.dark\.png: /, '')), [
     'http://127.0.0.1/home overflows the viewport horizontally (div#wide)',
@@ -5724,7 +5726,7 @@ test('dom allow lists and fail_on_overflow: false suppress those issues', () => 
 
 test('a dom block stops on each matrix cell whose capture has no page-check record, and refuses a bad block', () => {
   const { r, why } = domVerify('dom:\n', { light: CLEAN });
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.deepEqual(why.filter((w) => /page-check/.test(w)).map((w) => w.replace(/^.*\/(home\.)/, '$1')), ['home.dark.png: no page-check record home.dark.dom.json next to it (the dom block needs one per captured screen)']);
   const bad = setup(MATRIXED.replace('journeys:', 'dom:\n  allow_console: ["("]\njourneys:')).dd('run', 'cells');
   assert.equal(bad.code, 2, bad.out);
@@ -5734,7 +5736,7 @@ test('a dom block stops on each matrix cell whose capture has no page-check reco
 test('a dom block asks for a page-check record of a gif capture too', () => {
   const gif = () => `writeFileSync(root + '/home.' + cell + '.gif', Buffer.from('GIF89a;', 'latin1'));`;
   const { r, why } = domVerify('dom:\n', {}, gif);
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.deepEqual(why.filter((w) => /page-check/.test(w)).map((w) => w.replace(/^.*\/(home\.)/, '$1')).sort(), [
     'home.dark.gif: no page-check record home.dark.dom.json next to it (the dom block needs one per captured screen)',
     'home.light.gif: no page-check record home.light.dom.json next to it (the dom block needs one per captured screen)',
@@ -5767,7 +5769,7 @@ test('squashed text: the measurement flags a title wrapped one letter per line, 
     + '<div style="transform:scale(0.65);width:90px"><p>Revenue</p></div>');
   assert.deepEqual(limits.map((q) => [q.element, q.chars < 8, q.lines, q.words]), [['div.clip', true, 1, 3], ['i.long', false, 2, 1]]);
   const { r, d, why } = domVerify('dom:\n', { light: { ...CLEAN, squashed_text: measure(card(120)) }, dark: { ...CLEAN, squashed_text: narrow } });
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.deepEqual([d.status, d.result], ['failed', undefined]);
   assert.deepEqual(why.map((w) => w.replace(/^.*\/home\./, 'home.').replace(/[\d.]+ characters/, 'N characters')), [`home.dark.png: http://127.0.0.1/home squashed text: h3.title "Approved" is N characters wide (lines ${narrow[0].lines}, words 1)`]);
 });

@@ -109,7 +109,7 @@ try {
   dd('check', '--citation-base', repo, '--outcome', 'fixture home renders', shot);
   drive(2, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'missing.png');
   writeFileSync(join(base, 'stray.log'), 'unrecorded output\n');
-  drive(3, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'stray.log');
+  drive(2, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'stray.log');
   const body = join(tmp, 'checks.md');
   writeFileSync(body, '## Checks\noutcome: fixture home renders\nrepro: n/a: no bug\nproof: no verify skill - done-done run shots\nevidence: home.png\n');
   // Untracked counterfactual output must not change the caller's tracked identity.
