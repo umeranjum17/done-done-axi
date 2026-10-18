@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import { AGENTS, ANSWERER_JUDGES, CHEAP, type Config, EFFORT_FLAGS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
+import { AGENTS, ANSWERER_JUDGES, CHEAP, JUDGE_DEFAULT, type Config, EFFORT_FLAGS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
 
 // How done-done starts a coding agent for one step: a fresh, single-shot session that
@@ -354,7 +354,7 @@ export function selectJudge(cfg: Config, found: { agent: string; model: string }
   const keyed = Object.hasOwn(KEY_ROUTES, route);
   if (keyed && !cfg.judge.model) throw new UsageError(`judge: judge.route ${route} needs judge.model, a model your key can use that reads images`, 'Set judge.model in ~/.done-done/config.yaml');
   const agent = keyed ? route : route === 'claude-code' ? 'claude' : route.slice('answerer:'.length);
-  const model = cfg.judge.model || modelFor(cfg, agent);
+  const model = cfg.judge.model || (agent === 'pi' ? cfg.agent_config.pi?.model || JUDGE_DEFAULT : modelFor(cfg, agent));
   if (!model) throw new UsageError(`judge: no model for ${route}`, `Set judge.model in ~/.done-done/config.yaml`);
   // acp:claude-code is claude for independence; an author with no known model is never apart by model.
   const independence = keyed

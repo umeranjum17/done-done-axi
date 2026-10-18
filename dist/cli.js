@@ -124,7 +124,7 @@ const COMMANDS = {
             ['done-done init', 'write a minimal .done-done.yaml (evidence lives outside the repo) and, when absent, a commented ~/.done-done/config.yaml'],
             ['done-done init', 'have the agent write .agents/skills/verify-<app> from this repo\'s own proof paths (never overwrites; no agent, no skill)'],
             ['done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor', 'set the coding agent done-done starts and its model (in a terminal, init asks when none is set)'],
-            ['done-done init --judge claude --judge-model claude-haiku-5-5', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
+            ['done-done init --judge pi --judge-model openai-codex/gpt-6-luna', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
             ['done-done init --hook claude', 'also show this repo\'s done-done state at each Claude Code session start'],
             ['done-done init --hook codex', 'also show this repo\'s done-done state at each Codex session start'],
             ['done-done init --hook opencode', 'also add this repo\'s done-done state to the first message of each opencode session'],
