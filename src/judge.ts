@@ -14,14 +14,14 @@ import { downscaleToPng, type Verdict } from './media.js';
 
 // before: the same capture on the base ref (base_ref), judged with it as one pair, never against the outcome alone.
 export type Capture = { name: string; bytes: Buffer; sha256: string; media: Verdict; before?: Capture };
-export type Judged = { path: string; sha256: string; verdict: 'pass' | 'fail' | 'unsure'; reason: string; cached: boolean; before?: string };
+export type Judged = { path: string; sha256: string; verdict: 'pass' | 'fail' | 'unsure'; reason: string; seen?: string; cached: boolean; before?: string };
 
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
 const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 3; // bump when QUESTION, the options or the cache key change, so older cached verdicts are not reused
+export const VERSION = 4; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS: Record<string, string> = {
   correct: 'The screenshot shows the screen and state the outcome describes.',
   wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -233,7 +233,7 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const key = createHash('sha256').update(JSON.stringify([VERSION, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.sha256] : [])])).digest('hex');
     const hit = readCache(dir, key);
     if (['pass', 'fail', 'unsure'].includes(hit?.verdict) && typeof hit.reason === 'string') {
-      judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, cached: true });
+      judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, ...(hit.seen && { seen: hit.seen }), cached: true });
       continue;
     }
     const text = (x: Capture) => (x.bytes.length > MAX_TEXT ? `text is ${x.bytes.length} bytes, over the ${MAX_TEXT} bytes the judge reads, so capture only the output the outcome is about` : { text: x.bytes.toString('utf8') });
@@ -261,9 +261,10 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const a = answers.relevance;
     const options: Record<string, string> = shape.options;
     const reason = a.personReason || a.rationale || options[String(a.answer)] || '';
-    const verdict: Judged = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, cached: false }
-      : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, cached: false };
-    writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, route, model });
+    const seen = a.rationale ? { seen: a.rationale } : {};
+    const verdict: Judged = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, cached: false }
+      : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, cached: false };
+    writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, route, model });
     judged.push(verdict);
   }
   return { judged, notJudged, choice };

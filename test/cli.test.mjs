@@ -1703,6 +1703,7 @@ test('bare done-done in a repo with no config points at init', () => {
 // The relevance judge runs the user's own claude binary (agent_path_override.claude) with the user's sign-in. The stub
 // answers `auth status` and the one request the judge sends (stream-json with images, text without), and logs the HOME,
 // CLAUDE_CONFIG_DIR and argv it ran with, so a test can see what the judge was run with. Its state is in JUDGE_STUB.
+const STUB_RATIONALE = 'The notes list shows "Notes" at the top and no dialog.';
 function judgeSetup(answer, { loggedIn = true, projectYaml = JUDGED, floor } = {}) {
   const t = setup(projectYaml);
   // The config's author agent (opencode) must be installed on any host, so the receipt names it.
@@ -1741,11 +1742,11 @@ const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
 const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
 const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
 if (stub.stderr) process.stderr.write(stub.stderr);
-process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason } } }) + after);
+process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale } } }) + after);
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events, after, stderr }));
+  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', rationale: STUB_RATIONALE, events, after, stderr }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const floorLine = floor === undefined ? '' : `  floor: ${floor}\n`;
@@ -1808,10 +1809,13 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
   assert.equal(f.result, 'fail');
   assert.equal(f.judge.judged[0].verdict, 'fail');
   assert.match(f.findings[0].why, /judge says wrong screen/);
+  assert.equal(f.judge.judged[0].seen, STUB_RATIONALE);
+  assert.equal(f.findings[0].seen, STUB_RATIONALE);
   assert.match(f.help[0], /Capture the screen the outcome describes.*done-done run shots/);
   const cachedFail = j.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', files[0]);
   assert.equal(cachedFail.code, 1, 'a cached wrong-screen verdict still fails');
   assert.equal(toon(cachedFail).judge.judged[0].cached, true);
+  assert.equal(toon(cachedFail).judge.judged[0].seen, STUB_RATIONALE, 'a cached verdict keeps what the judge quoted');
   j.stub({ correct: 0.05, wrong: 0.05, unclear: 0.9 });
   const unsure = j.dd('check', '--judge', '--outcome', 'the sync finished in the background', files[0]);
   assert.equal(unsure.code, 3, unsure.out);
