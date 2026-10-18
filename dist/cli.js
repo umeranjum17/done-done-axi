@@ -11,7 +11,7 @@ import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectJudge } from './agents.js';
 import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, loadConfig, parseDuration, UsageError } from './config.js';
-import { backend, judge, onPath, quote, screen } from './judge.js';
+import { backend, judge, judgeable, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, inWorktree, maintainSteps, named, pathspec, readerProblem, repoState, triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
@@ -631,11 +631,8 @@ async function runCheck(argv, run) {
         const title = src.title ?? git(repo, 'log', '-1', '--format=%s');
         claim = claimFromChecks(src.body, title, repo, cfg, findings);
     }
-    if (claim?.notProven) {
-        const all = findings.concat([{ level: 'inconclusive', why: `not proven: ${claim.notProven}` }]);
-        const rep = report(all, [], { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], notProven: true });
-        return { code: rep.code, result: rep.result, claim: claim?.outcome, files: [], cited: [], head: now, findings: all };
-    }
+    if (claim?.notProven)
+        throw new UsageError(`check: the judge was not asked, so there is no verdict: not proven: ${claim.notProven}`, 'Capture real proof, replace "not proven:" with its files, and re-run this check');
     const files = (claim?.files ?? []).map((name) => values['citation-base'] === undefined ? name : resolve(values['citation-base'], name));
     const records = loadRecords(cfg);
     const seen = new Map();
@@ -766,6 +763,8 @@ async function runCheck(argv, run) {
     }
     let judgeBlock;
     let judgeLevel;
+    if (!captures.some(judgeable))
+        throw new UsageError(`check: the judge was not asked, so there is no verdict: ${[...findings.map((f) => f.why), 'no cited capture is one the judge reads (a PNG or JPEG screen, or a text capture, from a done-done run)'].join('; ')}`, 'Cite a screen or a text capture of the outcome from a done-done run, then re-run this check');
     run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
     const j = await judge(cfg, () => selectJudge(cfg, run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg)), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
     // The judge's next step leads the help when its verdict decides the result.
@@ -779,7 +778,7 @@ async function runCheck(argv, run) {
     const rows = cap(j.judged);
     const { choice } = j;
     const judged = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), judged: rows.items.map(({ sha256, ...r }) => r) };
-    if (choice && j.judged.length) {
+    if (choice) {
         const byName = new Map(captures.map((c) => [c.name, receiptPath(repo, cfg, cite(c.name))]));
         judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byName.get(r.path), sha256: r.sha256, verdict: r.verdict })) };
     }
@@ -788,9 +787,6 @@ async function runCheck(argv, run) {
     if (j.notJudged.length)
         judged.not_judged = j.notJudged;
     judged.note = 'PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not';
-    // A pass needs the judge to have read a capture: plain checks alone never pass.
-    if (!j.judged.length)
-        findings.push({ level: 'inconclusive', why: 'the judge read no capture (it reads PNG and JPEG screens and text captures such as logs, JSON and CLI output), so nothing here shows the outcome' });
     const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel });
     if (rep.code === PASS) {
         mkdirSync(dirname(ledger), { recursive: true });
@@ -933,9 +929,7 @@ function staleness(repo, cfg, from, to) {
 }
 // Quote an argument only when a shell would split it.
 const arg = (a) => (/^[\w./@:+-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`);
-function checkHelp(code, findings, files, { cfg, repo, claim, source, citationBase, notProven, judgeLevel }) {
-    if (notProven)
-        return ['Capture real proof, replace "not proven:" with its files, and re-run this check'];
+function checkHelp(code, findings, files, { cfg, repo, claim, source, citationBase, judgeLevel }) {
     if (judgeLevel === 'fail' && code === FAIL)
         return [`Capture the screen the outcome describes, then re-run this check: ${captureHint(cfg)}`];
     if (judgeLevel && code === INCONCLUSIVE)
@@ -1623,7 +1617,7 @@ async function runSteps(dir) {
                 s.status = 'skipped';
         const name = step?.name ?? 'setup';
         const text = errorText(e);
-        Object.assign(run, { status: 'failed', reason: text.startsWith(`${name}:`) ? text : `${name}: ${text}` });
+        Object.assign(run, { status: 'failed', reason: text.startsWith(`${name}:`) ? text : `${name}: ${text}`, ...(e instanceof UsageError && { stopped: true }) });
         if (step)
             set(step, 'failed');
         else {
@@ -1805,7 +1799,7 @@ function showRun(dir, cfg, command, gone = false) {
         reason = `the runner died at step ${at?.name}${run.runner ? ` (pid ${run.runner.pid}, last heartbeat ${beat}s ago)` : ' before it started'}`;
         reapJourney(dir, run);
     }
-    const code = status === 'pending' || status === 'running' || status === 'awaiting_approval' ? WAITING : status === 'cancelled' || status === 'failed' || run.result === 'fail' || run.result === 'drift' || (run.kind === 'verify' && (run.result === 'changed' || run.result === 'blocked')) ? FAIL : run.result === 'inconclusive' || run.result === 'blocked' ? INCONCLUSIVE : PASS;
+    const code = status === 'pending' || status === 'running' || status === 'awaiting_approval' ? WAITING : run.stopped && status === 'failed' ? USAGE : status === 'cancelled' || status === 'failed' || run.result === 'fail' || run.result === 'drift' || (run.kind === 'verify' && (run.result === 'changed' || run.result === 'blocked')) ? FAIL : run.result === 'inconclusive' || run.result === 'blocked' ? INCONCLUSIVE : PASS;
     const drive = run.journey ?? (run.feature ? `--feature ${arg(run.feature)}` : '');
     const again = run.kind === 'maintain' ? 'done-done maintain' : `done-done verify ${drive ? `${drive} ` : ''}--outcome ${arg(run.claim)}${run.claim_id ? ` --claim-id ${arg(run.claim_id)}` : ''}`;
     const findings = cap(run.findings ?? []);

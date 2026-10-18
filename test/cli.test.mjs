@@ -168,11 +168,11 @@ test('evidence goes stale when HEAD moves past code, but not past ignored paths'
   assert.match(r.out, /evidence is for commit \w+, HEAD is \w+ \(changed: src\/app\.js\)/);
 });
 
-test('files outside any run record are inconclusive; a failed or dirty run fails', () => {
+test('files outside any run record stop before the judge; a failed or dirty run fails', () => {
   const { dir, repo, dd } = setup('app: notes\nevidence:\n  root: .proof\njourneys:\n  broken:\n    command: node make-shots.mjs ${RUN_ID} && echo FAIL notes.test.js timed out && exit 4\n');
   const r = dd('check', '--outcome', 'hand made', join(dir, 'screen.png'));
-  assert.equal(r.code, 3, r.out);
-  assert.match(r.out, /not in any done-done run record/);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /the judge was not asked, so there is no verdict: .*not in any done-done run record/);
   const none = dd('run', '--', 'true');
   assert.equal(none.code, 1, none.out);
   assert.equal(toon(none).reason.split(';')[0], `the run wrote no files into its folder .proof/${toon(none).run_id}`, 'the reason names the run folder repo-relative');
@@ -234,7 +234,7 @@ test('two runs in the same second at one commit get distinct ids and folders', (
   assert.match(dd('run', '--close', b.run_id).out, /wrote no files/);
 });
 
-test('a file claimed by more than one legacy run record is inconclusive', () => {
+test('a file claimed by more than one legacy run record stops before the judge', () => {
   const { repo, dd, head } = setup();
   mkdirSync(join(repo, '.proof', '.done-done', 'runs'), { recursive: true });
   writeFileSync(join(repo, '.proof', 'legacy.log'), 'added: milk\n');
@@ -244,7 +244,7 @@ test('a file claimed by more than one legacy run record is inconclusive', () => 
     writeFileSync(join(repo, '.proof', '.done-done', 'runs', `${id}.json`), JSON.stringify(rec));
   }
   const r = dd('check', '--outcome', 'notes add works', '.proof/legacy.log');
-  assert.equal(r.code, 3, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.match(r.out, /claimed by more than one run \(old-a, old-b\)/);
 });
 
@@ -392,8 +392,8 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   assert.equal(dd('run', '--close', id).code, 0);
   // A video that decodes is still no pass on its own: the judge reads no video, so nothing judged shows the outcome.
   const clip = dd('check', '--outcome', 'clip plays', `.proof/${id}/clip.mp4`);
-  assert.equal(clip.code, 3, clip.out);
-  assert.match(clip.out, /the judge read no capture/);
+  assert.equal(clip.code, 2, clip.out);
+  assert.match(clip.out, /the judge was not asked, so there is no verdict: .*no cited capture is one the judge reads/);
   const cut = dd('check', '--outcome', 'cut clip', `.proof/${id}/cut.mp4`);
   assert.equal(cut.code, 2, cut.out);
   assert.match(cut.out, /does not decode/);
@@ -546,14 +546,14 @@ test('evidence edited after its run fails as changed after that run', () => {
   assert.match(verify.out, new RegExp(`changed after run ${id}`));
 });
 
-test('a not-proven claim is never a pass: check is inconclusive and receipt writes nothing', () => {
+test('a not-proven claim is never a pass: check stops before the judge and receipt writes nothing', () => {
   const { repo, dd, head } = setup();
   writeFileSync(join(repo, '..', 'pr.md'), '## Checks\noutcome: x\nrepro: n/a\nproof: no verify skill - `done-done run shots`\nevidence: not proven: no device here\n');
   const h = head();
-  assert.equal(dd('check', '--from', '../pr.md', '--trusted-ref', 'HEAD').code, 3, 'not proven is inconclusive');
+  assert.equal(dd('check', '--from', '../pr.md', '--trusted-ref', 'HEAD').code, 2, 'not proven stops before the judge');
   const r = dd('receipt', '--from', '../pr.md', '--trusted-ref', 'HEAD');
-  assert.equal(r.code, 3, r.out);
-  assert.match(r.out, /did not pass/);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /the judge was not asked, so there is no verdict: not proven: no device here/);
   assert.ok(!existsSync(join(repo, '.proof', '.done-done', 'receipts', `${h}.json`)), 'no receipt file is produced');
   const v = dd('receipt', '--verify', h);
   assert.equal(v.code, 1, v.out);
@@ -1339,20 +1339,22 @@ test('a noisy journey leaves run stdout as one document; its words go to stderr'
 });
 
 test('--full lists every finding; the compact default truncates and says how many it dropped', () => {
-  const { dir, dd } = setup();
-  // Files in no run record are inconclusive, one finding each, and the judge reads none of them.
+  const { dir, dd, shots } = setup();
+  const { files } = shots();
+  // Files in no run record are inconclusive, one finding each; the judged screens pass, so the result is inconclusive.
   const stray = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n) => join(dir, `${n}.log`));
   for (const f of stray) writeFileSync(f, `${f}\n`);
-  const compact = dd('check', '--outcome', 'many unrecorded', ...stray);
+  const cited = [...files, ...stray];
+  const compact = dd('check', '--outcome', 'many unrecorded', ...cited);
   assert.equal(compact.code, 3, compact.out);
   const c = toon(compact);
   assert.equal(c.evidence.length, 5, 'compact shows the first five evidence files');
-  assert.equal(c.evidence_omitted, 2);
+  assert.equal(c.evidence_omitted, cited.length - 5);
   assert.equal(c.findings.length, 5, 'compact shows the first five findings');
-  assert.equal(c.findings_omitted, 3);
-  const f = toon(dd('check', '--full', '--outcome', 'many unrecorded', ...stray));
-  assert.equal(f.evidence.length, 7, '--full shows every evidence file');
-  assert.equal(f.findings.length, 8, '--full shows every finding');
+  assert.equal(c.findings_omitted, 2);
+  const f = toon(dd('check', '--full', '--outcome', 'many unrecorded', ...cited));
+  assert.equal(f.evidence.length, cited.length, '--full shows every evidence file');
+  assert.equal(f.findings.length, 7, '--full shows every finding');
   assert.equal(f.findings_omitted, undefined);
   assert.equal(f.evidence_omitted, undefined);
 });
@@ -1561,13 +1563,24 @@ test('a check that stops before the judge keeps every cause in the run store, no
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'dup journey');
   const r = t.dd('verify', 'dup', '--outcome', 'the copies render', '--foreground');
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   const s = toon(r);
   assert.deepEqual([s.status, s.result], ['failed', undefined], 'a stopped check is no verdict');
   assert.equal(s.steps.find((x) => x.name === 'judge').status, 'skipped');
   const rec = JSON.parse(readFileSync(join(t.env.DONE_DONE_HOME, 'runs', 'notes', s.run_id, 'run.json'), 'utf8'));
   assert.match(rec.reason, /^check: the judge was not asked, so there is no verdict: /);
   assert.equal(rec.reason.match(/byte-identical to/g).length, 6, 'run.json keeps all six causes');
+});
+
+test('a judge that does not answer fails a verify run with exit 2 and writes no receipt', () => {
+  const j = judgeSetup('error');
+  const r = j.dd('verify', 'shots', '--outcome', 'home and settings render', '--foreground');
+  assert.equal(r.code, 2, r.out);
+  const s = toon(r);
+  assert.equal(s.status, 'failed');
+  const rec = JSON.parse(readFileSync(join(j.env.DONE_DONE_HOME, 'runs', 'notes', s.run_id, 'run.json'), 'utf8'));
+  assert.match(rec.reason, /^judge: the judge did not answer: /);
+  assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
 });
 
 test('verify waits until the run ends by default', () => {
@@ -2010,14 +2023,14 @@ test('verify and rerun always judge, and the receipt keeps the judge', () => {
 });
 
 
-test('a capture the judge cannot read is no pass: receipt is inconclusive and writes nothing', () => {
+test('a capture the judge cannot read stops before the judge and writes no receipt', () => {
   const j = judgeSetup(CORRECT);
   const r = j.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')"`);
   assert.equal(r.code, 0, r.out);
   const log = `.proof/${toon(r).run_id}/session.bin`;
   const rec = j.dd('receipt', '--outcome', 'three notes are saved', log);
-  assert.equal(rec.code, 3, rec.out);
-  assert.match(toon(rec).findings.map((f) => f.why).join('\n'), /the judge read no capture/);
+  assert.equal(rec.code, 2, rec.out);
+  assert.match(rec.out, /the judge was not asked, so there is no verdict: .*no cited capture is one the judge reads/);
   assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
   assert.equal(j.calls().length, 0, 'a file the judge does not read is never sent to the model');
 });
@@ -3328,8 +3341,8 @@ test('a receipt citing nothing the judge reads is no pass and writes no receipt'
   assert.equal(r.code, 0, r.out);
   const log = `.proof/${toon(r).run_id}/session.bin`;
   const rec = t.dd('receipt', '--outcome', 'three notes are saved', log);
-  assert.equal(rec.code, 3, rec.out);
-  assert.deepEqual([toon(rec).result, toon(rec).judge.not_judged], ['inconclusive', [log]]);
+  assert.equal(rec.code, 2, rec.out);
+  assert.match(rec.out, /the judge was not asked, so there is no verdict: .*no cited capture is one the judge reads/);
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 1, 'no receipt was written');
 });
 
