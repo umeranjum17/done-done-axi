@@ -5,7 +5,7 @@ description: Drive the done-done CLI the way a user does and capture proof it wo
 
 # verify-done-done
 
-Scaffolded by `done-done init` from this repo's own files (surface: CLI). Where a step says to find something, the first drive finds it and records it there.
+Written by hand from this repo's own files (surface: CLI). Where a step says to find something, the first drive finds it and records it there.
 
 ## Launch
 

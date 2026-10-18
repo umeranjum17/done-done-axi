@@ -53,7 +53,7 @@ const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/ru
   ignored files copied in, and verify runs again there, up to n times. Result: changed (the fix on a done-done/verify-<run-id>
   branch, your HEAD still fails; exit 1) or blocked (dirty checkout, a guard, or every attempt used; exit 1)`;
 const MAINTAIN_TEXT = `maintain reads the verify skill and the source; HEAD, git status and the content of changed files must be the same before and after.
-  locate: the verify skill (.agents/skills/verify-<app>/SKILL.md); none: blocked, create it with done-done init
+  locate: the verify skill (.agents/skills/verify-<app>/SKILL.md); none: blocked, write it by hand
   hygiene: every local link in the skill resolves; features/README.md lists each features/*.md file once
   source-wave: one fresh read-only reader per feature file at the configured agent (agent, agent_config) explains it from source
   reconcile: each file:line the skill or a reader cites must exist (a bare file name matches a tracked file); one tool-less call
@@ -122,7 +122,6 @@ const COMMANDS = {
     init: {
         usage: [
             ['done-done init', 'write a minimal .done-done.yaml (evidence lives outside the repo) and, when absent, a commented ~/.done-done/config.yaml'],
-            ['done-done init', 'scaffold .agents/skills/verify-<app> from this repo (never overwrites)'],
             ['done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor', 'set the coding agent done-done starts and its model (in a terminal, init asks when none is set)'],
             ['done-done init --judge claude --judge-model claude-haiku-5-5', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
             ['done-done init --hook claude', 'also show this repo\'s done-done state at each Claude Code session start'],
@@ -1195,7 +1194,7 @@ function skillFeatures(repo, cfg) {
 async function agentDrive(repo, cfg, feature) {
     const skill = join(cfg.skill, 'SKILL.md');
     if (!existsSync(join(repo, skill)))
-        throw new UsageError(`verify needs a journey or a verify skill to drive the app, and this repo has neither (no ${skill})`, 'Scaffold the verify skill: done-done init, or record a journey: done-done init --journey <name> -- <command that drives the real app>');
+        throw new UsageError(`verify needs a journey or a verify skill to drive the app, and this repo has neither (no ${skill})`, 'Write the verify skill by hand, with a launch that never touches real accounts or your own state, or record a journey: done-done init --journey <name> -- <command that drives the real app>');
     const features = skillFeatures(repo, cfg);
     const name = feature?.replace(/^features\//, '').replace(/\.md$/, '');
     if (name !== undefined && !features.includes(name))
@@ -1213,7 +1212,7 @@ async function agentDrive(repo, cfg, feature) {
 // With a verify skill and no journey, the next step can be an agent drive.
 const driveHint = (repo, cfg) => existsSync(join(repo, cfg.skill, 'SKILL.md'))
     ? ['Have your coding agent drive a verify skill feature: done-done verify --outcome "<what a user can now do>" [--feature <name>]'] : [];
-// The page-check record shape and how to collect it with chrome-devtools-axi, for the drive prompt and the verify skill scaffold.
+// The page-check record shape and how to collect it with chrome-devtools-axi, for the drive prompt.
 const DOM_RECORD = '{"url": "<page url>", "overflow": <true when content is wider than the viewport>, "overflowing": ["<element>", ...], "console_errors": ["<message>", ...], "failed_requests": [{"url": "<url>", "status": <HTTP status, 0 when none>}], "squashed_text": [{"element": "<element>", "text": "<text>", "chars": <width in characters>, "lines": <n>, "words": <n>}]}'
     + `; with your browser tool (for example chrome-devtools-axi): overflow from eval "() => { const w = document.documentElement.clientWidth; return { overflow: document.documentElement.scrollWidth > w, overflowing: [...document.querySelectorAll('body *')].filter((e) => e.getBoundingClientRect().right > w + 1).slice(0, 10).map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '')) } }", console errors from console --type error, failed requests (status 400 or more, or no response) from network, squashed_text from eval "${SQUASHED_TEXT}" exactly as written (in every frame, an embedded one too)`;
 function drivePrompt(run, at, cfg, evidence, scratch, base = '') {
@@ -1896,7 +1895,7 @@ function showRun(dir, cfg, command, gone = false) {
                                     : run.result === 'drift' ? [`Fix the findings in ${cfg.skill} (--full lists them all), commit, then run again: ${again}`, `Or let done-done's agent fix them on a branch: set auto_fix: { maintain: 2 } in .done-done.yaml, then run again: ${again}`]
                                         : /^ask-user:/.test(run.reason ?? '') ? ['Ask the user about each ask-user finding: is the product or the skill wrong? Never decide it for them', `Product wrong: fix the product (maintain never edits product code). Skill wrong: fix ${cfg.skill}, commit, then run again: ${again}`]
                                             : /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${run.run_id}`, `Fix the findings in ${cfg.skill} by hand, commit, then run again: ${again}`]
-                                                : /^locate: no verify skill/.test(run.reason ?? '') ? ['Create the verify skill: done-done init']
+                                                : /^locate: no verify skill/.test(run.reason ?? '') ? ['Write the verify skill by hand, with a launch that never touches real accounts or your own state']
                                                     : /^locate:/.test(run.reason ?? '') ? [`Make ${cfg.skill} a real folder inside the repository (not a link), commit, then run again: ${again}`]
                                                         : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, `Fix the cause, then run again: ${again}`])
                                     : code === PASS ? [`Verify this receipt (CI or merge): done-done receipt --verify ${rec.commit}`]
@@ -2432,242 +2431,11 @@ function ensureIgnored(repo, rel) {
     appendFileSync(file, `${text && !text.endsWith('\n') ? '\n' : ''}${entry}\n`);
     return true;
 }
-// `init` also scaffolds the project's verify skill from the repo's own files: a port of the
-// the create-verification-skill interview (surface, run, drive, observe, isolate).
-// Every line is an action: a detected handle gets concrete drive and capture steps, and a blank detection cannot
-// fill gets the steps to find it and record it there, never an invented command. An existing skill is never
-// overwritten, so re-run is idempotent.
-function headText(p, max = 12000) {
-    try {
-        if (!lstatSync(p).isFile())
-            return '';
-        return readFileSync(p, 'utf8').slice(0, max);
-    }
-    catch {
-        return '';
-    }
-}
-// Where a drive stops and how it records what it found, for every step that asks it to find something.
-const RECORD = 'once the drive works, write what you found here in place of this instruction (after the drive: a `done-done verify` drive changes no repo file)';
-const slug = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'feature';
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'vendor', 'coverage', 'target', 'venv', '__pycache__', 'bower_components']);
-const SOURCE_FILE = /\.(m?[jt]s|py|go|rb|rs|php)$/;
-// Source files under `dir`, skipping hidden dirs (.git, .venv, .next, ...) and dependency and build output. The cap
-// applies while walking, so a large vendored tree never fills the sample before the app's own files are reached.
-function sourceFiles(dir, max, out = []) {
-    try {
-        for (const e of readdirSync(dir, { withFileTypes: true })) {
-            if (out.length >= max)
-                break;
-            const p = join(dir, e.name);
-            if (e.isDirectory()) {
-                if (!e.name.startsWith('.') && !SKIP_DIRS.has(e.name) && !(e.name === 'components' && dir.endsWith(`${sep}src`)))
-                    sourceFiles(p, max, out);
-            }
-            else if (e.isFile() && SOURCE_FILE.test(e.name))
-                out.push(p);
-        }
-    }
-    catch {
-        // An unreadable directory contributes nothing; the scan runs on the rest.
-    }
-    return out;
-}
-// Surface, run, drive, observe and features read from package.json, Makefile, routes,
-// CLI commands and docs: the repo's own files, never invention.
-function detectApp(repo) {
-    let pkg = {};
-    try {
-        pkg = JSON.parse(headText(join(repo, 'package.json'), Infinity) || '{}');
-    }
-    catch {
-        pkg = {};
-    }
-    if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg))
-        pkg = {};
-    const scripts = pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
-    const deps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
-    const has = (...names) => names.some((n) => deps.includes(n));
-    const bins = typeof pkg.bin === 'string' ? [pkg.bin] : pkg.bin && typeof pkg.bin === 'object' ? Object.values(pkg.bin).filter((v) => typeof v === 'string') : [];
-    const make = headText(join(repo, 'Makefile'), 4000);
-    let text = `${scripts.dev ?? ''}\n${scripts.start ?? ''}\n${make}`;
-    for (const f of sourceFiles(repo, 40))
-        text += `\n${headText(f, 6000)}`;
-    const routes = [...text.matchAll(/\b(app|router|server|api|fastify|routes|r)\.(get|post|put|patch|delete|del)\(\s*['"`](\/[^'"`\s]*)/g)]
-        .map((m) => `${m[2] === 'del' ? 'DELETE' : m[2].toUpperCase()} ${m[3]}`)
-        .filter((r, i, a) => a.indexOf(r) === i);
-    const commands = [...text.matchAll(/\.command\(\s*['"`]([^'"`\s\]]+)/g)]
-        .map((m) => m[1])
-        .filter((c, i, a) => a.indexOf(c) === i);
-    const browserTests = has('playwright', '@playwright/test', 'cypress', 'puppeteer');
-    const web = browserTests || has('react', 'next', 'vue', 'nuxt', 'svelte', 'solid', 'vite', 'webpack');
-    const cliish = bins.length > 0 || commands.length > 0 || has('commander', 'yargs', 'oclif', 'cac');
-    const api = routes.length > 0 || has('express', 'fastify', 'koa', 'hono');
-    const surface = web ? 'web UI' : cliish ? 'CLI' : api ? 'API/service' : 'app (unrecognized surface)';
-    const launch = scripts.dev ? `npm run dev (${scripts.dev})`
-        : scripts.start ? `npm start (${scripts.start})`
-            : bins.length ? `node ${bins[0]} --help`
-                : make ? `Read the Makefile for the target that starts the app (dev, run, serve or start) and start it with \`make <target>\`; ${RECORD}.`
-                    : `No start script, bin or Makefile was found: read README.md and the entry file for how the app starts, and start it; ${RECORD}.`;
-    const port = `${scripts.dev ?? ''} ${scripts.start ?? ''}`.match(/(?:localhost:|--port[= ])(\d{4,5})/)?.[1];
-    const driver = browserTests ? 'browser' : cliish ? 'tty' : api ? 'curl' : web ? 'browser' : 'shell';
-    const ready = port && (driver === 'browser' || driver === 'curl')
-        ? `\`curl -sS -o /dev/null http://localhost:${port}/\` exits 0. BASE below is http://localhost:${port}`
-        : driver === 'browser' || driver === 'curl'
-            ? `the launch output prints the app URL and \`curl -sS -o /dev/null <that URL>\` exits 0. BASE below is that URL; ${RECORD}`
-            : 'the launch command runs with no error (exit 0, or a prompt waiting for input)';
-    const harness = browserTests ? 'browser/CDP (Playwright)' : {
-        tty: 'tmux/PTY',
-        curl: 'plain HTTP (curl)',
-        browser: 'a browser tool (for example chrome-devtools-axi)',
-        shell: 'a shell (run the launch command and read its output)',
-    }[driver];
-    const observe = web
-        ? 'screenshots of the resulting state the outcome is about'
-        : cliish
-            ? 'terminal transcripts, exit codes and side effects (files written, rows inserted)'
-            : api
-                ? 'response bodies, status codes and side effects (rows inserted, messages sent)'
-                : 'screenshots of a page it shows, or its output saved as text when the outcome is text';
-    const isolate = web || port
-        ? 'Drive one instance at a time unless .done-done.yaml has an instance block, which gives each run its own port and HOME'
-        : 'each run uses its own invocation; never drive a shared session the user owns';
-    const runCli = (args) => bins.length ? `\`node ${bins[0]} ${args}\``
-        : scripts.start ? `\`npm start -- ${args}\``
-            : `the launch command from Launch with \`${args}\``;
-    const shot = (s) => `screenshot the resulting page to $DONE_DONE_EVIDENCE_ROOT/${s}.png`;
-    const saved = (s) => `save the output and exit status to $DONE_DONE_EVIDENCE_ROOT/${s}.txt`;
-    const open = 'open BASE in the browser, take a snapshot and act on the page by its visible labels';
-    const params = 'replace each :param or ${...} in the path with a real value from the handler or seed data';
-    const spends = 'a route that charges money or calls a paid outside service must be declared under `spends:` and never sent without the user approval';
-    const found = [
-        ...(driver === 'browser' || driver === 'curl' ? routes : []).map((r) => {
-            const [method, path] = r.split(' ');
-            const writes = method === 'GET' ? '' : `; ${spends}`;
-            const drive = driver === 'curl' ? `send it with \`curl -sS -X ${method} -w '\\nstatus %{http_code}\\n' "BASE${path}"\`, with the body its handler reads; ${params} (search the source for "${path}")${writes}`
-                : method === 'GET' ? `${open.replace('BASE', `BASE${path}`)}; ${params}`
-                    : `find the form or button that sends ${r} (search the source for "${path}"), ${params}, then fill and submit it as a user does${writes}`;
-            return { base: slug(r), title: r, reach: `the ${r} route`, drive };
-        }),
-        ...(driver === 'tty' ? commands : []).map((c) => ({ base: slug(c), title: `\`${c}\` command`, reach: `the CLI run with \`${c}\``, drive: `run ${runCli(`${c} --help`)} to learn its arguments, then ${runCli(`${c} <arguments>`)} as a user does` })),
-    ];
-    const fallback = {
-        browser: { title: 'Main page', reach: 'BASE, the first page a user opens', drive: open },
-        curl: { title: 'Main request', reach: 'the first endpoint README.md shows a client calling', drive: `read README.md and the entry file for the first endpoint a client calls, then send it with \`curl -sS -X <METHOD> -w '\\nstatus %{http_code}\\n' "BASE<path>"\`, with the body its handler reads; ${spends}; ${RECORD}` },
-        tty: { title: 'Main command', reach: 'what README.md says a user runs first', drive: `read README.md for the first command a user runs, then run it with its arguments as a user does; ${RECORD}` },
-        shell: { title: 'Main journey', reach: 'what README.md says a user runs first', drive: `read README.md and the entry file for what a user runs first, then run it in a shell as a user does; ${RECORD}` },
-    }[driver];
-    if (!found.length)
-        found.push({ base: 'main', ...fallback });
-    const features = [];
-    for (const f of found) {
-        let s = f.base;
-        for (let n = 2; features.some((g) => g.slug === s); n++)
-            s = `${f.base}-${n}`;
-        features.push({ slug: s, title: f.title, reach: f.reach, drive: f.drive, capture: (driver === 'browser' ? shot : saved)(s) });
-    }
-    const shown = features.slice(0, 5);
-    return { surface, launch, ready, harness, observe, isolate, features: shown, omitted: features.length - shown.length };
-}
-function verifySkillMd(app, d) {
-    const name = `verify-${app}`;
-    const found = [
-        ...d.features.map((f) => `- ${f.title}: ${f.reach}`),
-        ...(d.omitted ? [`- ${d.omitted} more found and not listed; add them by hand or run maintain later.`] : []),
-    ];
-    return `---
-name: ${name}
-description: Drive the ${app} ${d.surface} the way a user does and capture proof it works. Use when proving a ${app} change, capturing evidence, or keeping the feature map honest.
----
-
-# ${name}
-
-Scaffolded by \`done-done init\` from this repo's own files (surface: ${d.surface}). Where a step says to find something, the first drive finds it and records it there.
-
-## Launch
-
-${d.launch}
-
-Ready when ${d.ready}. Tear down what you started; never kill by process name.
-When the repo's .done-done.yaml has an instance block, done-done already runs the app at $DONE_DONE_BASE_URL (its own port and HOME): BASE is then that URL, never a hard-coded port.
-
-## Doctor
-
-Read-only: is this instance worth driving? Process up, right build, port owned by us, auth valid. ${d.isolate}.
-
-## Drive
-
-Harness: ${d.harness}. Prefer the repo's real handles (routes, commands, labels) over coordinates:
-
-${found.join('\n')}
-
-## Evidence
-
-Capture ${d.observe}. Exercise the real user path, not internal setters; done-done's judge checks every capture in the run folder against the outcome, so save only captures of the resulting state there and keep any of earlier steps outside it; verify side effects alongside what is visible. Evidence goes to the run folder \`done-done run\` prints. Every drive uses these done-done primitives:
-
-- Matrix: when .done-done.yaml sets a matrix block, each journey runs once per theme x width x form cell with DONE_DONE_THEME, DONE_DONE_WIDTH, DONE_DONE_FORM and DONE_DONE_CELL set: name each capture with its cell suffix, so every cell is captured or skipped with a reason, never silently missing.
-- DOM: when .done-done.yaml sets a dom block, write next to each capture its page-check record, the capture's name with .dom.json for its extension (home.dark.390w.png -> home.dark.390w.dom.json): ${DOM_RECORD}.
-- Text: for a text outcome, save the CLI output, log or JSON itself as a .txt, .log or .json capture; the check needs it to hold text and JSON to parse.
-- Secrets: never write a secret (key, token, password, Bearer header) into evidence or logs; verify scans them and fails the run on a hit.
-- Spends: a journey with \`spends:\` runs only after the user approves the spend at verify's gate; never run it another way.
-- Before/after: with \`base_ref\` set, verify also drives the base ref into the run folder's before/; save the same captures under the same names there, so each pairs with its base capture.
-
-## Cleanup
-
-Stop the instances this run started and remove scratch state. Evidence survives cleanup: never delete the run folder.
-`;
-}
-function verifyFeatureMd(app, d, f) {
-    return `# ${f.title}\n\nPart of the ${app} verification map; reached at ${f.reach}.\n\n## Sub-features\n\nList each thing a user can do here; ${RECORD}.\n\n## How to get to it (user POV)\n\n${f.reach}.\n\n## Driving it with ${d.harness}\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${f.drive[0].toUpperCase()}${f.drive.slice(1)}.\n3. Capture: ${f.capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n## Gotchas\n\nWrite here what surprised a drive (a slow load, a login wall, a label that moved) and what worked instead, after the drive.\n`;
-}
-function verifyFeaturesMd(app, d) {
-    const index = d.features.map((f) => `- [${f.title}](${f.slug}.md): ${f.reach}`).join('\n');
-    const more = d.omitted ? `\n\n${d.omitted} more found and not listed; add them by hand or run maintain later.` : '';
-    return `# ${app} features\n\nThe repo's maintained verification map; a proof that drives one entry point is incomplete when this lists others.\n\n${index}${more}\n`;
-}
-// The first existing component on the way from the repo to `p` that is a symlink, if any: a cloned repo's symlink
-// would redirect the scaffold's writes out of the repo.
-function symlinkOnPath(repo, p) {
-    let cur = repo;
-    for (const part of relative(repo, p).split(sep)) {
-        cur = join(cur, part);
-        try {
-            if (lstatSync(cur).isSymbolicLink())
-                return cur;
-        }
-        catch {
-            return undefined;
-        }
-    }
-    return undefined;
-}
-// Writes only missing files; an existing skill is left byte-identical. SKILL.md is written last, so it marks a
-// finished scaffold. Every write target is checked before the first write.
+// `init` writes no verify skill from a guess at the repo: a launch read off the start script ran the real app on the
+// owner's own accounts and state. An existing skill is never touched.
 function scaffoldVerify(repo, cfg) {
-    const dir = join(repo, cfg.skill);
-    if (existsSync(join(dir, 'SKILL.md')))
-        return 'unchanged';
-    const d = detectApp(repo);
-    const files = new Map([[join('features', 'README.md'), verifyFeaturesMd(cfg.app, d)]]);
-    for (const f of d.features)
-        files.set(join('features', `${f.slug}.md`), verifyFeatureMd(cfg.app, d, f));
-    files.set('SKILL.md', verifySkillMd(cfg.app, d));
-    const targets = [...files].map(([rel, body]) => ({ p: join(dir, rel), body }));
-    const link = targets.map(({ p }) => symlinkOnPath(repo, p)).find((l) => l !== undefined);
-    if (link !== undefined)
-        return `skipped, ${shown(repo, link)} is a symlink; write it by hand or remove the link`;
-    for (const { p, body } of targets) {
-        if (existsSync(p))
-            continue;
-        try {
-            mkdirSync(dirname(p), { recursive: true });
-            writeFileSync(p, body);
-        }
-        catch (e) {
-            return `skipped, ${shown(repo, p)} could not be written (${e.message}); fix it and re-run init`;
-        }
-    }
-    return 'written';
+    const skill = join(repo, cfg.skill, 'SKILL.md');
+    return existsSync(skill) ? 'unchanged' : `not written: write ${shown(repo, skill)} by hand, with a launch that never touches real accounts or your own state`;
 }
 // The session-start hook `init --hook <agent>` adds; the agent shows its stdout to the session.
 // Without done-done on PATH it prints nothing and exits 0, so it never breaks a session.
@@ -3258,7 +3026,7 @@ async function cmdDoctor(argv) {
                 check: 'verify_skill',
                 status: 'missing',
                 detail: `no ${shown(repo, skillFile)}; checks still pass with "no verify skill"`,
-                fix: `Write ${shown(repo, skillFile)} describing how to drive this app (a later done-done init will scaffold it)`,
+                fix: `Write ${shown(repo, skillFile)} describing how to drive this app without touching real accounts or your own state`,
             });
     }
     // A repo file that exists but is invalid makes the agent unknown; the global config alone resolves it only when there is no repo file.
