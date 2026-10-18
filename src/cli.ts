@@ -2353,7 +2353,7 @@ const LISTED = 500;
 const MANIFEST = /^(readme(\.\w+)?|package\.json|makefile|justfile|procfile|pyproject\.toml|cargo\.toml|go\.mod|docker-compose\.ya?ml|dockerfile|\.done-done\.yaml)$/i;
 const SECRET = /(^|\/)\.env(\.[^/]*)?$|secret|credential|token|password|\.(pem|key|p12)$/i;
 const PROOF = /(^|[/._-])(scripts?|verify|e2e|smoke|proof|stub|fake|demo)([/._-]|$)/i;
-const SOURCE_FILE = /\.(m?[jt]sx?|py|go|rb|rs|php|sh)$/;
+const SOURCE_FILE = /\.([cm]?[jt]sx?|py|go|rb|rs|php|sh)$/;
 
 // A tracked regular file's text, or undefined for a symlink, a binary, a file over 1 MB or one that cannot be read.
 function repoText(p: string): string | undefined {
@@ -2446,8 +2446,8 @@ function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolea
     ...(omitted ? [`- ${omitted} more found and not listed; add them by hand or run maintain later.`] : []),
   ];
   return `---
-name: ${name}
-description: Drive the ${app} ${s.surface} the way a user does and capture proof it works. Use when proving a ${app} change, capturing evidence, or keeping the feature map honest.
+name: ${JSON.stringify(name)}
+description: ${JSON.stringify(`Drive the ${app} ${s.surface} the way a user does and capture proof it works. Use when proving a ${app} change, capturing evidence, or keeping the feature map honest.`)}
 ---
 
 # ${name}
