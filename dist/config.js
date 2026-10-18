@@ -71,6 +71,7 @@ const KEYS = {
     'judge.model': { scope: 'global', type: 'string' },
     'judge.route': { scope: 'global', type: 'route' },
     'judge.allow_same': { scope: 'global', type: 'boolean' },
+    'judge.floor': { scope: 'global', type: 'number' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -144,19 +145,20 @@ function apply(target, text, file, scope) {
             throw new UsageError(`${file}: ${key} may only be set in the ${spec.scope === 'global' ? 'global config' : 'project .done-done.yaml'}`);
         const ok = spec.type === 'string' ? typeof value === 'string'
             : spec.type === 'boolean' ? typeof value === 'boolean'
-                : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
-                    : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
-                        : spec.type === 'agent' ? isAgent(value)
-                            : spec.type === 'route' ? typeof value === 'string' && (value === 'claude-code' || Object.hasOwn(KEY_ROUTES, value) || ANSWERER_JUDGES.some((a) => value === `answerer:${a}`))
-                                : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
-                                    : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
-                                        : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
-                                            : spec.type === 'bin' ? isBin(value)
-                                                : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
-                                                    : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
-                                                        : spec.type === 'matrix' ? !checkMatrix(value)
-                                                            : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')));
+                : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
+                    : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
+                        : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
+                            : spec.type === 'agent' ? isAgent(value)
+                                : spec.type === 'route' ? typeof value === 'string' && (value === 'claude-code' || Object.hasOwn(KEY_ROUTES, value) || ANSWERER_JUDGES.some((a) => value === `answerer:${a}`))
+                                    : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
+                                        : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
+                                            : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
+                                                : spec.type === 'bin' ? isBin(value)
+                                                    : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
+                                                        : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
+                                                            : spec.type === 'matrix' ? !checkMatrix(value)
+                                                                : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
+                                                                    : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')));
         const want = {
             journeys: 'a map of name: {command: <string>, spends: <what a run spends>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -167,6 +169,7 @@ function apply(target, text, file, scope) {
             paths: `a map of <agent>: <binary name or absolute path> for ${AGENTS.join(', ')}`,
             bin: 'a binary name on PATH or an absolute path',
             duration: 'a duration such as 90s, 30m or 1h',
+            number: 'a number from 0 to 1',
             regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
             auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
             route: `claude-code (for claude), answerer:<agent> for one of ${ANSWERER_JUDGES.join(', ')}, or a key route (${Object.keys(KEY_ROUTES).join(', ')}); an acp:<target> agent cannot judge, since done-done cannot send it an image`,
@@ -268,7 +271,7 @@ function defaultConfig(repo) {
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
         checks: { not_proven: 'inconclusive', fix_title: '^(fix|bugfix|hotfix)\\b' },
-        judge: { route: '', model: '', allow_same: false },
+        judge: { route: '', model: '', allow_same: false, floor: 0.7 },
         trusted: false,
         from: {},
     };
@@ -350,5 +353,7 @@ judge:
   model: ""
   # Accept a judge that is the author's own agent and model in a fresh session.
   allow_same: false
+  # The check and receipt judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass. Triage and the design check keep their own floors.
+  floor: 0.7
 `;
 }

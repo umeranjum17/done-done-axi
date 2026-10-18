@@ -2139,7 +2139,8 @@ test('bare done-done in a repo with no config points at init', () => {
 // The relevance judge runs the user's own claude binary (agent_path_override.claude) with the user's sign-in. The stub
 // answers `auth status` and the one request the judge sends (stream-json with images, text without), and logs the HOME,
 // CLAUDE_CONFIG_DIR and argv it ran with, so a test can see what the judge was run with. Its state is in JUDGE_STUB.
-function judgeSetup(answer, { loggedIn = true, projectYaml = JUDGED } = {}) {
+const STUB_RATIONALE = 'The notes list shows "Notes" at the top and no dialog.';
+function judgeSetup(answer, { loggedIn = true, projectYaml = JUDGED, floor } = {}) {
   const t = setup(projectYaml);
   // The config's author agent (opencode) must be installed on any host, so the receipt names it.
   t.env.PATH = `${pathEnv(t.env, ['opencode']).PATH}:${t.env.PATH}`;
@@ -2177,14 +2178,15 @@ const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
 const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
 const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
 if (stub.stderr) process.stderr.write(stub.stderr);
-process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason } } }) + after);
+process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale } } }) + after);
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', events, after, stderr }));
+  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', rationale: STUB_RATIONALE, events, after, stderr }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\nagent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
+  const floorLine = floor === undefined ? '' : `  floor: ${floor}\n`;
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: claude-code\n  model: claude-test-1\n${floorLine}agent_path_override: { claude: ${JSON.stringify(bin)} }\n`);
   const calls = () => (existsSync(join(stubDir, 'calls.jsonl')) ? readFileSync(join(stubDir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   return { ...t, stubDir, stub, calls };
 }
@@ -2243,10 +2245,13 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
   assert.equal(f.result, 'fail');
   assert.equal(f.judge.judged[0].verdict, 'fail');
   assert.match(f.findings[0].why, /judge says wrong screen/);
+  assert.equal(f.judge.judged[0].seen, STUB_RATIONALE);
+  assert.equal(f.findings[0].seen, STUB_RATIONALE);
   assert.match(f.help[0], /Capture the screen the outcome describes.*done-done run shots/);
   const cachedFail = j.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', files[0]);
   assert.equal(cachedFail.code, 1, 'a cached wrong-screen verdict still fails');
   assert.equal(toon(cachedFail).judge.judged[0].cached, true);
+  assert.equal(toon(cachedFail).judge.judged[0].seen, STUB_RATIONALE, 'a cached verdict keeps what the judge quoted');
   j.stub({ correct: 0.05, wrong: 0.05, unclear: 0.9 });
   const unsure = j.dd('check', '--judge', '--outcome', 'the sync finished in the background', files[0]);
   assert.equal(unsure.code, 3, unsure.out);
@@ -2255,7 +2260,7 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
   j.stub({ correct: 0.6, wrong: 0.3, unclear: 0.1 });
   const low = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(low.code, 3, low.out);
-  assert.match(toon(low).judge.judged[0].reason, /not confident enough \(confidence 0.6 below floor 0.8\)/);
+  assert.match(toon(low).judge.judged[0].reason, /not confident enough \(confidence 0.6 below floor 0.7\)/);
   assert.equal(j.calls().length, 3);
   j.stub('error');
   const err = j.dd('check', '--judge', '--outcome', 'the home screen shows the sync banner', files[0]);
@@ -2346,6 +2351,71 @@ test('a rejected claude rate-limit event stops the judge call and names the rese
   const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 3, 'a rejected quota is inconclusive, not a sign-in error');
   assert.match(toon(r).judge.judged[0].reason, /hit a rate limit and stopped: .*"status":"rejected".*"resetsAt":1792692000/);
+});
+
+test('judge.floor is config: the default 0.7 counts a supported pick, a higher floor makes it inconclusive, and a wrong pick is never a pass', () => {
+  const supported = { correct: 0.75, wrong: 0.2, unclear: 0.05 };
+  const outcome = 'the home screen shows the notes';
+  const pass = judgeSetup(supported);
+  const { files } = pass.shots();
+  const ok = pass.dd('check', '--judge', '--outcome', outcome, files[0]);
+  assert.equal(ok.code, 0, ok.out);
+  assert.equal(toon(ok).judge.judged[0].verdict, 'pass');
+  const strict = judgeSetup(supported, { floor: 0.8 });
+  const { files: strictFiles } = strict.shots();
+  const unsure = strict.dd('check', '--judge', '--outcome', outcome, strictFiles[0]);
+  assert.equal(unsure.code, 3, unsure.out);
+  assert.match(toon(unsure).judge.judged[0].reason, /not confident enough \(confidence 0.75 below floor 0.8\)/);
+  const wrong = judgeSetup({ correct: 0.2, wrong: 0.75, unclear: 0.05 }, { floor: 0.8 });
+  const { files: wrongFiles } = wrong.shots();
+  const notFail = wrong.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', wrongFiles[0]);
+  assert.equal(notFail.code, 3, 'a wrong pick below the floor is inconclusive, never a pass');
+  assert.equal(toon(notFail).judge.judged[0].verdict, 'unsure');
+  const bad = judgeSetup(supported, { floor: 1.5 });
+  const badFloor = bad.dd('check', '--judge', '--outcome', outcome, 'missing.png');
+  assert.equal(badFloor.code, 2, badFloor.out);
+  assert.match(badFloor.out, /judge\.floor must be a number from 0 to 1/);
+});
+
+test('a verdict cached at one judge.floor is asked again at another', () => {
+  const j = judgeSetup({ correct: 0.75, wrong: 0.2, unclear: 0.05 }, { floor: 0.7 });
+  const { files } = j.shots();
+  const outcome = 'the home screen shows the notes';
+  const first = j.dd('check', '--judge', '--outcome', outcome, files[0]);
+  assert.equal(first.code, 0, first.out);
+  assert.equal(toon(first).judge.judged[0].verdict, 'pass');
+  assert.equal(j.calls().length, 1);
+  const config = join(j.env.DONE_DONE_HOME, 'config.yaml');
+  writeFileSync(config, readFileSync(config, 'utf8').replace('floor: 0.7', 'floor: 0.8'));
+  const second = j.dd('check', '--judge', '--outcome', outcome, files[0]);
+  assert.equal(second.code, 3, second.out);
+  assert.equal(j.calls().length, 2, 'the new floor is a new cache key, so the model is asked again');
+  assert.equal(toon(second).judge.judged[0].cached, false);
+  assert.equal(toon(second).judge.judged[0].verdict, 'unsure');
+});
+
+test('a chat screenshot reaches the judge as an image, and a two-width JSON capture reaches it whole', () => {
+  const j = judgeSetup(CORRECT);
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const chat = join(j.dir, 'chat-1440.png');
+  writeFileSync(chat, png(1440, 900, (x, y) => (y > 760 && y < 800 && x > 700 && x < 1380 ? [40, 110, 230] : [245, 245, 245])));
+  const widths = join(j.dir, 'widths.json');
+  const checks = [
+    { width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] },
+    { width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }, { name: 'after-scroll', newest_message: 'hello', at: 'bottom' }] },
+  ];
+  writeFileSync(widths, JSON.stringify({ checks }));
+  const r = j.dd('run', '--', `${cp(chat, 'chat-1440.png')} && ${cp(widths, 'widths.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const ok = j.dd('check', '--judge', '--outcome', 'the sent message shows as the newest bubble at the bottom of the thread', `${mixed}/chat-1440.png`, `${mixed}/widths.json`);
+  assert.equal(ok.code, 0, ok.out);
+  assert.deepEqual(toon(ok).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
+  assert.ok(j.calls().find((c) => c.images === 1 && c.width > 0 && c.width <= 1280), 'the chat PNG is sent to the judge as an image, downscaled to 1280px');
+  const text = j.calls().find((c) => c.images === 0);
+  assert.ok(text, 'the JSON capture is sent as text');
+  const sent = JSON.parse(text.state.capture);
+  assert.deepEqual(sent, { checks }, 'every width and frame reaches the judge, none cut');
 });
 
 test('judge.enabled turns the judge on; text evidence is judged too; a failed check is not judged', () => {
@@ -2905,6 +2975,45 @@ test('a rerun refused by the judge preflight exits 2 and creates no run folder',
   assert.equal(re.status, 2, re.stdout + re.stderr);
   assert.match(toon({ out: re.stdout }).error, /is the author's own agent and model/);
   assert.deepEqual(readdirSync(runs).sort(), before, 'the refused rerun leaves no new run folder');
+});
+
+// A pi that lists claude-bridge models only when its bridge extension is loaded, as pi does under --no-extensions:
+// the judge's own call must load that one extension, or pi says the model is not found.
+function stubPiBridge(env, answer) {
+  const log = join(env.PATH, 'calls.jsonl');
+  const fenced = '```json\n' + answer + '\n```';
+  writeFileSync(join(env.PATH, 'pi'), `#!${process.execPath}
+const { appendFileSync, readFileSync } = require('node:fs');
+const argv = process.argv.slice(2);
+const stdin = readFileSync(0, 'utf8');
+const attached = argv.filter((a) => a.startsWith('@')).map((a) => readFileSync(a.slice(1)).subarray(1, 4).toString());
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ agent: 'pi', argv, stdin, attached, cwd: process.cwd() }) + '\\n');
+const model = argv[argv.indexOf('--model') + 1] ?? '';
+if (model.startsWith('claude-bridge/') && !argv.includes('npm:pi-claude-bridge')) {
+  console.log(JSON.stringify({ type: 'error', error: { message: 'Model "' + model + '" not found' } }));
+  process.exit(1);
+}
+for (const t of ['session', 'agent_start', 'turn_start']) console.log(JSON.stringify({ type: t }));
+console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: ${JSON.stringify(fenced)} }] } }));
+console.log(JSON.stringify({ type: 'agent_end' }));
+`, { mode: 0o755 });
+}
+
+test('a pi judge on a claude-bridge model loads only that provider extension: the stub lists the model, and the call stays tools-off', () => {
+  const t = setup();
+  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:pi\n  model: claude-bridge/claude-haiku-4-5\n');
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const s = stubAgents(t.env, verdict);
+  stubPiBridge(s.env, verdict);
+  symlinkSync(process.execPath, join(s.env.PATH, 'node'));
+  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const judged = s.calls().filter((c) => c.agent === 'pi');
+  assert.equal(judged.length, 2, 'one tools-off call per capture');
+  for (const c of judged) {
+    assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', 'npm:pi-claude-bridge', '--model', 'claude-bridge/claude-haiku-4-5', `@${join(c.cwd, 'capture.png')}`]);
+  }
 });
 
 test('verify --judge through pi and gemini: each judges tools-off with the capture attached; a right screen passes, a wrong one fails', () => {

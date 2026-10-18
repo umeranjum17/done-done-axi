@@ -41,7 +41,8 @@ export type Config = {
   checks: { not_proven: 'inconclusive' | 'allow'; fix_title: string };
   // enabled: verify judges unless false (--judge turns it on for a run); check and receipt judge with --judge or true; rerun repeats its source run.
   // route: claude-code, answerer:<agent> or openai:key, set by the user ('' until they do); model: '' for that agent's agent_config model.
-  judge: { enabled?: boolean; route: string; model: string; allow_same: boolean };
+  // floor: the check and receipt judge's own probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass; triage and the design check keep their own floors.
+  judge: { enabled?: boolean; route: string; model: string; allow_same: boolean; floor: number };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -78,7 +79,7 @@ export const EFFORT_FLAGS: Record<string, (level: string) => string[]> = {
 const AGENT_TIMEOUT = '30m';
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   agent_config: { scope: 'global', type: 'agent_config' },
@@ -106,6 +107,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
   'judge.allow_same': { scope: 'global', type: 'boolean' },
+  'judge.floor': { scope: 'global', type: 'number' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -171,6 +173,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
     const ok =
       spec.type === 'string' ? typeof value === 'string'
       : spec.type === 'boolean' ? typeof value === 'boolean'
+      : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
       : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
       : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
       : spec.type === 'agent' ? isAgent(value)
@@ -194,6 +197,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       paths: `a map of <agent>: <binary name or absolute path> for ${AGENTS.join(', ')}`,
       bin: 'a binary name on PATH or an absolute path',
       duration: 'a duration such as 90s, 30m or 1h',
+      number: 'a number from 0 to 1',
       regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
       auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
       route: `claude-code (for claude), answerer:<agent> for one of ${ANSWERER_JUDGES.join(', ')}, or a key route (${Object.keys(KEY_ROUTES).join(', ')}); an acp:<target> agent cannot judge, since done-done cannot send it an image`,
@@ -279,7 +283,7 @@ function defaultConfig(repo: string): Config {
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
     checks: { not_proven: 'inconclusive', fix_title: '^(fix|bugfix|hotfix)\\b' },
-    judge: { route: '', model: '', allow_same: false },
+    judge: { route: '', model: '', allow_same: false, floor: 0.7 },
     trusted: false,
     from: {},
   };
@@ -362,5 +366,7 @@ judge:
   model: ""
   # Accept a judge that is the author's own agent and model in a fresh session.
   allow_same: false
+  # The check and receipt judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass. Triage and the design check keep their own floors.
+  floor: 0.7
 `;
 }

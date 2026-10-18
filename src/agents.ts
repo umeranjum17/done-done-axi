@@ -137,6 +137,13 @@ const ACP: Adapter = {
 export const ACPX_INSTALL = 'Install the acpx ACP bridge (npm install -g acpx, https://github.com/openclaw/acpx), then re-run: done-done doctor';
 
 const PI_TOOL_LESS = ['--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files'];
+// --no-extensions also hides the extension that supplies a model's provider: claude-bridge models were 0 with it, 13 with
+// -e npm:pi-claude-bridge. A tool-less call loads that one extension and no other: the rest add tools or prompt text.
+const PI_PROVIDER_EXTENSIONS: Record<string, string> = { 'claude-bridge': 'npm:pi-claude-bridge' };
+const piProviderExtension = (model?: string): string[] => {
+  const provider = model?.split('/')[0] ?? '';
+  return Object.hasOwn(PI_PROVIDER_EXTENSIONS, provider) ? ['-e', PI_PROVIDER_EXTENSIONS[provider]] : [];
+};
 const ADAPTERS: Record<string, Adapter> = {
   // claude -p: --json-schema puts the validated object in structured_output; --tools '' turns every tool off.
   // An edit step accepts edits only in cwd and --add-dir folders, and may run commands (the drive launches the app).
@@ -199,13 +206,14 @@ const ADAPTERS: Record<string, Adapter> = {
   // message); --mode json streams JSONL events whose assistant message_end holds the answer text,
   // --no-session keeps the probe ephemeral. An @<file> argument attaches an image to that message.
   // --no-tools turns every built-in and extension tool off (probed: a canary file outside the cwd went unread).
-  // A tool-less call also loads no extensions, skills, prompt templates or context files: they would add the user's own
-  // context to a fresh judge, and extension loading took 2 minutes on a real setup (probed), past the judge's timeout.
+  // A tool-less call also loads no skills, prompt templates or context files, and only the chosen model's provider
+  // extension (piProviderExtension): the others would add the user's own context to a fresh judge, and loading all of
+  // them took 2 minutes on a real setup (probed), past the judge's timeout.
   // Pi has no permission gate for edit steps, so doctor warns about it. Without a model, pi runs its own default.
   pi: {
     streams: true,
     readsImages: true,
-    argv: (c, dir) => ['-p', '--mode', 'json', '--no-session', ...(c.tools === 'edit' ? [] : PI_TOOL_LESS), ...(c.model ? ['--model', c.model] : []), ...(c.images ?? []).map((i) => `@${join(dir, i.name)}`)],
+    argv: (c, dir) => ['-p', '--mode', 'json', '--no-session', ...(c.tools === 'edit' ? [] : [...PI_TOOL_LESS, ...piProviderExtension(c.model)]), ...(c.model ? ['--model', c.model] : []), ...(c.images ?? []).map((i) => `@${join(dir, i.name)}`)],
     answer: (out, c) => {
       let text = '';
       let failure = '';

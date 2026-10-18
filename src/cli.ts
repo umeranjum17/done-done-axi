@@ -550,7 +550,7 @@ async function cmdRun(argv: string[]): Promise<number> {
 type Claim = { outcome: string; files: string[]; title: string; notProven?: string };
 // file: the capture a judge finding is about. missing: a named file that is not there, by where it should be (checkout: cited
 // from another folder; run: under the evidence root, so a re-capture puts it back).
-type Finding = { level: 'fail' | 'inconclusive'; why: string; file?: string; missing?: 'checkout' | 'run' };
+type Finding = { level: 'fail' | 'inconclusive'; why: string; seen?: string; file?: string; missing?: 'checkout' | 'run' };
 
 // The newest "## Checks" block: outcome, repro, proof and evidence lines.
 function claimFromChecks(body: string, title: string, repo: string, cfg: Config, out: Finding[]): Claim | undefined {
@@ -598,7 +598,7 @@ function loadRecords(cfg: Config): RunRecord[] {
 }
 
 // The judge block a receipt keeps: who judged, how apart from the author, and each judged capture's verdict.
-type JudgeBlock = { route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string }[] };
+type JudgeBlock = { route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -780,13 +780,13 @@ async function runCheck(argv: string[], run?: { dir: string; judge: boolean; jud
       else if (!findings.length && j.judged.some((r) => r.verdict === 'unsure')) judgeLevel = 'inconclusive';
       const shots = new Set(captures.filter(screen).map((c) => c.name));
       for (const r of j.judged.filter((r) => r.verdict !== 'pass'))
-        findings.push({ level: r.verdict === 'fail' ? 'fail' : 'inconclusive', why: `${r.path}: judge says ${r.verdict !== 'fail' ? 'unsure' : shots.has(r.path) ? 'wrong screen' : 'wrong output'}: ${r.reason}`, file: r.path });
+        findings.push({ level: r.verdict === 'fail' ? 'fail' : 'inconclusive', why: `${r.path}: judge says ${r.verdict !== 'fail' ? 'unsure' : shots.has(r.path) ? 'wrong screen' : 'wrong output'}: ${r.reason}`, file: r.path, ...(r.seen && { seen: r.seen }) });
       const rows = cap<Judged>(j.judged);
       const { choice } = j;
       judged = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: `${choice.author.agent} (model ${choice.author.model || 'none'})` }), judged: rows.items.map(({ sha256, ...r }) => r) };
       if (choice && j.judged.length) {
         const byName = new Map(captures.map((c) => [c.name, receiptPath(repo, cfg, cite(c.name))]));
-        judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byName.get(r.path)!, sha256: r.sha256, verdict: r.verdict })) };
+        judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byName.get(r.path)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
       }
       if (rows.omitted) judged.judged_omitted = rows.omitted;
       if (j.notJudged.length) judged.not_judged = j.notJudged;
@@ -996,7 +996,7 @@ function report(findings: Finding[], files: string[], ctx: ReportContext, note =
     if (ev.omitted) result.evidence_omitted = ev.omitted;
   }
   if (ctx.judge) result.judge = ctx.judge;
-  const rows = cap(findings.map((f) => ({ level: f.level, why: f.why })));
+  const rows = cap(findings.map((f) => ({ level: f.level, why: f.why, ...(f.seen && { seen: f.seen }) })));
   if (rows.items.length) result.findings = rows.items;
   if (rows.omitted) result.findings_omitted = rows.omitted;
   result.help = checkHelp(code, findings, files, ctx);
