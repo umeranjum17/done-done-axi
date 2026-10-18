@@ -2355,6 +2355,7 @@ const SECRET = /(^|\/)\.env(\.[^/]*)?$|secret|credential|token|password|\.(pem|k
 const DOCKERFILE = /(^|\/)dockerfile(\.[^/]*)?$/i;
 const PROOF = /(^|[/._-])(scripts?|verify|e2e|smoke|proof|stub|fake|demo)([/._-]|$)/i;
 const SOURCE_FILE = /\.([cm]?[jt]sx?|py|go|rb|rs|php|sh|vue|svelte|html|css|java|kt|swift|c|h|cpp|cs|dart|scala|ex)$/;
+const DATA_FILE = /\.(json|ya?ml|md)$/i;
 
 // A tracked regular file's text, or undefined for a symlink, a binary, a file over 1 MB or one that cannot be read.
 function repoText(p: string): string | undefined {
@@ -2374,7 +2375,7 @@ function repoContext(repo: string, skill: string): { files: Set<string>; read: S
   const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] });
   const own = `${skill.replace(/\\/g, '/').replace(/\/+$/, '')}/`;
   const files = listed.split('\0').filter((f) => f && !f.startsWith(own));
-  const rank = (f: string) => (MANIFEST.test(f) ? 0 : PROOF.test(f) || /(^|\/)bin\//.test(f) || DOCKERFILE.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
+  const rank = (f: string) => (MANIFEST.test(f) ? 0 : DATA_FILE.test(f) ? 3 : PROOF.test(f) || /(^|\/)bin\//.test(f) || DOCKERFILE.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
   const shown = (f: string) => !SECRET.test(f) && rank(f) < 3;
   let total = 0;
   const parts: string[] = [];

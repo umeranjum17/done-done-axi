@@ -1390,6 +1390,42 @@ test('init with a tool-less agent cites an extensionless bin file or a Java sour
   assert.equal(toon(r).verify_skill, 'written by opencode');
 });
 
+test('init with a tool-less agent never shows a data file under scripts or bin, and refuses a feature that cites one', () => {
+  const { repo, env, sh } = shapeRepo('cli', 'notes');
+  mkdirSync(join(repo, 'scripts'));
+  writeFileSync(join(repo, 'scripts', 'gcp-service-account.json'), '{"private_key":"KEYVALUE_99"}\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'data under scripts');
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  const s = stubAgents(env, scaffoldAnswer({
+    launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' },
+    features: [{ title: 'key', reach: 'the key file', drive: 'read scripts/gcp-service-account.json', source: 'scripts/gcp-service-account.json', capture: 'text' }],
+  }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /cites scripts\/gcp-service-account\.json, whose text is not in the prompt/);
+  assert.ok(!s.calls()[0].file.includes('KEYVALUE_99'), 'a data file text never reaches a tool-less prompt');
+});
+
+test('init with a tool-less agent never shows a markdown doc under a proof path, and refuses a feature that cites one', () => {
+  const { repo, env, sh } = shapeRepo('cli', 'notes');
+  mkdirSync(join(repo, 'docs'));
+  writeFileSync(join(repo, 'docs', 'demo.md'), 'DOCTEXT_78\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'doc under docs');
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  const s = stubAgents(env, scaffoldAnswer({
+    launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' },
+    features: [{ title: 'doc', reach: 'the demo doc', drive: 'read docs/demo.md', source: 'docs/demo.md', capture: 'text' }],
+  }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /cites docs\/demo\.md, whose text is not in the prompt/);
+  assert.ok(!s.calls()[0].file.includes('DOCTEXT_78'), 'a markdown text never reaches a tool-less prompt');
+});
+
 test('init with no agent set writes no verify skill and asks for the agent', () => {
   const { repo, dd } = shapeRepo('proof', 'notes');
   const r = dd('init');
