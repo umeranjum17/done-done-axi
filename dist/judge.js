@@ -59,7 +59,7 @@ const PAIR = {
 // The answer the answerer asks its agent for: the kit's reply shape for each choice question.
 const answerSchema = (questions) => ({
     type: 'object',
-    properties: Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: 'object', properties: { probabilities: { type: 'object', properties: Object.fromEntries(Object.keys(q.kind === 'choice' ? q.options : {}).map((o) => [o, { type: 'number' }])) }, rationale: { type: 'string' }, personReason: { type: 'string' } }, required: ['probabilities'] }])),
+    properties: Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: 'object', properties: { rationale: { type: 'string' }, personReason: { type: 'string' }, probabilities: { type: 'object', properties: Object.fromEntries(Object.keys(q.kind === 'choice' ? q.options : {}).map((o) => [o, { type: 'number' }])) } }, required: ['probabilities'] }])),
     required: Object.keys(questions),
 });
 export function isExecutable(path) {
