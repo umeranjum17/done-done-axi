@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { accessSync, appendFileSync, closeSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, closeSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2352,8 +2352,10 @@ const FILE_CHARS = 20_000;
 const LISTED = 500;
 const MANIFEST = /^(readme(\.\w+)?|package\.json|makefile|justfile|procfile|pyproject\.toml|cargo\.toml|go\.mod|docker-compose\.ya?ml|dockerfile|\.done-done\.yaml)$/i;
 const SECRET = /(^|\/)\.env(\.[^/]*)?$|secret|credential|token|password|\.(pem|key|p12)$/i;
+const DOCKERFILE = /(^|\/)dockerfile(\.[^/]*)?$/i;
 const PROOF = /(^|[/._-])(scripts?|verify|e2e|smoke|proof|stub|fake|demo)([/._-]|$)/i;
-const SOURCE_FILE = /\.([cm]?[jt]sx?|py|go|rb|rs|php|sh)$/;
+const SOURCE_FILE = /\.([cm]?[jt]sx?|py|go|rb|rs|php|sh|vue|svelte|html|css|java|kt|swift|c|h|cpp|cs|dart|scala|ex)$/;
+const DATA_FILE = /\.(json|ya?ml|md)$/i;
 
 // A tracked regular file's text, or undefined for a symlink, a binary, a file over 1 MB or one that cannot be read.
 function repoText(p: string): string | undefined {
@@ -2373,7 +2375,7 @@ function repoContext(repo: string, skill: string): { files: Set<string>; read: S
   const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] });
   const own = `${skill.replace(/\\/g, '/').replace(/\/+$/, '')}/`;
   const files = listed.split('\0').filter((f) => f && !f.startsWith(own));
-  const rank = (f: string) => (MANIFEST.test(f) ? 0 : PROOF.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
+  const rank = (f: string) => (MANIFEST.test(f) ? 0 : DATA_FILE.test(f) ? 3 : PROOF.test(f) || /(^|\/)bin\//.test(f) || DOCKERFILE.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
   const shown = (f: string) => !SECRET.test(f) && rank(f) < 3;
   let total = 0;
   const parts: string[] = [];
@@ -2507,10 +2509,11 @@ function symlinkOnPath(repo: string, p: string): string | undefined {
 
 const SCAFFOLD_HELP = 'The verify skill was not written: fix the cause verify_skill names, then re-run: done-done init';
 
-// Writes nothing when SKILL.md or any other target exists, so new answers never mix with an old feature map; SKILL.md
-// is written last, so it marks a finished scaffold. The skill folder is checked for symlinks before the agent is
-// asked, and every target before the first write. failed: the agent could not write it, so init fails and the user
-// fixes the cause.
+// All-or-nothing: when any target (SKILL.md, features/README.md, a features file) exists as a file or directory,
+// nothing is written and the paths are named; otherwise every file is written into a temp dir inside the skill's
+// parent and moved into place, so a failed write leaves no partial skill. SKILL.md is moved last, so it marks a
+// finished scaffold. The skill folder is checked for symlinks before the agent is asked, and every target before
+// the first write. failed: the agent or the write failed, so init fails and the user fixes the cause.
 async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: string; failed?: boolean }> {
   const dir = join(repo, cfg.skill);
   const linked = (ps: string[]) => ps.map((p) => symlinkOnPath(repo, p)).find((l) => l !== undefined);
@@ -2519,6 +2522,7 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   let link = linked([join(dir, 'features', 'README.md'), join(dir, 'SKILL.md')]);
   if (link !== undefined) return skipLink(link);
   if (existsSync(join(dir, 'SKILL.md'))) return blocked([join(dir, 'SKILL.md')]);
+  if (existsSync(join(dir, 'features', 'README.md'))) return blocked([join(dir, 'features', 'README.md')]);
   // No agent: init's agent row already asks the user to set one.
   if (!cfg.agent) return { status: 'not written: no agent is set, and the agent writes the verify skill' };
   const agent = selectAgent(cfg);
@@ -2526,6 +2530,8 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const toolless = agent.agent !== 'claude';
   if (toolless && toollessReason(agent.agent)) return { status: `not written: ${toollessReason(agent.agent)}; set the verify skill agent to claude, opencode, pi or acp with done-done init --agent <agent> --model <model>`, failed: true };
   const context = repoContext(repo, cfg.skill);
+  // Every schema-valid answer cites tracked files, so with none there is nothing to ask for.
+  if (!context.files.size) return { status: "not written: the repo has no tracked files to cite; commit the repo's files, then re-run init", failed: true };
   const record = join(home(), 'agents', `init-${new Date().toISOString().replace(/[:.]/g, '-')}-${agent.agent.replace(/[^\w-]/g, '-')}.json`);
   const a = await askAgent({ ...agent, prompt: scaffoldPrompt(cfg, context.text, toolless), schema: SCAFFOLD_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record });
   const where = a.record ? `; record ${a.record}` : a.recordError ? `; the call record could not be written: ${a.recordError}` : '';
@@ -2538,29 +2544,56 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const features: Feature[] = [];
   for (const f of s.features.slice(0, MAX_FEATURES)) {
     let n = slug(f.title);
-    for (let i = 2; features.some((g) => g.slug === n); i++) n = `${slug(f.title)}-${i}`;
+    for (let i = 2; n === 'readme' || features.some((g) => g.slug === n); i++) n = `${slug(f.title)}-${i}`;
     features.push({ ...f, slug: n });
   }
   const omitted = s.features.length - features.length;
   const files = new Map<string, string>([[join('features', 'README.md'), verifyFeaturesMd(cfg.app, features, omitted)]]);
   for (const f of features) files.set(join('features', `${f.slug}.md`), verifyFeatureMd(cfg.app, s, f));
   files.set('SKILL.md', verifySkillMd(cfg.app, agent.agent, s, isolated, features, omitted));
-  const targets = [...files].map(([rel, body]) => ({ p: join(dir, rel), body }));
+  const targets = [...files].map(([rel, body]) => ({ rel, p: join(dir, rel), body }));
   link = linked(targets.map(({ p }) => p));
   if (link !== undefined) return skipLink(link);
-  const have = targets.filter(({ p }) => existsSync(p)).map(({ p }) => p);
-  if (have.length) return blocked(have);
-  const written: string[] = [];
-  for (const { p, body } of targets) {
-    try {
-      mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, body);
-      written.push(p);
-    } catch (e) {
-      const made = written.length ? `; already written: ${written.map((w) => shown(repo, w)).join(', ')}` : '';
-      return { status: `${written.length ? 'partly written' : 'not written'}: ${shown(repo, p)} could not be written (${(e as Error).message})${made}; delete the skill folder, then re-run init`, failed: true };
+  const parent = dirname(dir);
+  let tmp: string | undefined;
+  const moved: string[] = [];
+  const made: string[] = [];
+  const mk = (d: string) => {
+    const missing: string[] = [];
+    for (let c = d; !existsSync(c); c = dirname(c)) missing.unshift(c);
+    made.push(...missing);
+    mkdirSync(d, { recursive: true });
+  };
+  const undo = () => {
+    for (const p of [...moved, ...(tmp ? [tmp] : [])]) {
+      try { rmSync(p, { recursive: true, force: true }); } catch { }
     }
+    for (const d of made.reverse()) {
+      try { rmdirSync(d); } catch { }
+    }
+  };
+  try {
+    mk(parent);
+    tmp = mkdtempSync(join(parent, `${basename(dir)}.tmp-`));
+    for (const { rel, body } of targets) {
+      mkdirSync(dirname(join(tmp, rel)), { recursive: true });
+      writeFileSync(join(tmp, rel), body);
+    }
+    const have = targets.filter(({ p }) => existsSync(p)).map(({ p }) => p);
+    if (have.length) {
+      undo();
+      return blocked(have);
+    }
+    for (const { rel, p } of targets) {
+      mk(dirname(p));
+      renameSync(join(tmp, rel), p);
+      moved.push(p);
+    }
+  } catch (e) {
+    undo();
+    return { status: `not written: the verify skill could not be written (${(e as Error).message}); nothing was left behind, so fix the cause and re-run init`, failed: true };
   }
+  try { rmSync(tmp, { recursive: true, force: true }); } catch { }
   return { status: `written by ${agent.agent}${isolated ? '' : '; its launch is not isolated, so read Launch before a drive'}` };
 }
 
