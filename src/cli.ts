@@ -901,14 +901,14 @@ async function cmdReceipt(argv: string[]): Promise<number> {
     return emitted(verifyReceipt(repo, cfg, verifyHead));
   }
   if (!rest.length) throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
+  if (head(repo).dirty) throw new UsageError('receipt: tracked files have uncommitted changes, so no receipt was written; commit or revert them, then re-run receipt', 'Commit the tracked changes, then: done-done receipt --from <file|->');
   return emitted(recordReceipt(repo, cfg, await runCheck(rest)));
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
 function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
-  // Neither refusal is a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
-  if (r.head.dirty) throw new UsageError('receipt: tracked files have uncommitted changes, so no receipt was written; commit or revert them, then re-run receipt', 'Commit the tracked changes, then: done-done receipt --from <file|->');
+  // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
   const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', result: 'pass', at: new Date().toISOString(), files: r.cited, judge: r.judgeBlock };
   const path = writeReceipt(cfg, rec);

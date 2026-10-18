@@ -490,6 +490,16 @@ test('receipt refuses a dirty tracked tree', () => {
   assert.equal(dd('receipt', '--verify', h).code, 1, 'refused write leaves no receipt');
 });
 
+test('receipt stops on a dirty tree before the judge is asked', () => {
+  const j = judgeSetup('error');
+  const { files } = (() => { const r = j.dd('run', 'shots'); return { files: ['.proof/' + toon(r).run_id + '/home.png', '.proof/' + toon(r).run_id + '/settings.png'] }; })();
+  writeFileSync(join(j.repo, 'src', 'app.js'), 'export const app = 7;\n');
+  const r = j.dd('receipt', '--outcome', 'home and settings render', ...files);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /uncommitted changes/);
+  assert.doesNotMatch(r.out, /did not answer/);
+});
+
 test('receipt --verify fails on a changed file and on a missing receipt', () => {
   const { repo, dd, head, shots } = setup();
   const { files } = shots();
