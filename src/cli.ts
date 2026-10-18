@@ -72,7 +72,7 @@ const MAINTAIN_TEXT = `maintain reads the verify skill and the source; HEAD, git
 const DOCTOR_TEXT = `doctor changes nothing except the --probe call record (the agent itself may keep its own session files) and exits 0 when every required item is ok, 2 otherwise.
   required: git (inside a repository), config (a valid .done-done.yaml), evidence_root (writable), agent (the agent the user
   set and its model; missing when none is set, with the command that saves the user's choice), judge (the judge route is ready:
-  for claude-code an executable claude binary, a sign-in folder and the judge kit, for answerer:<agent> that agent's CLI and the
+  for claude-code an executable claude binary and the judge kit, for answerer:<agent> that agent's CLI and the
   kit, for openai:key OPENAI_API_KEY and the kit; doctor does not call the model; missing when none is set, with the command
   that saves the user's choice).
   also listed: verify_skill (.agents/skills/verify-<app>/), agent_settings (agent, model, effort,
