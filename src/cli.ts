@@ -2459,11 +2459,8 @@ Written by \`done-done init\` through ${agent} from this repo's own files (surfa
 ${launch}
 
 Ready: ${clause(s.ready)}. Tear down what you started; never kill by process name.
+Isolation: ${clause(s.isolate)}.
 When the repo's .done-done.yaml has an instance block, done-done already runs the app at $DONE_DONE_BASE_URL (its own port and HOME): BASE is then that URL, never a hard-coded port.
-
-## Doctor
-
-Read-only: is this instance worth driving? Process up, right build, port owned by us, auth valid. ${clause(s.isolate)}.
 
 ## Drive
 
@@ -2484,7 +2481,7 @@ Stop the instances this run started and remove scratch state. Evidence survives 
 function verifyFeatureMd(app: string, s: Scaffold, f: Feature): string {
   const capture = f.capture === 'screenshot' ? `screenshot the resulting page to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.png` : `save the output and exit status to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.txt`;
   const drive = clause(f.drive);
-  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## Sub-features\n\nList each thing a user can do here. ${NO_EDIT}.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n## Gotchas\n\n${NO_EDIT}.\n`;
+  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## Sub-features\n\n${NO_EDIT}.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n## Gotchas\n\n${NO_EDIT}.\n`;
 }
 
 function verifyFeaturesMd(app: string, features: Feature[], omitted: number): string {
