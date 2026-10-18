@@ -353,7 +353,7 @@ judge:
   model: ""
   # Accept a judge that is the author's own agent and model in a fresh session.
   allow_same: false
-  # The lowest probability the judge's pick may have and still count: below it the verdict is unsure (inconclusive), never a pass.
+  # The check and receipt judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass. Triage and the design check keep their own floors.
   floor: 0.7
 `;
 }
