@@ -2173,6 +2173,25 @@ test('verify --judge on the answerer route: a malformed judge answer is one requ
   assert.match(o.findings[0].what, /judge says unsure: the judge did not answer: the agent did not answer with valid JSON after 1 try/, r.stdout);
 });
 
+test('verify --judge on the answerer route: an OpenCode free-tier 403 names the cause and judge.model, and writes no verdict or receipt', () => {
+  const t = setup();
+  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
+  // What opencode prints for a free-tier model called with every tool off: an API error event, then exit 1.
+  const freeTier = `console.log(JSON.stringify({ type: 'error', error: { name: 'APIError', data: { message: "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building.", statusCode: 403, isRetryable: false } } }));
+process.exitCode = 1;`;
+  const s = stubAgents(t.env, '{}', freeTier);
+  symlinkSync(process.execPath, join(s.bin, 'node'));
+  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  const o = toon({ out: r.stdout });
+  assert.equal(s.calls().length, 2, 'one tools-off request per capture, no retry for a refusal that retries cannot clear');
+  assert.equal(r.status, 4, r.stdout);
+  assert.equal(o.findings[0].severity, 'warning', r.stdout);
+  assert.match(o.findings[0].what, /judge says unsure: the judge did not answer: opencode exited 1: .*free tier can only be used from within OpenCode/, 'the original error text is kept');
+  assert.match(o.findings[0].what, /set judge\.model in ~\/\.done-done\/config\.yaml to a model that is not on the free tier/, 'the fix names the config key');
+  assert.notEqual(t.dd('receipt', '--verify', t.head()).code, 0, 'no receipt is written');
+});
+
 test('verify with no journey: the author agent drives the verify skill feature, the judge passes it; a wrong claim parks at the gate until respond', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\n');
   const skill = join(t.repo, '.agents', 'skills', 'verify-notes');
@@ -3320,7 +3339,7 @@ journeys:
 // Stub agent CLIs that log how they were started (argv, stdin, cwd) and answer like the real ones:
 // claude -p prints its JSON result with structured_output; opencode run reads the attached prompt file and
 // prints JSON events (after a wrapper's banner line) whose text part holds the answer, fenced as models often do.
-function stubAgents(env, answer = '{"ok":true}') {
+function stubAgents(env, answer = '{"ok":true}', opencodeReply) {
   const e = pathEnv(env, ['ffprobe']);
   const log = join(e.PATH, 'calls.jsonl');
   const stub = (name, reply) => writeFileSync(join(e.PATH, name), `#!${process.execPath}
@@ -3334,7 +3353,7 @@ ${reply}
 `, { mode: 0o755 });
   stub('claude', `process.exitCode = ${JSON.stringify(answer)} === 'error' ? 1 : 0;
 process.stdout.write(JSON.stringify({ type: 'result', is_error: ${JSON.stringify(answer)} === 'error', result: 'You have hit your session limit', structured_output: ${JSON.stringify(answer)} === 'error' ? undefined : JSON.parse(${JSON.stringify(answer)}) }));`);
-  stub('opencode', `console.log('mise tools: opencode');
+  stub('opencode', opencodeReply ?? `console.log('mise tools: opencode');
 console.log(JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }));
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: '\\\`\\\`\\\`json\\n' + ${JSON.stringify(answer)} + '\\n\\\`\\\`\\\`' } }));`);
   // The user sets the agent; done-done never picks one. A test that needs another agent writes its own config.
