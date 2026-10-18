@@ -168,7 +168,9 @@ export async function askJudge(cfg, be, choice, state, questions, images) {
         const why = be.lastError() || e.message;
         if (choice.route === 'claude-code' && /not logged in/i.test(why))
             throw new UsageError(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
-        const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : '';
+        // OpenCode's free tier refuses any call that is not from inside OpenCode, and the judge's call is tools-off, so retries cannot clear it.
+        const freeTier = choice.agent === 'opencode' && /free tier can only be used from within OpenCode/.test(why);
+        const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
         return `the judge did not answer: ${why}${hint}`;
     }
 }
