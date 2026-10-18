@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { accessSync, appendFileSync, closeSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, closeSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2553,26 +2553,42 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const targets = [...files].map(([rel, body]) => ({ rel, p: join(dir, rel), body }));
   link = linked(targets.map(({ p }) => p));
   if (link !== undefined) return skipLink(link);
-  const have = targets.filter(({ p }) => existsSync(p)).map(({ p }) => p);
-  if (have.length) return blocked(have);
   const parent = dirname(dir);
   let tmp: string | undefined;
   const moved: string[] = [];
+  const made: string[] = [];
+  const mk = (d: string) => {
+    const missing: string[] = [];
+    for (let c = d; !existsSync(c); c = dirname(c)) missing.unshift(c);
+    mkdirSync(d, { recursive: true });
+    made.push(...missing);
+  };
+  const undo = () => {
+    for (const p of moved) rmSync(p, { recursive: true, force: true });
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    for (const d of made.reverse()) {
+      try { rmdirSync(d); } catch { }
+    }
+  };
   try {
-    mkdirSync(parent, { recursive: true });
+    mk(parent);
     tmp = mkdtempSync(join(parent, `${basename(dir)}.tmp-`));
     for (const { rel, body } of targets) {
       mkdirSync(dirname(join(tmp, rel)), { recursive: true });
       writeFileSync(join(tmp, rel), body);
     }
+    const have = targets.filter(({ p }) => existsSync(p)).map(({ p }) => p);
+    if (have.length) {
+      undo();
+      return blocked(have);
+    }
     for (const { rel, p } of targets) {
-      mkdirSync(dirname(p), { recursive: true });
+      mk(dirname(p));
       renameSync(join(tmp, rel), p);
       moved.push(p);
     }
   } catch (e) {
-    for (const p of moved) rmSync(p, { recursive: true, force: true });
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    undo();
     return { status: `not written: the verify skill could not be written (${(e as Error).message}); nothing was left behind, so fix the cause and re-run init`, failed: true };
   }
   rmSync(tmp, { recursive: true, force: true });
