@@ -1510,7 +1510,7 @@ test('a feature titled so it slugs to the index name is filed under a different 
   assert.match(readFileSync(join(skill, 'SKILL.md'), 'utf8'), /^- \[README\]\(features\/readme-2\.md\)/m, 'the Drive index links the filed name');
 });
 
-test('a failed verify-skill write leaves no files and no temp dir', () => {
+test('a verify-skill write blocked by a file at the skill folder leaves no temp dir', () => {
   const { repo, env } = shapeRepo('cli', 'notes');
   const skills = join(repo, '.agents', 'skills');
   mkdirSync(skills, { recursive: true });
@@ -1521,6 +1521,25 @@ test('a failed verify-skill write leaves no files and no temp dir', () => {
   assert.match(toon(r).verify_skill, /^not written: the verify skill could not be written .*; nothing was left behind, so fix the cause and re-run init$/);
   assert.equal(existsSync(join(skills, 'verify-notes', 'SKILL.md')), false, 'no SKILL.md under the blocked path');
   assert.deepEqual(readdirSync(skills).filter((n) => n.includes('.tmp-')), [], 'the temp dir is cleaned up');
+});
+
+test('a verify-skill write that fails at the SKILL.md rename moves its feature files back out', { skip: process.getuid?.() === 0 && 'root bypasses directory modes' }, () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const skills = join(repo, '.agents', 'skills');
+  const skill = join(skills, 'verify-notes');
+  mkdirSync(join(skill, 'features'), { recursive: true });
+  chmodSync(skill, 0o555);
+  try {
+    const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
+    const r = doctorIn(repo, s.env, 'init');
+    assert.equal(r.code, 1, r.out);
+    assert.match(toon(r).verify_skill, /^not written: the verify skill could not be written .*; nothing was left behind, so fix the cause and re-run init$/);
+    assert.deepEqual(readdirSync(join(skill, 'features')), [], 'the feature files moved before the failure are removed');
+    assert.equal(existsSync(join(skill, 'SKILL.md')), false, 'no SKILL.md under the read-only folder');
+    assert.deepEqual(readdirSync(skills).filter((n) => n.includes('.tmp-')), [], 'the temp dir is cleaned up');
+  } finally {
+    chmodSync(skill, 0o755);
+  }
 });
 
 test('init keeps the config when the verify skill cannot be written', () => {
