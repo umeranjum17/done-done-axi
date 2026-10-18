@@ -1212,7 +1212,7 @@ async function agentDrive(repo, cfg, feature) {
 // With a verify skill and no journey, the next step can be an agent drive.
 const driveHint = (repo, cfg) => existsSync(join(repo, cfg.skill, 'SKILL.md'))
     ? ['Have your coding agent drive a verify skill feature: done-done verify --outcome "<what a user can now do>" [--feature <name>]'] : [];
-// The page-check record shape and how to collect it with chrome-devtools-axi, for the drive prompt and the verify skill scaffold.
+// The page-check record shape and how to collect it with chrome-devtools-axi, for the drive prompt.
 const DOM_RECORD = '{"url": "<page url>", "overflow": <true when content is wider than the viewport>, "overflowing": ["<element>", ...], "console_errors": ["<message>", ...], "failed_requests": [{"url": "<url>", "status": <HTTP status, 0 when none>}], "squashed_text": [{"element": "<element>", "text": "<text>", "chars": <width in characters>, "lines": <n>, "words": <n>}]}'
     + `; with your browser tool (for example chrome-devtools-axi): overflow from eval "() => { const w = document.documentElement.clientWidth; return { overflow: document.documentElement.scrollWidth > w, overflowing: [...document.querySelectorAll('body *')].filter((e) => e.getBoundingClientRect().right > w + 1).slice(0, 10).map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '')) } }", console errors from console --type error, failed requests (status 400 or more, or no response) from network, squashed_text from eval "${SQUASHED_TEXT}" exactly as written (in every frame, an embedded one too)`;
 function drivePrompt(run, at, cfg, evidence, scratch, base = '') {
