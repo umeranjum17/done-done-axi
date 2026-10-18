@@ -1937,7 +1937,7 @@ test('judge.floor is config: the default 0.7 counts a supported pick, a higher f
   assert.match(badFloor.out, /judge\.floor must be a number from 0 to 1/);
 });
 
-test('a chat screenshot with the newest bubble at the bottom passes, and a two-width JSON capture reaches the judge whole', () => {
+test('a chat screenshot reaches the judge as an image, and a two-width JSON capture reaches it whole', () => {
   const j = judgeSetup(CORRECT);
   const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
   const chat = join(j.dir, 'chat-1440.png');
@@ -1954,6 +1954,7 @@ test('a chat screenshot with the newest bubble at the bottom passes, and a two-w
   const ok = j.dd('check', '--judge', '--outcome', 'the sent message shows as the newest bubble at the bottom of the thread', `${mixed}/chat-1440.png`, `${mixed}/widths.json`);
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual(toon(ok).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
+  assert.ok(j.calls().find((c) => c.images === 1 && c.width > 0 && c.width <= 1280), 'the chat PNG is sent to the judge as an image, downscaled to 1280px');
   const text = j.calls().find((c) => c.images === 0);
   assert.ok(text, 'the JSON capture is sent as text');
   const sent = JSON.parse(text.state.capture);

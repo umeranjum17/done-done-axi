@@ -141,8 +141,8 @@ const PI_TOOL_LESS = ['--no-tools', '--no-extensions', '--no-skills', '--no-prom
 // -e npm:pi-claude-bridge. A tool-less call loads that one extension and no other: the rest add tools or prompt text.
 const PI_PROVIDER_EXTENSIONS: Record<string, string> = { 'claude-bridge': 'npm:pi-claude-bridge' };
 const piProviderExtension = (model?: string): string[] => {
-  const extension = PI_PROVIDER_EXTENSIONS[model?.split('/')[0] ?? ''];
-  return extension ? ['-e', extension] : [];
+  const provider = model?.split('/')[0] ?? '';
+  return Object.hasOwn(PI_PROVIDER_EXTENSIONS, provider) ? ['-e', PI_PROVIDER_EXTENSIONS[provider]] : [];
 };
 const ADAPTERS: Record<string, Adapter> = {
   // claude -p: --json-schema puts the validated object in structured_output; --tools '' turns every tool off.
