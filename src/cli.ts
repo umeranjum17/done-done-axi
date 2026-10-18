@@ -2381,7 +2381,7 @@ function repoContext(repo: string, skill: string): { files: Set<string>; read: S
   const read = new Set<string>();
   const left: string[] = [];
   for (const f of files.filter(shown).sort((a, b) => rank(a) - rank(b))) {
-    const body = repoText(join(repo, f));
+    const body = total < CONTEXT_CHARS ? repoText(join(repo, f)) : undefined;
     const kept = body === undefined ? undefined : body.length > FILE_CHARS ? `${body.slice(0, FILE_CHARS)}\n[truncated after ${FILE_CHARS} characters]` : body;
     if (kept === undefined || total + kept.length > CONTEXT_CHARS) {
       left.push(f);
