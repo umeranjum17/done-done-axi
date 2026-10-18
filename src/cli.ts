@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
-import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectJudge, type AgentAnswer, type JudgeChoice } from './agents.js';
+import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
 import { AGENTS, CHEAP, type Config, globalConfigText, home, inputPattern, isAgent, loadConfig, parseDuration, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
@@ -56,7 +56,7 @@ const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/ru
   ignored files copied in, and verify runs again there, up to n times. Result: changed (the fix on a done-done/verify-<run-id>
   branch, your HEAD still fails; exit 1) or blocked (dirty checkout, a guard, or every attempt used; exit 1)`;
 const MAINTAIN_TEXT = `maintain reads the verify skill and the source; HEAD, git status and the content of changed files must be the same before and after.
-  locate: the verify skill (.agents/skills/verify-<app>/SKILL.md); none: blocked, write it by hand
+  locate: the verify skill (.agents/skills/verify-<app>/SKILL.md); none: blocked, create it with done-done init
   hygiene: every local link in the skill resolves; features/README.md lists each features/*.md file once
   source-wave: one fresh read-only reader per feature file at the configured agent (agent, agent_config) explains it from source
   reconcile: each file:line the skill or a reader cites must exist (a bare file name matches a tracked file); one tool-less call
@@ -126,6 +126,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   init: {
     usage: [
       ['done-done init', 'write a minimal .done-done.yaml (evidence lives outside the repo) and, when absent, a commented ~/.done-done/config.yaml'],
+      ['done-done init', 'have the agent write .agents/skills/verify-<app> from this repo\'s own proof paths (never overwrites; no agent, no skill)'],
       ['done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor', 'set the coding agent done-done starts and its model (in a terminal, init asks when none is set)'],
       ['done-done init --judge claude --judge-model claude-haiku-5-5', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
       ['done-done init --hook claude', 'also show this repo\'s done-done state at each Claude Code session start'],
@@ -1195,7 +1196,7 @@ function skillFeatures(repo: string, cfg: Config): string[] {
 // failed run later. Returns the author and the feature to drive.
 async function agentDrive(repo: string, cfg: Config, feature?: string): Promise<{ author: { agent: string; model: string }; feature?: string }> {
   const skill = join(cfg.skill, 'SKILL.md');
-  if (!existsSync(join(repo, skill))) throw new UsageError(`verify needs a journey or a verify skill to drive the app, and this repo has neither (no ${skill})`, 'Write the verify skill by hand, with a launch that never touches real accounts or your own state, or record a journey: done-done init --journey <name> -- <command that drives the real app>');
+  if (!existsSync(join(repo, skill))) throw new UsageError(`verify needs a journey or a verify skill to drive the app, and this repo has neither (no ${skill})`, 'Scaffold the verify skill: done-done init, or record a journey: done-done init --journey <name> -- <command that drives the real app>');
   const features = skillFeatures(repo, cfg);
   const name = feature?.replace(/^features\//, '').replace(/\.md$/, '');
   if (name !== undefined && !features.includes(name)) throw new UsageError(`no feature ${feature} in ${cfg.skill}/features; it has: ${features.join(', ') || 'none'}`, `Run: done-done verify --feature <${features.join('|') || 'name'}> --outcome "<what a user can now do>"`);
@@ -1829,7 +1830,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
       : run.result === 'drift' ? [`Fix the findings in ${cfg.skill} (--full lists them all), commit, then run again: ${again}`, `Or let done-done's agent fix them on a branch: set auto_fix: { maintain: 2 } in .done-done.yaml, then run again: ${again}`]
       : /^ask-user:/.test(run.reason ?? '') ? ['Ask the user about each ask-user finding: is the product or the skill wrong? Never decide it for them', `Product wrong: fix the product (maintain never edits product code). Skill wrong: fix ${cfg.skill}, commit, then run again: ${again}`]
       : /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${run.run_id}`, `Fix the findings in ${cfg.skill} by hand, commit, then run again: ${again}`]
-      : /^locate: no verify skill/.test(run.reason ?? '') ? ['Write the verify skill by hand, with a launch that never touches real accounts or your own state']
+      : /^locate: no verify skill/.test(run.reason ?? '') ? ['Create the verify skill: done-done init']
       : /^locate:/.test(run.reason ?? '') ? [`Make ${cfg.skill} a real folder inside the repository (not a link), commit, then run again: ${again}`]
       : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, `Fix the cause, then run again: ${again}`])
     : code === PASS ? [`Verify this receipt (CI or merge): done-done receipt --verify ${rec!.commit}`]
@@ -2302,11 +2303,265 @@ function ensureIgnored(repo: string, rel: string): boolean {
   return true;
 }
 
-// `init` writes no verify skill from a guess at the repo: a launch read off the start script ran the real app on the
-// owner's own accounts and state. An existing skill is never touched.
-function scaffoldVerify(repo: string, cfg: Config): string {
-  const skill = join(repo, cfg.skill, 'SKILL.md');
-  return existsSync(skill) ? 'unchanged' : `not written: write ${shown(repo, skill)} by hand, with a launch that never touches real accounts or your own state`;
+// `init` also scaffolds the project's verify skill, written by the user's agent from the repo's own files (the
+// maintain reader pattern): plain code gathers the files that show how the repo proves itself (manifests,
+// .done-done.yaml journeys, verify, e2e and demo scripts, then source), one read-only call answers SCAFFOLD_SCHEMA, and
+// plain code checks every file the answer cites before it renders the skill. No agent set, or an agent that fails,
+// writes no skill. An existing skill is never overwritten, so re-run is idempotent.
+
+type Scaffold = {
+  surface: string;
+  launch: { steps: string; source: string; safe: boolean; why: string };
+  ready: string;
+  harness: string;
+  observe: string;
+  isolate: string;
+  features: { title: string; reach: string; drive: string; source: string; capture: 'screenshot' | 'text' }[];
+};
+type Feature = Scaffold['features'][number] & { slug: string };
+
+const STR = { type: 'string' };
+const SCAFFOLD_SCHEMA = {
+  type: 'object',
+  properties: {
+    surface: STR,
+    launch: { type: 'object', properties: { steps: STR, source: STR, safe: { type: 'boolean' }, why: STR }, required: ['steps', 'source', 'safe', 'why'], additionalProperties: false },
+    ready: STR,
+    harness: STR,
+    observe: STR,
+    isolate: STR,
+    features: { type: 'array', minItems: 1, items: { type: 'object', properties: { title: STR, reach: STR, drive: STR, source: STR, capture: { type: 'string', enum: ['screenshot', 'text'] } }, required: ['title', 'reach', 'drive', 'source', 'capture'], additionalProperties: false } },
+  },
+  required: ['surface', 'launch', 'ready', 'harness', 'observe', 'isolate', 'features'],
+  additionalProperties: false,
+};
+
+const NO_EDIT = 'The drive changes no repo file: note findings in the run\'s report; after the drive, run done-done maintain to see what drifted, then fix the skill';
+const MAX_FEATURES = 5;
+
+const slug = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'feature';
+// The agent's text as one sentence: its own final period is dropped so the template adds exactly one.
+const clause = (s: string) => s.trim().replace(/\.+$/, '');
+// A cited path as the tracked file list spells it: no leading ./ and no :line suffix.
+const cited = (s: string) => s.trim().replace(/^\.\//, '').replace(/:\d+(-\d+)?$/, '');
+
+// ponytail: the agent sees at most CONTEXT_CHARS of file text, each file cut at FILE_CHARS, ranked by path only
+// (manifests, proof scripts, source); the prompt names what was left out. Rank by content when a repo needs more.
+const CONTEXT_CHARS = 150_000;
+const FILE_CHARS = 20_000;
+const LISTED = 500;
+const MANIFEST = /^(readme(\.\w+)?|package\.json|makefile|justfile|procfile|pyproject\.toml|cargo\.toml|go\.mod|docker-compose\.ya?ml|dockerfile|\.done-done\.yaml)$/i;
+const SECRET = /(^|\/)\.env(\.[^/]*)?$|secret|credential|token|password|\.(pem|key|p12)$/i;
+const PROOF = /(^|[/._-])(scripts?|verify|e2e|smoke|proof|stub|fake|demo)([/._-]|$)/i;
+const SOURCE_FILE = /\.([cm]?[jt]sx?|py|go|rb|rs|php|sh)$/;
+
+// A tracked regular file's text, or undefined for a symlink, a binary, a file over 1 MB or one that cannot be read.
+function repoText(p: string): string | undefined {
+  try {
+    const st = lstatSync(p);
+    if (!st.isFile() || st.size > 1 << 20) return undefined;
+    const text = readFileSync(p, 'utf8');
+    return text.includes('\0') ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
+// The repo as the agent sees it: the tracked file list (without the skill folder) and the text of the files that
+// say how the app starts and how the repo proves it.
+function repoContext(repo: string, skill: string): { files: Set<string>; read: Set<string>; text: string } {
+  const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] });
+  const own = `${skill.replace(/\\/g, '/').replace(/\/+$/, '')}/`;
+  const files = listed.split('\0').filter((f) => f && !f.startsWith(own));
+  const rank = (f: string) => (MANIFEST.test(f) ? 0 : PROOF.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
+  const shown = (f: string) => !SECRET.test(f) && rank(f) < 3;
+  let total = 0;
+  const parts: string[] = [];
+  const read = new Set<string>();
+  const left: string[] = [];
+  for (const f of files.filter(shown).sort((a, b) => rank(a) - rank(b))) {
+    const body = total < CONTEXT_CHARS ? repoText(join(repo, f)) : undefined;
+    const kept = body === undefined ? undefined : body.length > FILE_CHARS ? `${body.slice(0, FILE_CHARS)}\n[truncated after ${FILE_CHARS} characters]` : body;
+    if (kept === undefined || total + kept.length > CONTEXT_CHARS) {
+      left.push(f);
+      continue;
+    }
+    total += kept.length;
+    read.add(f);
+    parts.push(`File ${f}:\n${kept}`);
+  }
+  const list = `Tracked files (${files.length}${files.length > LISTED ? `, the first ${LISTED} shown` : ''}): ${files.slice(0, LISTED).join(', ') || 'none'}`;
+  const out = left.length ? `\n\n[left out: ${left.length} files cannot be read or pass the ${CONTEXT_CHARS}-character cap: ${left.slice(0, 20).join(', ')}${left.length > 20 ? `, +${left.length - 20} more` : ''}]` : '';
+  return { files: new Set(files), read, text: `${list}\n\n${parts.join('\n\n')}${out}` };
+}
+
+function scaffoldPrompt(cfg: Config, context: string, toolless: boolean): string {
+  return `You write the verify skill for the app ${cfg.app}, which \`done-done init\` saves at ${cfg.skill}: how an agent launches this repo's app safely, drives it the way a user does, and captures proof that it works. Do not edit, create or delete any file, and do not run the app or any command.
+${toolless ? "You have no tools: the repo's tracked file list and the text of its key files are below, and they are all you can read." : 'The repository is your working directory: read the files below first, then any other file you need.'} Use only what the repo shows: never invent a command, path, flag, route or label. Never open a secret-looking file: a .env or .env.* file, a path whose name contains secret, credential, token or password, or a *.pem, *.key or *.p12 file. Never write a secret value into steps or why; name the environment variable instead.
+
+- launch: how to start the app for a proof. Prefer the repo's own proof path: a verify, e2e, smoke or demo script, or a journey in .done-done.yaml, that runs the app with a stub, fake or demo engine and its own state (a temporary HOME or data folder), the way the repo proves itself; copy its exact command and environment flags. {steps: the exact command on one line, with every environment flag, whose first command runs source (or passes it to an interpreter such as bash, node or npx tsx), source: the repo file they come from (for a .done-done.yaml journey, the script or file that journey runs, never .done-done.yaml itself), safe: true only when these steps use a stub or demo mode or isolated state, so no real account, paid service or the owner's own state is touched, why: what makes it safe, or when safe is false what it would touch}. When the repo has no such path, give the closest launch with safe false; never present a command that uses real accounts or the owner's own state (for example a start script that runs the real engine) as safe.
+- surface: what a user drives: web UI, CLI, API/service, desktop app or other.
+- ready: the check that shows the launched app is ready to drive (a URL that answers, a line it prints, an exit code).
+- harness: what drives it: a browser tool, a terminal (tmux or PTY), curl, or a shell.
+- observe: the proof to capture: screenshots of the resulting state, terminal transcripts and exit codes, response bodies, files written.
+- isolate: how each run keeps its own instance and state, and never drives a session or account the user owns.
+- features: up to ${MAX_FEATURES} things a user does with the app, the most important first, each {title, reach: how a user gets there, drive: the concrete steps through the repo's real handles (the command and its arguments, the route, the page label, the journey name), source: the repo file that shows the feature, capture: screenshot for a screen, text for output}.
+Each source is one path exactly as the tracked file list spells it, with no other words (scripts/verify/drive.sh, never a list or a note); launch.source may be empty only when safe is false.
+
+${context}`;
+}
+
+// Why an answer cannot be rendered into the skill, or '' when it can. A citation must be a tracked file the agent was
+// shown: shown is every tracked file for claude, which reads the repo itself, and the text plain code gave a tool-less agent.
+function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown: Set<string>): string {
+  const s = a as Scaffold;
+  const text = (v: unknown) => typeof v === 'string' && clause(v) !== '';
+  const citation = (p: string) => {
+    const c = cited(p);
+    if (!tracked.has(c)) return `cites ${c}, which is not a tracked file`;
+    if (SECRET.test(c)) return `cites ${c}, a secret-looking file, which can not be a source`;
+    return shown.has(c) ? '' : `cites ${c}, whose text is not in the prompt`;
+  };
+  for (const k of ['surface', 'ready', 'harness', 'observe', 'isolate'] as const) if (!text(s[k])) return `missing ${k}`;
+  if (!s.launch || typeof s.launch !== 'object' || !text(s.launch.steps) || !text(s.launch.why) || typeof s.launch.safe !== 'boolean' || typeof s.launch.source !== 'string') return 'missing launch steps, source, safe or why';
+  const launchCite = cited(s.launch.source) ? citation(s.launch.source) : '';
+  if (launchCite) return `the launch ${launchCite}`;
+  if (!Array.isArray(s.features) || !s.features.length) return 'has no features';
+  for (const f of s.features) {
+    if (!f || typeof f !== 'object' || !text(f.title) || !text(f.reach) || !text(f.drive) || !text(f.source) || !['screenshot', 'text'].includes(f.capture)) return 'has a feature without a title, reach, drive, source or capture';
+    const why = citation(f.source);
+    if (why) return `the feature "${f.title}" ${why}`;
+  }
+  return '';
+}
+
+function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolean, features: Feature[], omitted: number): string {
+  const name = `verify-${app}`;
+  const source = cited(s.launch.source);
+  const launch = isolated
+    ? `${s.launch.steps.trim()}\n\nSafe: ${clause(s.launch.why)} (from \`${source}\`).`
+    : `Not isolated: ${clause(s.launch.why)}. The launch below is not shown to use a stub or demo engine with its own state, so it may use real accounts or the owner's own state. ${NO_EDIT}.\n\n${s.launch.steps.trim()}${source ? `\n\nFrom \`${source}\`.` : ''}`;
+  const found = [
+    ...features.map((f) => `- [${f.title}](features/${f.slug}.md): ${clause(f.reach)} (\`${cited(f.source)}\`)`),
+    ...(omitted ? [`- ${omitted} more found and not listed; add them by hand or run maintain later.`] : []),
+  ];
+  return `---
+name: ${JSON.stringify(name)}
+description: ${JSON.stringify(`Drive the ${app} ${s.surface} the way a user does and capture proof it works. Use when proving a ${app} change, capturing evidence, or keeping the feature map honest.`)}
+---
+
+# ${name}
+
+Written by \`done-done init\` through ${agent} from this repo's own files (surface: ${s.surface}). ${NO_EDIT}.
+
+## Launch
+
+${launch}
+
+Ready: ${clause(s.ready)}. Tear down what you started; never kill by process name.
+Isolation: ${clause(s.isolate)}.
+When the repo's .done-done.yaml has an instance block, done-done already runs the app at $DONE_DONE_BASE_URL (its own port and HOME): BASE is then that URL, never a hard-coded port.
+
+## Drive
+
+Harness: ${clause(s.harness)}. Drive through the repo's real handles that each feature file names:
+
+${found.join('\n')}
+
+## Evidence
+
+What to capture: ${clause(s.observe)}. Exercise the real user path, not internal setters; done-done's judge checks every capture in the run folder against the outcome, so save only captures of the resulting state there and keep any of earlier steps outside it; verify side effects alongside what is visible. Evidence goes to the run folder \`done-done run\` prints.
+
+## Cleanup
+
+Stop the instances this run started and remove scratch state. Evidence survives cleanup: never delete the run folder.
+`;
+}
+
+function verifyFeatureMd(app: string, s: Scaffold, f: Feature): string {
+  const capture = f.capture === 'screenshot' ? `screenshot the resulting page to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.png` : `save the output and exit status to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.txt`;
+  const drive = clause(f.drive);
+  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n${NO_EDIT}.\n`;
+}
+
+function verifyFeaturesMd(app: string, features: Feature[], omitted: number): string {
+  const index = features.map((f) => `- [${f.title}](${f.slug}.md): ${clause(f.reach)}`).join('\n');
+  const more = omitted ? `\n\n${omitted} more found and not listed; add them by hand or run maintain later.` : '';
+  return `# ${app} features\n\nThe repo's maintained verification map; a proof that drives one entry point is incomplete when this lists others.\n\n${index}${more}\n`;
+}
+
+// The first existing component on the way from the repo to `p` that is a symlink, if any: a cloned repo's symlink
+// would redirect the scaffold's writes out of the repo.
+function symlinkOnPath(repo: string, p: string): string | undefined {
+  let cur = repo;
+  for (const part of relative(repo, p).split(sep)) {
+    cur = join(cur, part);
+    try {
+      if (lstatSync(cur).isSymbolicLink()) return cur;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+const SCAFFOLD_HELP = 'The verify skill was not written: fix the cause verify_skill names, then re-run: done-done init';
+
+// Writes nothing when SKILL.md or any other target exists, so new answers never mix with an old feature map; SKILL.md
+// is written last, so it marks a finished scaffold. The skill folder is checked for symlinks before the agent is
+// asked, and every target before the first write. failed: the agent could not write it, so init fails and the user
+// fixes the cause.
+async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: string; failed?: boolean }> {
+  const dir = join(repo, cfg.skill);
+  const linked = (ps: string[]) => ps.map((p) => symlinkOnPath(repo, p)).find((l) => l !== undefined);
+  const skipLink = (link: string) => ({ status: `skipped, ${shown(repo, link)} is a symlink; write it by hand or remove the link` });
+  const blocked = (ps: string[]) => ({ status: `skipped: ${ps.map((p) => shown(repo, p)).join(', ')} already exist; delete the skill folder to regenerate` });
+  let link = linked([join(dir, 'features', 'README.md'), join(dir, 'SKILL.md')]);
+  if (link !== undefined) return skipLink(link);
+  if (existsSync(join(dir, 'SKILL.md'))) return blocked([join(dir, 'SKILL.md')]);
+  // No agent: init's agent row already asks the user to set one.
+  if (!cfg.agent) return { status: 'not written: no agent is set, and the agent writes the verify skill' };
+  const agent = selectAgent(cfg);
+  // As in maintain, only claude reads the repo with its own tools; every other agent gets the files from plain code.
+  const toolless = agent.agent !== 'claude';
+  if (toolless && toollessReason(agent.agent)) return { status: `not written: ${toollessReason(agent.agent)}; set the verify skill agent to claude, opencode, pi or acp with done-done init --agent <agent> --model <model>`, failed: true };
+  const context = repoContext(repo, cfg.skill);
+  const record = join(home(), 'agents', `init-${new Date().toISOString().replace(/[:.]/g, '-')}-${agent.agent.replace(/[^\w-]/g, '-')}.json`);
+  const a = await askAgent({ ...agent, prompt: scaffoldPrompt(cfg, context.text, toolless), schema: SCAFFOLD_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record });
+  const where = a.record ? `; record ${a.record}` : a.recordError ? `; the call record could not be written: ${a.recordError}` : '';
+  if (!a.ok) return { status: `not written: ${agent.agent} did not answer: ${a.error}; done-done doctor --probe checks the agent${where}`, failed: true };
+  const problem = scaffoldProblem(a.answer as Record<string, unknown>, context.files, toolless ? context.read : context.files);
+  if (problem) return { status: `not written: ${agent.agent}'s answer is unusable: ${problem}${where}`, failed: true };
+  const s = a.answer as Scaffold;
+  const source = cited(s.launch.source);
+  const isolated = s.launch.safe && source !== '' && !MANIFEST.test(basename(source));
+  const features: Feature[] = [];
+  for (const f of s.features.slice(0, MAX_FEATURES)) {
+    let n = slug(f.title);
+    for (let i = 2; features.some((g) => g.slug === n); i++) n = `${slug(f.title)}-${i}`;
+    features.push({ ...f, slug: n });
+  }
+  const omitted = s.features.length - features.length;
+  const files = new Map<string, string>([[join('features', 'README.md'), verifyFeaturesMd(cfg.app, features, omitted)]]);
+  for (const f of features) files.set(join('features', `${f.slug}.md`), verifyFeatureMd(cfg.app, s, f));
+  files.set('SKILL.md', verifySkillMd(cfg.app, agent.agent, s, isolated, features, omitted));
+  const targets = [...files].map(([rel, body]) => ({ p: join(dir, rel), body }));
+  link = linked(targets.map(({ p }) => p));
+  if (link !== undefined) return skipLink(link);
+  const have = targets.filter(({ p }) => existsSync(p)).map(({ p }) => p);
+  if (have.length) return blocked(have);
+  const written: string[] = [];
+  for (const { p, body } of targets) {
+    try {
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, body);
+      written.push(p);
+    } catch (e) {
+      const made = written.length ? `; already written: ${written.map((w) => shown(repo, w)).join(', ')}` : '';
+      return { status: `${written.length ? 'partly written' : 'not written'}: ${shown(repo, p)} could not be written (${(e as Error).message})${made}; delete the skill folder, then re-run init`, failed: true };
+    }
+  }
+  return { status: `written by ${agent.agent}${isolated ? '' : '; its launch is not isolated, so read Launch before a drive'}` };
 }
 
 // The session-start hook `init --hook <agent>` adds; the agent shows its stdout to the session.
@@ -2675,14 +2930,15 @@ async function cmdInit(argv: string[]): Promise<number> {
     const added = !!rel && ensureIgnored(repo, rel);
     const root = shown(repo, fresh.evidence.root);
     const check = 'done-done check --outcome "<what you proved>" <files it recorded>';
-    const verify = scaffoldVerify(repo, fresh);
-    const agentHook = writeHook();
     const globalConfig = writeGlobal();
     const ag = writeAgent();
     const jg = writeJudge();
+    const verify = await scaffoldVerify(repo, loadConfig(repo));
+    const agentHook = writeHook();
+    const code = ag.code !== PASS ? ag.code : verify.failed ? FAIL : PASS;
     emit({
       command: 'init',
-      result: ag.code === PASS ? 'pass' : 'fail',
+      result: code === PASS ? 'pass' : 'fail',
       config: existed ? 'updated' : 'written',
       global_config: globalConfig,
       ...ag.out,
@@ -2691,11 +2947,11 @@ async function cmdInit(argv: string[]): Promise<number> {
       app: fresh.app,
       evidence_root: root,
       gitignore: added ? `added ${rel!.replace(/\/+$/, '')}/` : 'unchanged',
-      verify_skill: verify,
+      verify_skill: verify.status,
       ...agentHook.out,
-      help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...agentHook.help, ...ag.help, ...jg.help, `Commit ${commitFirst(fresh.skill)}`],
+      help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...agentHook.help, ...ag.help, ...jg.help, ...(verify.failed ? [SCAFFOLD_HELP] : []), `Commit ${commitFirst(fresh.skill)}`],
     });
-    return ag.code;
+    return code;
   }
   if (!existed) {
     // No evidence.root: proof goes to <local_root>/<app>, outside the repo, so it outlives this checkout.
@@ -2714,14 +2970,15 @@ app: ${JSON.stringify(cfg.app)}
   const added = !!rel && ensureIgnored(repo, rel);
   const root = shown(repo, cfg.evidence.root);
   const check = 'done-done check --outcome "<what you proved>" <files it recorded>';
-  const verify = scaffoldVerify(repo, cfg);
-  const agentHook = writeHook();
   const globalConfig = writeGlobal();
   const ag = writeAgent();
   const jg = writeJudge();
+  const verify = await scaffoldVerify(repo, loadConfig(repo));
+  const agentHook = writeHook();
+  const code = ag.code !== PASS ? ag.code : verify.failed ? FAIL : PASS;
   emit({
     command: 'init',
-    result: ag.code === PASS ? 'pass' : 'fail',
+    result: code === PASS ? 'pass' : 'fail',
     config: existed ? 'unchanged' : 'written',
     global_config: globalConfig,
     ...ag.out,
@@ -2729,7 +2986,7 @@ app: ${JSON.stringify(cfg.app)}
     app: cfg.app,
     evidence_root: root,
     gitignore: added ? `added ${rel!.replace(/\/+$/, '')}/` : 'unchanged',
-    verify_skill: verify,
+    verify_skill: verify.status,
     ...agentHook.out,
     help: [
       ...(Object.keys(cfg.journeys).length
@@ -2738,10 +2995,11 @@ app: ${JSON.stringify(cfg.app)}
       ...agentHook.help,
       ...ag.help,
       ...jg.help,
+      ...(verify.failed ? [SCAFFOLD_HELP] : []),
       `Commit ${commitFirst(cfg.skill)}`,
     ],
   });
-  return ag.code;
+  return code;
 }
 
 // The exact next command for a usage or config error, so an agent can recover without reading --help.
@@ -2854,7 +3112,7 @@ async function cmdDoctor(argv: string[]): Promise<number> {
         check: 'verify_skill',
         status: 'missing',
         detail: `no ${shown(repo, skillFile)}; checks still pass with "no verify skill"`,
-        fix: `Write ${shown(repo, skillFile)} describing how to drive this app without touching real accounts or your own state`,
+        fix: `Write ${shown(repo, skillFile)} describing how to drive this app (a later done-done init will scaffold it)`,
       });
   }
   // A repo file that exists but is invalid makes the agent unknown; the global config alone resolves it only when there is no repo file.

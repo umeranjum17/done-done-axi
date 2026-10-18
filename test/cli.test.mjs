@@ -1136,7 +1136,7 @@ test('init --hook gemini and --hook pi give the model the bare state at the star
   }
 });
 
-// Fixture repos for init's verify-skill tests: a CLI tool, and a repo whose own proof drives a stub engine with
+// Fixture repos for init's verify-skill scaffold: a CLI tool, and a repo whose own proof drives a stub engine with
 // its own state (scripts/verify/drive.sh, run by a .done-done.yaml journey) while `npm start` runs the real engine.
 function shapeRepo(kind, name) {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-shape-'));
@@ -1165,15 +1165,172 @@ function shapeRepo(kind, name) {
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
-  return { dir, repo, env, dd };
+  return { dir, repo, env, dd, sh };
 }
 
-test('init writes no verify skill, so it never launches the real engine from the start script', () => {
+// The stub agent's answer for init's scaffold call. It also carries maintain's keys, so one stub answers both.
+const scaffoldAnswer = (over = {}) => JSON.stringify({
+  surface: 'CLI',
+  launch: { steps: 'ENGINE=stub ENGINE_HOME="$(mktemp -d)" scripts/verify/drive.sh up', source: 'scripts/verify/drive.sh', safe: true, why: 'the stub engine with a throwaway ENGINE_HOME, as scripts/verify/drive.sh runs it.' },
+  ready: 'the command exits 0',
+  harness: 'a terminal (tmux or PTY)',
+  observe: 'terminal transcripts and exit codes',
+  isolate: 'each run gets its own ENGINE_HOME from mktemp',
+  features: [{ title: 'Add a note', reach: 'the add command', drive: 'run scripts/verify/drive.sh add milk', source: 'scripts/verify/drive.sh', capture: 'text' }],
+  drift: [], recipe: 'run it', recipes: [], missing: [],
+  ...over,
+});
+
+const featureFiles = (skillDir) => readdirSync(join(skillDir, 'features')).sort();
+// A hand-written verify skill, so an init test about config never asks the agent to write one.
+const keepSkill = (repo, app) => {
+  mkdirSync(join(repo, '.agents', 'skills', `verify-${app}`), { recursive: true });
+  writeFileSync(join(repo, '.agents', 'skills', `verify-${app}`, 'SKILL.md'), `# verify-${app}\n`);
+};
+
+test("init has the agent write the verify skill from the repo's own proof path, not the start script", () => {
+  const { repo, env, sh } = shapeRepo('proof', 'notes');
+  const s = stubAgents(env, scaffoldAnswer());
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).verify_skill, 'written by claude');
+  const [call] = s.calls();
+  assert.equal(call.cwd, repo, 'claude reads the repo with its read tools');
+  assert.match(call.stdin, /File scripts\/verify\/drive\.sh:\n#!\/bin\/sh\n# The proof drive/, "the agent is given the repo's own proof script");
+  assert.match(call.stdin, /File \.done-done\.yaml:\n.*\n {2}add:\n {4}command: scripts\/verify\/drive\.sh add milk/s, 'and its journeys');
+  const dir = join(repo, '.agents', 'skills', 'verify-notes');
+  const body = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  assert.match(body, /^## Launch\n\nENGINE=stub ENGINE_HOME="\$\(mktemp -d\)" scripts\/verify\/drive\.sh up\n\nSafe: the stub engine .* runs it \(from `scripts\/verify\/drive\.sh`\)\.$/m, 'Launch is the stub engine with its own state');
+  assert.doesNotMatch(body, /npm start/, 'never the start script that runs the real engine');
+  assert.match(body, /^- \[Add a note\]\(features\/add-a-note\.md\): the add command \(`scripts\/verify\/drive\.sh`\)$/m, 'Drive names the real handle');
+  assert.deepEqual(featureFiles(dir), ['README.md', 'add-a-note.md']);
+  assert.match(readFileSync(join(dir, 'features', 'add-a-note.md'), 'utf8'), /^2\. Run scripts\/verify\/drive\.sh add milk\.\n3\. Capture: save the output and exit status to \$DONE_DONE_EVIDENCE_ROOT\/add-a-note\.txt,/m);
+  const before = body;
+  assert.match(toon(doctorIn(repo, s.env, 'init')).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/SKILL\.md already exist; delete the skill folder to regenerate$/, 'a finished skill is named, never overwritten');
+  assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), before, 're-run is idempotent');
+  assert.equal(s.calls().length, 1, 're-run asks the agent nothing');
+  sh('add', '-A');
+  sh('commit', '-qm', 'skill');
+  const m = doctorIn(repo, s.env, 'maintain', '--foreground');
+  assert.deepEqual([m.code, toon(m).result, toon(m).findings?.length ?? 0], [0, 'clean', 0], `the written skill passes maintain: ${m.out}`);
+});
+
+test('init says the launch is not isolated when the repo shows no safe proof path', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const s = stubAgents(env, scaffoldAnswer({
+    launch: { steps: 'node bin/cli.js add milk', source: '', safe: false, why: 'bin/cli.js keeps its notes in your own HOME' },
+    features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add milk', source: 'bin/cli.js', capture: 'text' }],
+  }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).verify_skill, 'written by claude; its launch is not isolated, so read Launch before a drive');
+  const body = readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8');
+  assert.match(body, /^## Launch\n\nNot isolated: bin\/cli\.js keeps its notes in your own HOME\. .*may use real accounts or the owner's own state\. The drive changes no repo file/m);
+});
+
+test('init with a tool-less agent writes no verify skill that cites a file its prompt left out', () => {
+  const { repo, env, sh } = shapeRepo('proof', 'notes');
+  const big = 'x'.repeat(20_000);
+  for (let i = 1; i <= 8; i++) writeFileSync(join(repo, 'scripts', 'verify', `0-fixture-${i}.sh`), big);
+  writeFileSync(join(repo, 'scripts', 'verify', 'drive.sh'), `#!/bin/sh\n${big}`, { mode: 0o755 });
+  sh('add', '-A');
+  sh('commit', '-qm', 'fixtures');
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  const s = stubAgents(env, scaffoldAnswer());
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: opencode's answer is unusable: the launch cites scripts\/verify\/drive\.sh, whose text is not in the prompt/);
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill that cites a file the agent never read');
+  assert.equal(s.calls().filter((c) => c.agent === 'opencode').length, 1, 'a bad answer is not asked again');
+});
+
+test('init labels a launch not isolated when its source is a manifest, whatever the model says', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const s = stubAgents(env, scaffoldAnswer({
+    launch: { steps: 'npm start', source: 'package.json', safe: true, why: 'the start script' },
+    features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add milk', source: 'bin/cli.js', capture: 'text' }],
+  }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).verify_skill, 'written by claude; its launch is not isolated, so read Launch before a drive');
+  assert.doesNotMatch(readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8'), /^Safe:/m, 'a manifest is never a safe launch');
+});
+
+test('init never sends a secret-looking file to a tool-less agent, and refuses a feature that cites one', () => {
+  const { repo, env, sh } = shapeRepo('cli', 'notes');
+  mkdirSync(join(repo, 'config'));
+  writeFileSync(join(repo, '.env'), 'API_TOKEN=tok_SECRETVALUE_12345\n');
+  writeFileSync(join(repo, 'config', 'secrets.json'), '{"db":"hunter2-SECRETVALUE"}\n');
+  writeFileSync(join(repo, 'deploy.key'), 'key-material-SECRETVALUE\n');
+  mkdirSync(join(repo, 'secrets'));
+  writeFileSync(join(repo, 'secrets', 'db.json'), '{"db":"dir-SECRETVALUE"}\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'secrets');
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  const s = stubAgents(env, scaffoldAnswer({
+    launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' },
+    features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add milk', source: '.env', capture: 'text' }],
+  }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /cites \.env, a secret-looking file, which can not be a source/);
+  const [call] = s.calls();
+  assert.ok(!call.file.includes('SECRETVALUE'), 'no secret-looking file text reaches the prompt, even under a secret-named folder');
+  assert.ok(call.file.includes('.env'), 'its name is still listed as tracked');
+});
+
+test('init refuses a launch that cites a secret-looking file, even when claude reads the repo', () => {
+  const { repo, env, sh } = shapeRepo('cli', 'notes');
+  writeFileSync(join(repo, '.env'), 'API_TOKEN=tok_SECRETVALUE_12345\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'env');
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: '.env', safe: true, why: 'help only' } }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: the launch cites \.env, a secret-looking file, which can not be a source; record /);
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill from a secret launch source');
+});
+
+test('init writes the Safe label from the model flag for a tracked non-manifest source', () => {
+  const { repo, env } = shapeRepo('proof', 'notes');
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'ENGINE=stub bash scripts/verify/drive.sh add milk', source: 'scripts/verify/drive.sh', safe: true, why: 'the stub engine' } }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).verify_skill, 'written by claude');
+  assert.match(readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8'), /^Safe: the stub engine \(from `scripts\/verify\/drive\.sh`\)\.$/m);
+});
+
+test('init with no agent set writes no verify skill and asks for the agent', () => {
   const { repo, dd } = shapeRepo('proof', 'notes');
   const r = dd('init');
   assert.equal(r.code, 2, r.out);
-  assert.equal(toon(r).verify_skill, 'not written: write .agents/skills/verify-notes/SKILL.md by hand, with a launch that never touches real accounts or your own state');
+  assert.equal(toon(r).verify_skill, 'not written: no agent is set, and the agent writes the verify skill');
+  assert.ok(toon(r).help.some((h) => /no agent is set: ask the user which agent to use/.test(h)), r.out);
   assert.equal(existsSync(join(repo, '.agents')), false, 'no skill, not even a template');
+});
+
+test('init writes no verify skill when the agent fails or cites a file the repo does not track', () => {
+  const { repo, env } = shapeRepo('proof', 'notes');
+  const dir = join(repo, '.agents', 'skills', 'verify-notes');
+  const failed = stubAgents(env, 'error');
+  const r = doctorIn(repo, failed.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: claude did not answer: .*session limit.*; record .*init-.*-claude\.json$/, 'the real cause and the call record');
+  assert.ok(toon(r).help.some((h) => /^The verify skill was not written: fix the cause verify_skill names/.test(h)), r.out);
+  assert.equal(existsSync(dir), false, 'no skill on an agent error');
+  const invented = stubAgents(env, scaffoldAnswer({ launch: { steps: 'scripts/start-stub.sh', source: 'scripts/start-stub.sh', safe: true, why: 'a stub' } }));
+  const i = doctorIn(repo, invented.env, 'init');
+  assert.equal(i.code, 1, i.out);
+  assert.match(toon(i).verify_skill, /^not written: claude's answer is unusable: the launch cites scripts\/start-stub\.sh, which is not a tracked file; record /);
+  assert.equal(existsSync(dir), false, 'no skill from an invented path');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  const asked = doctorIn(repo, invented.env, 'init');
+  assert.equal(asked.code, 1, asked.out);
+  assert.match(toon(asked).verify_skill, /^not written: opencode's answer is unusable: the launch cites scripts\/start-stub\.sh, which is not a tracked file; record /);
+  assert.equal(invented.calls().filter((c) => c.agent === 'opencode').length, 1, 'a bad answer is not asked again');
+  assert.equal(existsSync(dir), false);
 });
 
 test('init never overwrites an existing verify skill', () => {
@@ -1183,8 +1340,54 @@ test('init never overwrites an existing verify skill', () => {
   writeFileSync(skill, '# hand-written\n');
   const r = dd('init');
   assert.equal(r.code, 2, r.out);
-  assert.equal(toon(r).verify_skill, 'unchanged');
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/SKILL\.md already exist; delete the skill folder to regenerate$/);
   assert.equal(readFileSync(skill, 'utf8'), '# hand-written\n', 'the existing file is kept');
+});
+
+test('init writes the verify skill all-or-nothing: a pre-existing features file blocks the whole scaffold', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  mkdirSync(join(skill, 'features'), { recursive: true });
+  writeFileSync(join(skill, 'features', 'add.md'), '# kept\n');
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/features\/add\.md already exist; delete the skill folder to regenerate$/);
+  assert.equal(existsSync(join(skill, 'SKILL.md')), false, 'no SKILL.md next to the blocked scaffold');
+  assert.equal(existsSync(join(skill, 'features', 'README.md')), false, 'no feature index next to it');
+  assert.equal(readFileSync(join(skill, 'features', 'add.md'), 'utf8'), '# kept\n', 'the existing file is kept byte-identical');
+});
+
+test('init writes the verify skill all-or-nothing: a directory at a target path blocks it', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  mkdirSync(join(skill, 'features', 'add.md'), { recursive: true });
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/features\/add\.md already exist; delete the skill folder to regenerate$/);
+  assert.equal(existsSync(join(skill, 'SKILL.md')), false, 'no partial scaffold');
+  assert.equal(existsSync(join(skill, 'features', 'README.md')), false, 'no feature index next to it');
+});
+
+test('init refuses a feature drive that is only a period, instead of crashing', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: '.', source: 'bin/cli.js', capture: 'text' }] }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.doesNotMatch(r.out, /TypeError/, 'no uncaught error');
+  assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: has a feature without a title, reach, drive, source or capture; record /);
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill from an empty drive');
+});
+
+test('init keeps the config when the verify skill cannot be written', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  writeFileSync(join(repo, '.agents'), 'not a directory\n');
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: .*could not be written.*; delete the skill folder, then re-run init$/, 'the scaffold fails with the remedy');
+  assert.equal(existsSync(join(repo, '.done-done.yaml')), true, 'the config written before the scaffold is kept');
 });
 
 test('init refuses a verify skill path that leaves the repo', () => {
@@ -1195,6 +1398,30 @@ test('init refuses a verify skill path that leaves the repo', () => {
   assert.match(r.out, /has a \.\. segment/);
   assert.match(r.out, /\.\.\/escaped\/verify/, 'the message names the bad value');
   assert.equal(existsSync(join(dir, 'escaped')), false, 'nothing is written outside the repo');
+});
+
+test('init skips the verify skill behind a symlinked ancestor and writes the rest', () => {
+  const { dir, repo, dd } = shapeRepo('cli', 'notes');
+  mkdirSync(join(dir, 'elsewhere'));
+  symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents'));
+  writeFileSync(join(repo, '.done-done.yaml'), 'skill: .agents/skills/verify-notes\n');
+  const r = dd('init');
+  assert.equal(r.code, 2, r.out);
+  assert.match(toon(r).verify_skill, /^skipped, \.agents is a symlink/);
+  assert.equal(existsSync(join(dir, 'elsewhere', 'skills')), false, 'nothing is written through the symlink');
+  assert.equal(existsSync(join(repo, '.done-done.yaml')), true, 'the rest of init still ran');
+});
+
+test('init skips the verify skill when a symlink sits beneath the skill dir', () => {
+  const { dir, repo, dd } = shapeRepo('cli', 'notes');
+  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
+  mkdirSync(join(dir, 'elsewhere'));
+  symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents', 'skills', 'verify-notes', 'features'));
+  const r = dd('init');
+  assert.equal(r.code, 2, r.out);
+  assert.match(toon(r).verify_skill, /features is a symlink/);
+  assert.deepEqual(readdirSync(join(dir, 'elsewhere')), [], 'no feature file is written through the symlink');
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md')), false, 'no partial scaffold');
 });
 
 test('init outside a git repository reports a clear usage error', () => {
@@ -2628,6 +2855,7 @@ test('a judge.route auto from an old config exits 2 naming the file; deleting th
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const file = join(t.env.DONE_DONE_HOME, 'config.yaml');
   writeFileSync(file, 'agent: opencode\njudge:\n  route: auto\n');
+  keepSkill(t.repo, 'notes');
   const auto = t.dd('verify', 'shots', '--outcome', 'home and settings render');
   assert.equal(auto.code, 2, auto.out);
   assert.match(toon(auto).error, /judge\.route auto is gone: done-done never picks the judge, the user sets it$/);
@@ -2643,6 +2871,7 @@ test('init --judge saves the user\'s judge, refuses one done-done cannot judge t
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  keepSkill(t.repo, 'notes');
   const bad = t.dd('init', '--judge', 'acp:gemini');
   assert.equal(bad.code, 2, bad.out);
   assert.match(toon(bad).error, /^done-done cannot judge through acp:gemini; it judges through claude, opencode, pi, gemini$/);
@@ -2663,6 +2892,7 @@ test('re-saving a judge without --judge-model keeps its model on the same route 
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const file = join(t.env.DONE_DONE_HOME, 'config.yaml');
   writeFileSync(file, 'agent: claude\njudge:\n  route: answerer:opencode\n  model: opencode-go/other-model\n');
+  keepSkill(t.repo, 'notes');
   assert.equal(t.dd('init', '--judge', 'opencode').code, 0);
   assert.equal(parse(readFileSync(file, 'utf8')).judge.model, 'opencode-go/other-model');
   assert.equal(t.dd('init', '--judge', 'gemini').code, 0);
@@ -2715,6 +2945,7 @@ test('with no judge set, verify in a terminal asks from a list, saves the pick a
 
 test('init in a terminal says why it asks again and refuses a model the agent does not list', { skip: !existsSync('/usr/bin/script') && 'no script(1)' }, () => {
   const t = setup();
+  keepSkill(t.repo, 'notes');
   const bin = join(t.dir, 'bin');
   mkdirSync(bin);
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh\necho opencode-go/muse-spark-1.3-contributor\n`, { mode: 0o755 });
@@ -3121,6 +3352,7 @@ test('with no agent set, done-done never picks one: doctor, maintain and verify 
 
 test('init --agent names the repo config agent that overrides the one it saves', () => {
   const { repo, env, dd } = setup('app: notes\nagent: claude\n');
+  keepSkill(repo, 'notes');
   const r = dd('init', '--agent', 'opencode', '--model', 'opencode-go/test-model');
   assert.equal(r.code, 0, r.out);
   assert.match(toon(r).agent, /^opencode \(model opencode-go\/test-model\) saved to .*config\.yaml; \.done-done\.yaml overrides it with claude$/);
@@ -3129,7 +3361,8 @@ test('init --agent names the repo config agent that overrides the one it saves',
 });
 
 test('init --agent puts the key before the first top-level key when the example comment is gone', () => {
-  const { dir, dd } = bareRepo();
+  const { dir, repo, dd } = bareRepo();
+  keepSkill(repo, 'repo');
   dd('init');
   const globalYml = join(dir, 'home', 'config.yaml');
   writeFileSync(globalYml, readFileSync(globalYml, 'utf8').replace(/^# agent: opencode\n/m, ''));
@@ -3144,7 +3377,8 @@ test('init --agent puts the key before the first top-level key when the example 
 });
 
 test('init --agent replaces the example comment even when a key sits above it', () => {
-  const { dir, dd } = bareRepo();
+  const { dir, repo, dd } = bareRepo();
+  keepSkill(repo, 'repo');
   const globalYml = join(dir, 'home', 'config.yaml');
   mkdirSync(join(dir, 'home'), { recursive: true });
   writeFileSync(globalYml, `evidence:\n  local_root: ${join(dir, 'ev')}\n# agent: opencode\nagent_config:\n  claude: { model: claude-haiku-5-5 }\n`);
@@ -4738,7 +4972,7 @@ test('maintain reports a dead link, a wrong file:line and drift from read-only r
   const dd = (...args) => doctorIn(repo, s.env, ...args);
   const none = dd('maintain', '--foreground');
   assert.equal(none.code, 3, none.out);
-  assert.deepEqual([toon(none).result, toon(none).help[0]], ['blocked', 'Write the verify skill by hand, with a launch that never touches real accounts or your own state']);
+  assert.deepEqual([toon(none).result, toon(none).help[0]], ['blocked', 'Create the verify skill: done-done init']);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nThe map: [features](features/README.md). See https://example.com:443/x and localhost:3000.\n');

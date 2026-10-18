@@ -97,6 +97,9 @@ test('the README manual-CLI worked example runs as written: init, journey, run, 
 
 test('the reference init shapes run as written: --agent, --journey and every --hook', () => {
   const { repo, dd } = cleanRepo('app: notes\n');
+  // A hand-written verify skill: init never asks the agent to write one over it, so no real agent runs here.
+  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
+  writeFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), '# verify-notes\n');
   assert.match(dd('init', '--agent', 'opencode', '--model', 'opencode-go/muse-spark-1.3-contributor').out, /opencode/, 'init --agent saves the coding agent');
   assert.equal(toon(dd('init', '--journey', 'smoke', '--', 'echo added: milk > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log')).journey, 'smoke');
   for (const [flag, file] of [['claude', '.claude/settings.json'], ['codex', '.codex/hooks.json'], ['opencode', '.opencode/plugins/done-done.js'], ['gemini', '.gemini/settings.json'], ['pi', '.pi/extensions/done-done.js']]) {

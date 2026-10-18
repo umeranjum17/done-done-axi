@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Question } from '@byokit/decide';
-import { type AgentAnswer, askAgent, editOnlyReason, type JudgeChoice, notStartable, selectAgent, selectJudge } from './agents.js';
+import { type AgentAnswer, askAgent, type JudgeChoice, notStartable, selectAgent, selectJudge, toollessReason } from './agents.js';
 import { type Config } from './config.js';
 import { askJudge, backend } from './judge.js';
 
@@ -321,8 +321,7 @@ async function pass<S>(run: Pick<MaintainRun, 'repo' | 'findings' | 'git_status'
   // Only claude reads the repo with its own tools: its read tools refuse paths outside it, while the other agents'
   // tools cannot be trusted that way, so they get the cited source from plain code.
   const toolless = agent.agent !== 'claude';
-  const toollessReason = agent.agent === 'gemini' ? 'gemini cannot read tool-less yet, since its none mode is read-only plan mode, not tool-free' : editOnlyReason(agent.agent);
-  const toollessBlock = agent.path && toollessReason ? `source-wave: ${toollessReason}; use claude, opencode, pi or acp` : '';
+  const toollessBlock = agent.path && toollessReason(agent.agent) ? `source-wave: ${toollessReason(agent.agent)}; use claude, opencode, pi or acp` : '';
   if (toollessBlock) add({ kind: 'coverage', file: rel(featDir), what: toollessBlock });
   const agentBlock = !agent.path ? `source-wave: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor` : toollessBlock;
   let calls = 0;
