@@ -3373,6 +3373,11 @@ test('design fails a screen on each defect the judge names, alone or next to its
   const unsure = design(answer({ layout: { defect: 0.5, none: 0.5 } }), 'screen3.png');
   assert.equal(unsure.code, 3, unsure.out);
   assert.match(toon(unsure).screens[0].reason, /^not confident enough about layout$/);
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n  floor: 0.99\n');
+  const strict = design(answer(), 'screen3.png');
+  assert.equal(strict.code, 3, strict.out);
+  assert.match(toon(strict).screens[0].reason, /not confident enough about aspect/);
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   const empty = design(answer(), 'blank.png');
   assert.equal(empty.code, 2, empty.out);
   assert.equal(toon(empty).error, 'design: blank.png: png is a blank frame (luminance spread 0.0000), so it cannot be sent to the judge');
