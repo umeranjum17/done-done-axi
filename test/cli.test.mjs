@@ -1937,6 +1937,23 @@ test('judge.floor is config: the default 0.7 counts a supported pick, a higher f
   assert.match(badFloor.out, /judge\.floor must be a number from 0 to 1/);
 });
 
+test('a verdict cached at one judge.floor is asked again at another', () => {
+  const j = judgeSetup({ correct: 0.75, wrong: 0.2, unclear: 0.05 }, { floor: 0.7 });
+  const { files } = j.shots();
+  const outcome = 'the home screen shows the notes';
+  const first = j.dd('check', '--judge', '--outcome', outcome, files[0]);
+  assert.equal(first.code, 0, first.out);
+  assert.equal(toon(first).judge.judged[0].verdict, 'pass');
+  assert.equal(j.calls().length, 1);
+  const config = join(j.env.DONE_DONE_HOME, 'config.yaml');
+  writeFileSync(config, readFileSync(config, 'utf8').replace('floor: 0.7', 'floor: 0.8'));
+  const second = j.dd('check', '--judge', '--outcome', outcome, files[0]);
+  assert.equal(second.code, 3, second.out);
+  assert.equal(j.calls().length, 2, 'the new floor is a new cache key, so the model is asked again');
+  assert.equal(toon(second).judge.judged[0].cached, false);
+  assert.equal(toon(second).judge.judged[0].verdict, 'unsure');
+});
+
 test('a chat screenshot reaches the judge as an image, and a two-width JSON capture reaches it whole', () => {
   const j = judgeSetup(CORRECT);
   const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
