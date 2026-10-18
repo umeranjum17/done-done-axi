@@ -1326,6 +1326,23 @@ test('init refuses a launch that cites a secret-looking file, even when claude r
   assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill from a secret launch source');
 });
 
+test('init lets a tool-less agent cite a nested bin file it was shown', () => {
+  const { repo, env, sh } = shapeRepo('cli', 'notes');
+  mkdirSync(join(repo, 'tools', 'bin'), { recursive: true });
+  writeFileSync(join(repo, 'tools', 'bin', 'dev'), '#!/bin/sh\necho dev\n', { mode: 0o755 });
+  sh('add', '-A');
+  sh('commit', '-qm', 'nested bin');
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  const s = stubAgents(env, scaffoldAnswer({
+    launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' },
+    features: [{ title: 'dev', reach: 'the dev script', drive: 'run tools/bin/dev', source: 'tools/bin/dev', capture: 'text' }],
+  }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).verify_skill, 'written by opencode');
+});
+
 test('init lets a tool-less agent cite a nested Dockerfile it was shown', () => {
   const { repo, env, sh } = shapeRepo('cli', 'notes');
   mkdirSync(join(repo, 'services', 'api'), { recursive: true });
