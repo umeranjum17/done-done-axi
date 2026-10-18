@@ -2336,8 +2336,7 @@ const SCAFFOLD_SCHEMA = {
   additionalProperties: false,
 };
 
-// Where a drive stops and how it records what it found, for every step that asks it to find something.
-const RECORD = 'once the drive works, write what you found here in place of this instruction (after the drive: a `done-done verify` drive changes no repo file)';
+const NO_EDIT = 'The drive changes no repo file: note findings in the run\'s report, then update the skill after the drive (done-done maintain)';
 const MAX_FEATURES = 5;
 
 const slug = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'feature';
@@ -2398,9 +2397,9 @@ function repoContext(repo: string, skill: string): { files: Set<string>; read: S
 
 function scaffoldPrompt(cfg: Config, context: string, toolless: boolean): string {
   return `You write the verify skill for the app ${cfg.app}, which \`done-done init\` saves at ${cfg.skill}: how an agent launches this repo's app safely, drives it the way a user does, and captures proof that it works. Do not edit, create or delete any file, and do not run the app or any command.
-${toolless ? "You have no tools: the repo's tracked file list and the text of its key files are below, and they are all you can read." : 'The repository is your working directory: read the files below first, then any other file you need.'} Use only what the repo shows: never invent a command, path, flag, route or label.
+${toolless ? "You have no tools: the repo's tracked file list and the text of its key files are below, and they are all you can read." : 'The repository is your working directory: read the files below first, then any other file you need.'} Use only what the repo shows: never invent a command, path, flag, route or label. Never open a secret-looking file: a .env or .env.* file, a path whose name contains secret, credential, token or password, or a *.pem, *.key or *.p12 file. Never write a secret value into steps or why; name the environment variable instead.
 
-- launch: how to start the app for a proof. Prefer the repo's own proof path: a verify, e2e, smoke or demo script, or a journey in .done-done.yaml, that runs the app with a stub, fake or demo engine and its own state (a temporary HOME or data folder), the way the repo proves itself; copy its exact command and environment flags. {steps: the exact command on one line, with every environment flag, whose first command runs source (or passes it to an interpreter such as bash, node or npx tsx), source: the repo file they come from, safe: true only when these steps use a stub or demo mode or isolated state, so no real account, paid service or the owner's own state is touched, why: what makes it safe, or when safe is false what it would touch}. When the repo has no such path, give the closest launch with safe false; never present a command that uses real accounts or the owner's own state (for example a start script that runs the real engine) as safe.
+- launch: how to start the app for a proof. Prefer the repo's own proof path: a verify, e2e, smoke or demo script, or a journey in .done-done.yaml, that runs the app with a stub, fake or demo engine and its own state (a temporary HOME or data folder), the way the repo proves itself; copy its exact command and environment flags. {steps: the exact command on one line, with every environment flag, whose first command runs source (or passes it to an interpreter such as bash, node or npx tsx), source: the repo file they come from (for a .done-done.yaml journey, the script or file that journey runs, never .done-done.yaml itself), safe: true only when these steps use a stub or demo mode or isolated state, so no real account, paid service or the owner's own state is touched, why: what makes it safe, or when safe is false what it would touch}. When the repo has no such path, give the closest launch with safe false; never present a command that uses real accounts or the owner's own state (for example a start script that runs the real engine) as safe.
 - surface: what a user drives: web UI, CLI, API/service, desktop app or other.
 - ready: the check that shows the launched app is ready to drive (a URL that answers, a line it prints, an exit code).
 - harness: what drives it: a browser tool, a terminal (tmux or PTY), curl, or a shell.
@@ -2420,6 +2419,7 @@ function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown
   const citation = (p: string) => {
     const c = cited(p);
     if (!tracked.has(c)) return `cites ${c}, which is not a tracked file`;
+    if (SECRET.test(c)) return `cites ${c}, a secret-looking file, which can not be a source`;
     return shown.has(c) ? '' : `cites ${c}, whose text is not in the prompt`;
   };
   for (const k of ['surface', 'ready', 'harness', 'observe', 'isolate'] as const) if (!text(s[k])) return `missing ${k}`;
@@ -2440,7 +2440,7 @@ function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolea
   const source = cited(s.launch.source);
   const launch = isolated
     ? `${s.launch.steps.trim()}\n\nSafe: ${clause(s.launch.why)} (from \`${source}\`).`
-    : `Not isolated: ${clause(s.launch.why)}. The launch below is not shown to use a stub or demo engine with its own state, so it may use real accounts or the owner's own state: before a drive, give it a stub or demo mode and its own state folder (HOME or data folder); ${RECORD}.\n\n${s.launch.steps.trim()}${source ? `\n\nFrom \`${source}\`.` : ''}`;
+    : `Not isolated: ${clause(s.launch.why)}. The launch below is not shown to use a stub or demo engine with its own state, so it may use real accounts or the owner's own state. ${NO_EDIT}.\n\n${s.launch.steps.trim()}${source ? `\n\nFrom \`${source}\`.` : ''}`;
   const found = [
     ...features.map((f) => `- [${f.title}](features/${f.slug}.md): ${clause(f.reach)} (\`${cited(f.source)}\`)`),
     ...(omitted ? [`- ${omitted} more found and not listed; add them by hand or run maintain later.`] : []),
@@ -2452,7 +2452,7 @@ description: Drive the ${app} ${s.surface} the way a user does and capture proof
 
 # ${name}
 
-Written by \`done-done init\` through ${agent} from this repo's own files (surface: ${s.surface}). The first drive checks each step and records what it finds here.
+Written by \`done-done init\` through ${agent} from this repo's own files (surface: ${s.surface}). The first drive checks each step. ${NO_EDIT}.
 
 ## Launch
 
@@ -2484,7 +2484,7 @@ Stop the instances this run started and remove scratch state. Evidence survives 
 function verifyFeatureMd(app: string, s: Scaffold, f: Feature): string {
   const capture = f.capture === 'screenshot' ? `screenshot the resulting page to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.png` : `save the output and exit status to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.txt`;
   const drive = clause(f.drive);
-  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## Sub-features\n\nList each thing a user can do here; ${RECORD}.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n## Gotchas\n\nWrite here what surprised a drive (a slow load, a login wall, a label that moved) and what worked instead, after the drive.\n`;
+  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## Sub-features\n\nList each thing a user can do here. ${NO_EDIT}.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n## Gotchas\n\n${NO_EDIT}.\n`;
 }
 
 function verifyFeaturesMd(app: string, features: Feature[], omitted: number): string {
@@ -2553,12 +2553,15 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   if (link !== undefined) return skipLink(link);
   const have = targets.filter(({ p }) => existsSync(p)).map(({ p }) => p);
   if (have.length) return blocked(have);
+  const written: string[] = [];
   for (const { p, body } of targets) {
     try {
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, body);
+      written.push(p);
     } catch (e) {
-      return { status: `skipped, ${shown(repo, p)} could not be written (${(e as Error).message}); fix it and re-run init` };
+      const made = written.length ? `; already written: ${written.map((w) => shown(repo, w)).join(', ')}` : '';
+      return { status: `${written.length ? 'partly written' : 'not written'}: ${shown(repo, p)} could not be written (${(e as Error).message})${made}; delete the skill folder, then re-run init`, failed: true };
     }
   }
   return { status: `written by ${agent.agent}${isolated ? '' : '; its launch is not isolated, so read Launch before a drive'}` };

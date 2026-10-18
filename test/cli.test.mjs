@@ -1225,7 +1225,7 @@ test('init says the launch is not isolated when the repo shows no safe proof pat
   assert.equal(r.code, 0, r.out);
   assert.equal(toon(r).verify_skill, 'written by claude; its launch is not isolated, so read Launch before a drive');
   const body = readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8');
-  assert.match(body, /^## Launch\n\nNot isolated: bin\/cli\.js keeps its notes in your own HOME\. .*may use real accounts or the owner's own state: before a drive, give it a stub or demo mode/m);
+  assert.match(body, /^## Launch\n\nNot isolated: bin\/cli\.js keeps its notes in your own HOME\. .*may use real accounts or the owner's own state\. The drive changes no repo file/m);
 });
 
 test('init with a tool-less agent writes no verify skill that cites a file its prompt left out', () => {
@@ -1275,10 +1275,22 @@ test('init never sends a secret-looking file to a tool-less agent, and refuses a
   }));
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 1, r.out);
-  assert.match(toon(r).verify_skill, /cites \.env, whose text is not in the prompt/);
+  assert.match(toon(r).verify_skill, /cites \.env, a secret-looking file, which can not be a source/);
   const [call] = s.calls();
   assert.ok(!call.file.includes('SECRETVALUE'), 'no secret-looking file text reaches the prompt, even under a secret-named folder');
   assert.ok(call.file.includes('.env'), 'its name is still listed as tracked');
+});
+
+test('init refuses a launch that cites a secret-looking file, even when claude reads the repo', () => {
+  const { repo, env, sh } = shapeRepo('cli', 'notes');
+  writeFileSync(join(repo, '.env'), 'API_TOKEN=tok_SECRETVALUE_12345\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'env');
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: '.env', safe: true, why: 'help only' } }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: the launch cites \.env, a secret-looking file, which can not be a source; record /);
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill from a secret launch source');
 });
 
 test('init writes the Safe label from the model flag for a tracked non-manifest source', () => {
@@ -1373,8 +1385,8 @@ test('init keeps the config when the verify skill cannot be written', () => {
   writeFileSync(join(repo, '.agents'), 'not a directory\n');
   const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
   const r = doctorIn(repo, s.env, 'init');
-  assert.equal(r.code, 0, r.out);
-  assert.match(toon(r).verify_skill, /^skipped, .*could not be written/, 'the scaffold is skipped with a reason');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: .*could not be written.*; delete the skill folder, then re-run init$/, 'the scaffold fails with the remedy');
   assert.equal(existsSync(join(repo, '.done-done.yaml')), true, 'the config written before the scaffold is kept');
 });
 
