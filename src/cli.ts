@@ -2336,7 +2336,7 @@ const SCAFFOLD_SCHEMA = {
   additionalProperties: false,
 };
 
-const NO_EDIT = 'The drive changes no repo file: note findings in the run\'s report, then update the skill after the drive (done-done maintain)';
+const NO_EDIT = 'The drive changes no repo file: note findings in the run\'s report; after the drive, run done-done maintain to see what drifted, then fix the skill';
 const MAX_FEATURES = 5;
 
 const slug = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'feature';
@@ -2452,7 +2452,7 @@ description: ${JSON.stringify(`Drive the ${app} ${s.surface} the way a user does
 
 # ${name}
 
-Written by \`done-done init\` through ${agent} from this repo's own files (surface: ${s.surface}). The first drive checks each step. ${NO_EDIT}.
+Written by \`done-done init\` through ${agent} from this repo's own files (surface: ${s.surface}). ${NO_EDIT}.
 
 ## Launch
 
@@ -2481,7 +2481,7 @@ Stop the instances this run started and remove scratch state. Evidence survives 
 function verifyFeatureMd(app: string, s: Scaffold, f: Feature): string {
   const capture = f.capture === 'screenshot' ? `screenshot the resulting page to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.png` : `save the output and exit status to $DONE_DONE_EVIDENCE_ROOT/${f.slug}.txt`;
   const drive = clause(f.drive);
-  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## Sub-features\n\n${NO_EDIT}.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n## Gotchas\n\n${NO_EDIT}.\n`;
+  return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n${NO_EDIT}.\n`;
 }
 
 function verifyFeaturesMd(app: string, features: Feature[], omitted: number): string {
