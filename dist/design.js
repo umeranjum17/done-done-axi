@@ -161,7 +161,8 @@ export async function design(cfg, choice, screens, records) {
         const withMock = !!mock;
         const key = createHash('sha256').update(JSON.stringify([VERSION, s.sha256, s.mock?.sha256 ?? null, questions(withMock), measured, choice.route, choice.model])).digest('hex');
         const hit = readCache(dir, key);
-        const cached = Array.isArray(hit?.defects) && Array.isArray(hit?.unsure);
+        const validDefect = (d) => !!d && typeof d === 'object' && Object.hasOwn(KINDS, d.kind) && typeof d.where === 'string' && !!d.where;
+        const cached = hit?.route === choice.route && hit?.model === choice.model && Array.isArray(hit.defects) && hit.defects.every(validDefect) && Array.isArray(hit.unsure) && hit.unsure.every((kind) => typeof kind === 'string' && Object.hasOwn(KINDS, kind));
         let judge = hit;
         if (!cached) {
             call = `${records}/design-${stamp}-${n + 1}`;
