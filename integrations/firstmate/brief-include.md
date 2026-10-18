@@ -30,6 +30,6 @@ wherever this text or the skill says `done-done`. If done-done cannot run, repor
    worktree. Only if the repo's `.done-done.yaml` sets `evidence.root` inside the repo, copy the receipt file
    `receipt` printed and every cited file to `proof/` in your task's data folder before teardown.
 
-Exit 1 (fail) or 3 (inconclusive) is never done: fix the proof and re-run, or report what done-done found.
-`evidence: not proven: <cause>` is inconclusive (3) and gets no receipt: report the task as not proven, never as done.
+Exit 1 (fail), 2 (stopped before a verdict) or 3 (inconclusive) is never done: fix the proof and re-run, or report what done-done found.
+`evidence: not proven: <cause>` stops `check` with exit 2 before the judge is asked, with no result and no receipt: report the task as not proven, never as done.
 Any commit after the receipt makes the proof stale: run, check and receipt again on the new head.
