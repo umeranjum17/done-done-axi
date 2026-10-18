@@ -41,7 +41,7 @@ export type Config = {
   checks: { not_proven: 'inconclusive' | 'allow'; fix_title: string };
   // enabled: verify judges unless false (--judge turns it on for a run); check and receipt judge with --judge or true; rerun repeats its source run.
   // route: claude-code, answerer:<agent> or openai:key, set by the user ('' until they do); model: '' for that agent's agent_config model.
-  // floor: the judge's own probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
+  // floor: the check and receipt judge's own probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass; triage and the design check keep their own floors.
   judge: { enabled?: boolean; route: string; model: string; allow_same: boolean; floor: number };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
