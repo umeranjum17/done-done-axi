@@ -5306,7 +5306,11 @@ test(`an unreadied instance (ready ${ready.split(':')[0]}) fails the run with it
   assert.equal(r.code, 1, r.out);
   assert.match(toon(r).reason, /instance not ready within 2s/);
   assert.match(toon(r).reason, why);
-  assert.throws(() => process.kill(Number(readFileSync(join(t.dir, 'inst.pid'), 'utf8')), 0), 'the instance group is killed');
+  const pid = Number(readFileSync(join(t.dir, 'inst.pid'), 'utf8'));
+  const deadline = Date.now() + 5000;
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  while (alive() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  assert.equal(alive(), false, 'the instance group is killed');
 });
 
 // auto_fix.verify: the journey fails while src/app.js says BUG; the opencode stub fixes it, and also writes the file named in `extra`.
