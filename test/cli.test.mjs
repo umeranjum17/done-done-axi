@@ -1523,7 +1523,7 @@ test('a verify-skill write blocked by a file at the skill folder leaves no temp 
   assert.deepEqual(readdirSync(skills).filter((n) => n.includes('.tmp-')), [], 'the temp dir is cleaned up');
 });
 
-test('a verify-skill write that fails at the SKILL.md rename moves its feature files back out', { skip: process.getuid?.() === 0 && 'root bypasses directory modes' }, () => {
+test('a verify-skill write that fails at the SKILL.md rename removes the feature files it moved', { skip: process.getuid?.() === 0 && 'root bypasses directory modes' }, () => {
   const { repo, env } = shapeRepo('cli', 'notes');
   const skills = join(repo, '.agents', 'skills');
   const skill = join(skills, 'verify-notes');
@@ -1540,6 +1540,17 @@ test('a verify-skill write that fails at the SKILL.md rename moves its feature f
   } finally {
     chmodSync(skill, 0o755);
   }
+});
+
+test('a verify-skill write that fails before any file moves removes the folders it created', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const name = 'a'.repeat(246);
+  writeFileSync(join(repo, '.done-done.yaml'), `skill: .agents/skills/${name}\n`);
+  const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
+  const r = doctorIn(repo, s.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: the verify skill could not be written .*; nothing was left behind, so fix the cause and re-run init$/);
+  assert.equal(existsSync(join(repo, '.agents')), false, 'the .agents folder this write created is removed');
 });
 
 test('init keeps the config when the verify skill cannot be written', () => {
