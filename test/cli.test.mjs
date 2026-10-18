@@ -3054,8 +3054,8 @@ test('verify through pi and gemini: each judges tools-off with the capture attac
     return { code: r.status, out: r.stdout + r.stderr };
   };
   // The user names the judge: a pi author is judged by gemini at its cheap model; a gemini author by pi, each at its configured model.
-  for (const [author, judge, model] of [['pi', 'gemini', 'flash-lite'], ['gemini', 'pi', 'vendor/vision-model']]) {
-    writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: ${author}\nagent_config:\n  pi: { model: vendor/vision-model }\njudge:\n  route: answerer:${judge}\n`);
+  for (const [author, judge, model] of [['pi', 'gemini', 'flash-lite'], ['gemini', 'pi', 'openai-codex/gpt-6-luna']]) {
+    writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: ${author}\n${judge === 'pi' ? '' : 'agent_config:\n  pi: { model: vendor/vision-model }\n'}judge:\n  route: answerer:${judge}\n`);
     const right = agents(CORRECT);
     const ok = verify(right.env, `home and settings render for ${judge}`);
     assert.equal(ok.code, 0, ok.out);
