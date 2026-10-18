@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import type { Backend, Question } from '@byokit/decide';
 import { agentRun, askAgent, type JudgeChoice, notStartable } from './agents.js';
 import { type Config, home, KEY_ROUTES, parseDuration, UsageError } from './config.js';
@@ -93,23 +93,14 @@ export function onPath(name: string): string {
   return '';
 }
 
-const KIT = '@byokit/decide@0.8.0';
 export const quote = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`);
 
-// The kit is an optional peer dependency, so a plain install stays small; it loads only when a capture needs judging.
+// The kit loads only when a capture is judged, so a command that judges nothing stays fast.
 async function kit() {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 18))
     throw new UsageError(`judge: the judge needs Node 22.18 or later (this is ${process.versions.node})`, 'Install Node 22.18 or later, then re-run this command');
-  try {
-    return await import('@byokit/decide');
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ERR_MODULE_NOT_FOUND') throw e;
-    // A verify run's detached runner has no command of the user's to repeat, so it names the rerun of its run.
-    const [cmd, dir] = process.argv.slice(2);
-    const again = cmd === '__runner' ? ['rerun', '--run', basename(dir)] : process.argv.slice(2);
-    throw new UsageError(`judge: the judge needs the optional ${KIT} kit, which is not installed`, `${cmd === 'check' || cmd === 'receipt' ? 'Run this check' : 'Run it again'} with the kit: npx -y -p done-done-axi -p ${KIT} done-done-axi ${again.map(quote).join(' ')}`);
-  }
+  return await import('@byokit/decide');
 }
 
 export type Judge = { ask: Backend['ask']; resolve: typeof import('@byokit/decide/slim').resolve; lastError: () => string };
@@ -163,28 +154,29 @@ export function prepare(c: Capture): { mime: string; bytes: Buffer } | string {
   return small ? { mime: 'image/png', bytes: small } : `${c.media.type} is ${c.media.w}x${c.media.h} and cannot be downscaled (only 8-bit PNG and JPEG that are not extremely long are), so capture a PNG or JPEG at most ${MAX_SIDE}px on its long side`;
 }
 
-// One request about the named images: each question's answer after the floors, or why the judge did not answer.
+// One request about the named images: each question's answer after the floors. A judge that does not answer is an error
+// with its cause, never a verdict: the command stops with no result and no receipt.
 // An answer the kit cannot read (all-zero probabilities, an option left out) would abstain on every question as if the
-// judge were unsure, so it is asked once more, and one that still cannot be read is never kept.
-// A signed-out claude is a usage error, since no later request can do better.
-export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, state: unknown, questions: Record<string, Question>, images: Record<string, { mime: string; bytes: Buffer }>): Promise<Record<string, ReturnType<Judge['resolve']>> | string> {
+// judge were unsure, so it is asked once more, and one that still cannot be read is an error too.
+export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, state: unknown, questions: Record<string, Question>, images: Record<string, { mime: string; bytes: Buffer }>): Promise<Record<string, ReturnType<Judge['resolve']>>> {
+  const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
+  let raw: Record<string, unknown>;
+  const unreadable = (r: Record<string, unknown>) => Object.entries(questions).filter(([k, q]) => /^(malformed|no answer)/.test(be.resolve(q, r[k] as Parameters<Judge['resolve']>[1]).reason ?? '')).map(([k]) => k);
   try {
     const ask = () => be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)!), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` })));
-    const unreadable = (raw: Record<string, unknown>) => Object.entries(questions).filter(([k, q]) => /^(malformed|no answer)/.test(be.resolve(q, raw[k] as Parameters<Judge['resolve']>[1]).reason ?? '')).map(([k]) => k);
-    let raw = await ask();
+    raw = await ask();
     if (unreadable(raw).length) raw = await ask();
-    const bad = unreadable(raw);
-    if (bad.length) return `the judge did not answer: no probabilities for ${bad.join(', ')} that are each 0 to 1 and sum to 1`;
-    return Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, raw[k])]));
   } catch (e) {
     const why = be.lastError() || (e as Error).message;
     if (choice.route === 'claude-code' && /not logged in/i.test(why))
       throw new UsageError(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
-    // OpenCode's free tier refuses any call that is not from inside OpenCode, and the judge's call is tools-off, so retries cannot clear it.
     const freeTier = choice.agent === 'opencode' && /free tier can only be used from within OpenCode/.test(why);
     const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
-    return `the judge did not answer: ${why}${hint}`;
+    throw new UsageError(`judge: the judge did not answer: ${why}${hint}`, again);
   }
+  const bad = unreadable(raw);
+  if (bad.length) throw new UsageError(`judge: the judge did not answer: no probabilities for ${bad.join(', ')} that are each 0 to 1 and sum to 1`, again);
+  return Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, raw[k] as Parameters<Judge['resolve']>[1])]));
 }
 
 export const screen = (c: Capture) => c.media.type === 'png' || c.media.type === 'jpeg';
@@ -239,10 +231,9 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const text = (x: Capture) => (x.bytes.length > MAX_TEXT ? `text is ${x.bytes.length} bytes, over the ${MAX_TEXT} bytes the judge reads, so capture only the output the outcome is about` : { text: x.bytes.toString('utf8') });
     const input = screen(c) ? prepare(c) : text(c);
     const before = pair && (screen(pair) ? prepare(pair) : text(pair));
-    if (typeof input === 'string' || typeof before === 'string') {
-      judged.push({ ...row, verdict: 'unsure', reason: typeof input === 'string' ? input : `its base capture ${pair!.name}: ${before}`, cached: false });
-      continue;
-    }
+    // A capture the judge cannot be sent is an error with its cause, never a verdict.
+    if (typeof input === 'string' || typeof before === 'string')
+      throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${typeof input === 'string' ? input : `its base capture ${pair!.name}: ${before}`}`, 'Capture it again as the error says, then re-run this command');
     if (calls++ >= MAX_CALLS) {
       judged.push({ ...row, verdict: 'unsure', reason: `not judged: one check sends at most ${MAX_CALLS} captures to the model, so cite fewer`, cached: false });
       continue;
@@ -254,10 +245,6 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const answers = 'text' in input
       ? await askJudge(cfg, be, choice, { outcome, ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
       : await askJudge(cfg, be, choice, { outcome }, { relevance: shape }, before && 'mime' in before ? { before, capture: input } : { capture: input });
-    if (typeof answers === 'string') {
-      judged.push({ ...row, verdict: 'unsure', reason: answers, cached: false });
-      continue;
-    }
     const a = answers.relevance;
     const options: Record<string, string> = shape.options;
     const reason = a.personReason || a.rationale || options[String(a.answer)] || '';

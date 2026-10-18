@@ -32,8 +32,8 @@ Results are TOON: read `result` and follow the `help` lines through
 `init`, `doctor`, `run`, `verify`, `check` and `receipt`. Proof comes from driving the real product, not from a unit test run, and counts only from a committed
 tree: commit the done-done setup (config, capture script) before you capture. `fail` or
 `inconclusive` is not done: fix the cause and re-run, or tell the user exactly what is still unproven.
-A run waiting at its gate (`awaiting_approval`) is the user's call: show them its findings and captures, and run
-`done-done respond` only with their answer and reason. Never approve or skip on your own; `overridden` is not done either.
+A run waiting at its judge gate (`awaiting_approval`) did not pass, and nothing moves it past its judge: show the user
+its findings and captures, and end it with `done-done respond --action fix` only when they say so.
 A journey that `spends` runs only after the user approves spending: `done-done run <journey>` refuses it, so ask the user and use `verify`.
 
 For a web page, `done-done look <url>` is the look step a journey calls: it captures the page at a 390x844 phone viewport
@@ -49,10 +49,11 @@ journeys:
 done-done starts a coding agent the user chose. When it says no agent is set, ask the user which agent
 (and model) to use and save their answer with the command it prints; never choose one for them.
 
-done-done runs its own agent: `done-done verify` drives the journey, then a judge the user chose, never
-the agent that did the work (never you), looks at each capture. That is on by default; skip it with
-`--no-judge` only when the user chooses to. When it says no judge is set, ask the user which judge (and
-model) to use and save their answer with the command it prints; never choose one for them.
+done-done runs its own agent: `done-done verify` drives the journey, then a judge the user chose, in a
+fresh session of its own, looks at each capture. `check` and `receipt` start the judge too,
+and nothing turns it off: there is no result without it. When it says no judge is set, ask the user which
+judge (and model) to use and save their answer with the command it prints; never choose one for them. When
+the judge fails, report its error to the user; never call the work proven without a judge pass.
 
 ## Request
 

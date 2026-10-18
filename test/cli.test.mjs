@@ -43,9 +43,27 @@ function png(w, h, pixel, colour = 2) {
 const screen = (seed = 0) => png(200, 120, (x, y) => [(x * 3 + seed) % 256, (y * 5) % 256, (x + y) % 256]);
 const blank = () => png(200, 120, () => [250, 250, 250]);
 
-// verify judges by default; most tests are not about the judge, so they turn it off, and the judge tests use JUDGED.
 const JUDGED = 'app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n';
-function setup(projectYaml = JUDGED.replace('journeys:', 'judge:\n  enabled: false\njourneys:')) {
+// done-done gives no result without its judge, so every repo starts with a stub judge (never a model): a gemini stub
+// through agent_path_override that says each capture shows the outcome. A test about the judge writes its own config,
+// and judgeYaml(env) adds the stub back; a gemini-agent test names it through pi, so the agent stays its own binary.
+const JUDGE_CONFIG = (bin, via = 'gemini') => `judge:\n  route: answerer:${via}\n  model: stub-judge\nagent_path_override: { ${via}: ${JSON.stringify(bin)} }\n`;
+const judgeYaml = (env, via) => JUDGE_CONFIG(env.DD_STUB_JUDGE, via);
+function stubJudge(dir, probabilities = { correct: 0.95, wrong: 0.03, unclear: 0.02 }) {
+  const bin = join(dir, 'judge-gemini');
+  const answer = JSON.stringify({ relevance: { probabilities, rationale: 'The screen shows the outcome.', personReason: 'The screen shows the outcome.' } });
+  writeFileSync(bin, `#!${process.execPath}
+require('node:fs').readFileSync(0, 'utf8');
+process.stdout.write(JSON.stringify({ response: ${JSON.stringify(answer)} }));
+`, { mode: 0o755 });
+  return bin;
+}
+const withStubJudge = (env, dir) => {
+  env.DD_STUB_JUDGE = stubJudge(dir);
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), judgeYaml(env));
+};
+function setup(projectYaml = JUDGED) {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-test-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo');
@@ -53,6 +71,7 @@ function setup(projectYaml = JUDGED.replace('journeys:', 'judge:\n  enabled: fal
   writeFileSync(join(dir, 'gitconfig'), '');
   const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
   const env = { ...host, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  withStubJudge(env, dir);
   mkdirSync(join(repo, 'src'), { recursive: true });
   mkdirSync(join(repo, 'docs'));
   writeFileSync(join(repo, '.gitignore'), '.proof/\n');
@@ -128,32 +147,32 @@ test('empty, truncated, blank, tiny and mislabelled images fail with the reason'
   for (const [name, [bytes, why]] of Object.entries(cases)) {
     writeFileSync(p(name), bytes);
     const r = dd('check', '--outcome', `case ${name}`, `.proof/${id}/${name}`);
-    assert.equal(r.code, 1, `${name}: ${r.out}`);
+    assert.equal(r.code, 2, `${name}: ${r.out}`);
     assert.match(r.out, why, name);
   }
-  assert.equal(dd('check', '--outcome', 'x', files[0], files[0]).code, 1, 'byte-identical files in one claim');
+  assert.equal(dd('check', '--outcome', 'x', files[0], files[0]).code, 2, 'byte-identical files in one claim');
 });
 
 test('evidence goes stale when HEAD moves past code, but not past ignored paths', () => {
   const { repo, sh, dd, shots } = setup();
   const { files } = shots();
   sh('commit', '-q', '--allow-empty', '-m', 'empty');
-  assert.equal(dd('check', '--outcome', 'still fresh', ...files).code, 1, 'an empty diff is not "only ignored paths"');
+  assert.equal(dd('check', '--outcome', 'still fresh', ...files).code, 2, 'an empty diff is not "only ignored paths"');
   writeFileSync(join(repo, 'docs', 'guide.md'), '# guide v2\n');
   sh('commit', '-qam', 'docs only');
   assert.equal(dd('check', '--outcome', 'still fresh', ...files).code, 0, 'a diff of only ignored paths keeps evidence fresh');
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
   sh('commit', '-qam', 'code');
   const r = dd('check', '--outcome', 'stale now', ...files);
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.match(r.out, /evidence is for commit \w+, HEAD is \w+ \(changed: src\/app\.js\)/);
 });
 
-test('files outside any run record are inconclusive; a failed or dirty run fails', () => {
+test('files outside any run record stop before the judge; a failed or dirty run fails', () => {
   const { dir, repo, dd } = setup('app: notes\nevidence:\n  root: .proof\njourneys:\n  broken:\n    command: node make-shots.mjs ${RUN_ID} && echo FAIL notes.test.js timed out && exit 4\n');
   const r = dd('check', '--outcome', 'hand made', join(dir, 'screen.png'));
-  assert.equal(r.code, 3, r.out);
-  assert.match(r.out, /not in any done-done run record/);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /the judge was not asked, so there is no verdict: .*not in any done-done run record/);
   const none = dd('run', '--', 'true');
   assert.equal(none.code, 1, none.out);
   assert.equal(toon(none).reason.split(';')[0], `the run wrote no files into its folder .proof/${toon(none).run_id}`, 'the reason names the run folder repo-relative');
@@ -167,7 +186,7 @@ test('files outside any run record are inconclusive; a failed or dirty run fails
   const dirty = dd('run', '--', 'node make-shots.mjs ${RUN_ID}');
   assert.equal(dirty.code, 0, dirty.out);
   const d = dd('check', '--outcome', 'dirty', `.proof/${toon(dirty).run_id}/settings.png`);
-  assert.equal(d.code, 1, d.out);
+  assert.equal(d.code, 2, d.out);
   assert.match(d.out, /uncommitted changes/);
 });
 
@@ -185,16 +204,16 @@ test('open and close a hand-driven run', () => {
   mkdirSync(base);
   cpSync(join(repo, folder, 'cli.log'), join(base, 'cli.log'));
   writeFileSync(join(repo, 'cli.log'), 'wrong same-named output\n');
-  assert.equal(dd('check', '--outcome', 'notes add works', 'cli.log').code, 3, 'default still reads cwd, not the citation base');
+  assert.equal(dd('check', '--outcome', 'notes add works', 'cli.log').code, 2, 'default still reads cwd, not the citation base');
   const checked = dd('--json', 'check', '--citation-base', base, '--outcome', 'notes add works', 'cli.log');
   assert.equal(checked.code, 0, checked.out);
   assert.deepEqual(json(checked).evidence, [join(base, 'cli.log')]);
   assert.equal(dd('check', '--citation-base', base, '--outcome', 'notes add works', join(repo, folder, 'cli.log')).code, 0, 'absolute citations stay absolute');
   const missing = dd('check', '--citation-base', base, '--outcome', 'notes add works', 'missing.log');
-  assert.equal(missing.code, 1, missing.out);
+  assert.equal(missing.code, 2, missing.out);
   assert.match(missing.out, /ENOENT/);
   writeFileSync(join(base, 'stray.log'), 'unrecorded output\n');
-  assert.equal(dd('check', '--citation-base', base, '--outcome', 'notes add works', 'stray.log').code, 3, 'base does not bypass provenance');
+  assert.equal(dd('check', '--citation-base', base, '--outcome', 'notes add works', 'stray.log').code, 2, 'base does not bypass provenance');
   const body = join(dir, 'checks.md');
   writeFileSync(body, '## Checks\noutcome: notes add works\nrepro: n/a: no bug\nproof: no verify skill - done-done run --open\nevidence: cli.log\n');
   const receipt = dd('receipt', '--citation-base', base, '--from', body);
@@ -215,7 +234,7 @@ test('two runs in the same second at one commit get distinct ids and folders', (
   assert.match(dd('run', '--close', b.run_id).out, /wrote no files/);
 });
 
-test('a file claimed by more than one legacy run record is inconclusive', () => {
+test('a file claimed by more than one legacy run record stops before the judge', () => {
   const { repo, dd, head } = setup();
   mkdirSync(join(repo, '.proof', '.done-done', 'runs'), { recursive: true });
   writeFileSync(join(repo, '.proof', 'legacy.log'), 'added: milk\n');
@@ -225,7 +244,7 @@ test('a file claimed by more than one legacy run record is inconclusive', () => 
     writeFileSync(join(repo, '.proof', '.done-done', 'runs', `${id}.json`), JSON.stringify(rec));
   }
   const r = dd('check', '--outcome', 'notes add works', '.proof/legacy.log');
-  assert.equal(r.code, 3, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.match(r.out, /claimed by more than one run \(old-a, old-b\)/);
 });
 
@@ -240,14 +259,14 @@ test('the same evidence cannot prove a second, different claim', () => {
   assert.ok(!existsSync(join(env.DONE_DONE_HOME, 'hashes')), 'no machine-wide ledger');
   sh('checkout', '-qb', 'checkout-flow');
   const r = dd('check', '--outcome', 'checkout works', ...files);
-  assert.equal(r.code, 1, r.out);
-  assert.match(toon(r).findings[0].why, /already used as proof of a different claim \(claim id main\), not this one \(claim id checkout-flow, from the current branch\)/);
+  assert.equal(r.code, 2, r.out);
+  assert.match(toon(r).error, /already used as proof of a different claim \(claim id main\), not this one \(claim id checkout-flow, from the current branch\)/);
   assert.equal(dd('check', '--claim-id', 'main', '--outcome', 'home renders', ...files).code, 0, '--claim-id names the claim');
   sh('checkout', '-q', '--detach');
   // A detached HEAD has no branch, so its claim is its commit: this evidence was already used under other claims.
   const detached = dd('check', '--outcome', 'home renders', ...files);
-  assert.equal(detached.code, 1, detached.out);
-  assert.match(toon(detached).findings[0].why, /already used as proof of a different claim \(claim id main\), not this one \(claim id [0-9a-f]{40}, from the detached HEAD commit\)/);
+  assert.equal(detached.code, 2, detached.out);
+  assert.match(toon(detached).error, /already used as proof of a different claim \(claim id main\), not this one \(claim id [0-9a-f]{40}, from the detached HEAD commit\)/);
   assert.equal(dd('check', '--claim-id', 'main', '--outcome', 'home and settings render', ...files).code, 0, 'a detached HEAD names its claim with --claim-id');
   assert.equal(dd('check', '--claim-id', ' ', '--outcome', 'x', ...files).code, 2, 'an empty claim id is a usage error');
 });
@@ -271,7 +290,7 @@ test('a run id from run resolves in status, and a capture from an uncommitted tr
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
   const dirty = dd('run', 'shots');
   const c = dd('check', '--outcome', 'home renders', `.proof/${toon(dirty).run_id}/home.png`);
-  assert.equal(c.code, 1, c.out);
+  assert.equal(c.code, 2, c.out);
   assert.match(c.out, /captured from a tree with uncommitted changes \(run [^)]+\); commit them, then capture again/);
 });
 
@@ -315,11 +334,16 @@ test('Checks block: form rules, not-proven and trusted config', () => {
   assert.match(dd('check', '--from', '../pr.md').out, /missing repro, evidence/);
   write('## Checks\noutcome: x\nrepro: n/a\nproof: no verify skill - `done-done run shots`\nevidence: not proven: no device here\n');
   const np = dd('check', '--from', '../pr.md');
-  assert.equal(np.code, 3, np.out);
+  assert.equal(np.code, 2, np.out);
+  assert.match(toon(np).error, /^check: the judge was not asked, so there is no verdict: not proven: no device here/);
+  // "not proven" is never a pass: the old allowance is a config error, even from a trusted ref.
   writeFileSync(join(repo, '.done-done.yaml'), 'app: notes\nevidence:\n  root: .proof\nchecks:\n  not_proven: allow\n');
-  assert.equal(dd('check', '--from', '../pr.md').code, 3, 'allow from the working copy is not trusted');
   sh('commit', '-qam', 'allow not proven');
-  assert.equal(dd('check', '--from', '../pr.md', '--trusted-ref', 'HEAD').code, 0, 'allow from the trusted ref is honoured');
+  const gone = dd('check', '--from', '../pr.md', '--trusted-ref', 'HEAD');
+  assert.equal(gone.code, 2, gone.out);
+  assert.match(toon(gone).error, /checks\.not_proven is gone: done-done never gives a result without its judge/);
+  writeFileSync(join(repo, '.done-done.yaml'), JUDGED);
+  sh('commit', '-qam', 'drop the allowance');
   mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
   write(`## Checks\noutcome: x\nrepro: n/a\nproof: \`done-done run shots\`\nevidence: ${files[0]}\n`);
   assert.match(dd('check', '--from', '../pr.md').out, /does not name the project's verify skill verify-notes/);
@@ -367,9 +391,12 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   const full = readFileSync(out);
   writeFileSync(join(repo, '.proof', id, 'cut.mp4'), full.subarray(0, Math.floor(full.length / 2)));
   assert.equal(dd('run', '--close', id).code, 0);
-  assert.equal(dd('check', '--outcome', 'clip plays', `.proof/${id}/clip.mp4`).code, 0);
+  // A video that decodes is still no pass on its own: the judge reads no video, so nothing judged shows the outcome.
+  const clip = dd('check', '--outcome', 'clip plays', `.proof/${id}/clip.mp4`);
+  assert.equal(clip.code, 2, clip.out);
+  assert.match(clip.out, /the judge was not asked, so there is no verdict: .*no cited capture is one the judge reads/);
   const cut = dd('check', '--outcome', 'cut clip', `.proof/${id}/cut.mp4`);
-  assert.equal(cut.code, 1, cut.out);
+  assert.equal(cut.code, 2, cut.out);
   assert.match(cut.out, /does not decode/);
 });
 
@@ -394,7 +421,7 @@ test('check reads the same Checks block from a file or from stdin', () => {
   // Evidence the PR names in another folder is not in this checkout: the help says so and shows --citation-base first.
   writeFileSync(p, `# PR\n\n## Checks\noutcome: home and settings render\nrepro: n/a: no bug\nproof: no verify skill - \`done-done run shots\`\nevidence: elsewhere/home.png\n`);
   const outside = json(dd('--json', 'check', '--from', p));
-  assert.equal(outside.result, 'fail');
+  assert.match(outside.error, /the judge was not asked, so there is no verdict: elsewhere\/home\.png: no such file/);
   assert.match(outside.help[0], /1 named file is not in this checkout\. .*done-done check --from .* --citation-base <dir>$/);
   assert.equal(outside.help.some((h) => /Commit your change/.test(h)), false, 'a file outside the checkout is not a re-capture');
   // Evidence the run should have written under the evidence root is a re-capture, not a citation base.
@@ -415,7 +442,8 @@ test('receipt records a passing check for the head, then verifies', () => {
   assert.equal(d.head, h);
   assert.equal(d.files, 2);
   const rec = JSON.parse(readFileSync(join(repo, d.receipt), 'utf8'));
-  assert.equal(rec.schema, 1);
+  assert.equal(rec.schema, 2, 'every receipt carries the judge that passed it');
+  assert.deepEqual([rec.judge.route, rec.judge.verdicts.map((x) => x.verdict)], ['answerer:gemini', ['pass', 'pass']]);
   assert.equal(rec.head, h);
   assert.match(rec.tree, /^[0-9a-f]{40,64}$/);
   assert.equal(rec.claim, 'home and settings render');
@@ -431,9 +459,8 @@ test('receipt records a passing check for the head, then verifies', () => {
 test('receipt is not written when the check fails', () => {
   const { dd, head } = setup();
   const r = dd('receipt', '--outcome', 'nothing here', '.proof/nope/session.log');
-  assert.equal(r.code, 1, r.out);
-  assert.equal(toon(r).result, 'fail');
-  assert.match(r.out, /did not pass/);
+  assert.equal(r.code, 2, r.out);
+  assert.match(toon(r).error, /the judge was not asked, so there is no verdict: \.proof\/nope\/session\.log: no such file/);
   assert.equal(dd('receipt', '--verify', head()).code, 1, 'a refused write leaves no receipt');
 });
 
@@ -445,8 +472,8 @@ test('receipt is refused when the head moved, and verify rejects a wrong head', 
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
   sh('commit', '-qam', 'move');
   const again = dd('receipt', '--outcome', 'home and settings render', ...files);
-  assert.equal(again.code, 1, again.out);
-  assert.match(again.out, /did not pass/);
+  assert.equal(again.code, 2, again.out);
+  assert.match(again.out, /the judge was not asked, so there is no verdict: .*evidence is for commit/);
   const v = dd('receipt', '--verify', h);
   assert.equal(v.code, 1, v.out);
   assert.match(v.out, /HEAD is/);
@@ -458,9 +485,19 @@ test('receipt refuses a dirty tracked tree', () => {
   const h = head();
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 7;\n');
   const r = dd('receipt', '--outcome', 'home and settings render', ...files);
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.match(r.out, /uncommitted changes/);
   assert.equal(dd('receipt', '--verify', h).code, 1, 'refused write leaves no receipt');
+});
+
+test('receipt stops on a dirty tree before the judge is asked', () => {
+  const j = judgeSetup('error');
+  const { files } = (() => { const r = j.dd('run', 'shots'); return { files: ['.proof/' + toon(r).run_id + '/home.png', '.proof/' + toon(r).run_id + '/settings.png'] }; })();
+  writeFileSync(join(j.repo, 'src', 'app.js'), 'export const app = 7;\n');
+  const r = j.dd('receipt', '--outcome', 'home and settings render', ...files);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /uncommitted changes/);
+  assert.doesNotMatch(r.out, /did not answer/);
 });
 
 test('receipt --verify fails on a changed file and on a missing receipt', () => {
@@ -513,23 +550,21 @@ test('evidence edited after its run fails as changed after that run', () => {
   assert.equal(dd('receipt', '--verify', h).code, 0, 'unmodified evidence still verifies');
   appendFileSync(join(repo, log), 'tampered');
   const check = dd('check', '--outcome', 'notes add works', log);
-  assert.equal(check.code, 1, check.out);
+  assert.equal(check.code, 2, check.out);
   assert.match(check.out, new RegExp(`changed after run ${id}`));
   const verify = dd('receipt', '--verify', h);
   assert.equal(verify.code, 1, verify.out);
   assert.match(verify.out, new RegExp(`changed after run ${id}`));
 });
 
-test('receipt refuses a not-proven pass that cites no evidence, and writes nothing', () => {
-  const { repo, sh, dd, head } = setup();
-  writeFileSync(join(repo, '.done-done.yaml'), 'app: notes\nevidence:\n  root: .proof\nchecks:\n  not_proven: allow\n');
+test('a not-proven claim is never a pass: check stops before the judge and receipt writes nothing', () => {
+  const { repo, dd, head } = setup();
   writeFileSync(join(repo, '..', 'pr.md'), '## Checks\noutcome: x\nrepro: n/a\nproof: no verify skill - `done-done run shots`\nevidence: not proven: no device here\n');
-  sh('commit', '-qam', 'allow not proven');
   const h = head();
-  assert.equal(dd('check', '--from', '../pr.md', '--trusted-ref', 'HEAD').code, 0, 'check still honours the not-proven allowance');
+  assert.equal(dd('check', '--from', '../pr.md', '--trusted-ref', 'HEAD').code, 2, 'not proven stops before the judge');
   const r = dd('receipt', '--from', '../pr.md', '--trusted-ref', 'HEAD');
-  assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /cited no evidence files/);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /the judge was not asked, so there is no verdict: not proven: no device here/);
   assert.ok(!existsSync(join(repo, '.proof', '.done-done', 'receipts', `${h}.json`)), 'no receipt file is produced');
   const v = dd('receipt', '--verify', h);
   assert.equal(v.code, 1, v.out);
@@ -571,10 +606,10 @@ function bareRepo(dirName = 'repo') {
   return { dir, repo, env, sh, dd };
 }
 
+// The gate's judge: an opencode stub that logs each call, named by path so every done-done call in the test uses it.
 function gateJudge(env, probabilities) {
-  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   const s = stubAgents(env, JSON.stringify({ relevance: { probabilities, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } }));
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\njudge:\n  route: answerer:opencode\nagent_path_override: { opencode: ${JSON.stringify(join(s.bin, 'opencode'))} }\n`);
   symlinkSync(process.execPath, join(s.bin, 'node'));
   return { ...s, env: { ...s.env, PATH: `${s.env.PATH}:/usr/bin:/bin` } };
 }
@@ -622,7 +657,7 @@ test('the Firstmate merge gate passes fresh proof with a receipt, and refuses a 
   const prPass = pr('docs: settings', head());
   assert.equal(prPass.code, 0, prPass.out);
   const strict = pr('feat: settings', head());
-  assert.equal(strict.code, 1, strict.out);
+  assert.equal(strict.code, 2, strict.out);
   assert.match(strict.out, /a fix needs a repro/, 'the rules come from the default branch, not the PR');
   const moved = pr('docs: settings', 'f'.repeat(40));
   assert.equal(moved.code, 1, moved.out);
@@ -630,7 +665,7 @@ test('the Firstmate merge gate passes fresh proof with a receipt, and refuses a 
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
   sh('commit', '-qam', 'change the app');
   const stale = gate('-');
-  assert.equal(stale.code, 1, stale.out);
+  assert.equal(stale.code, 2, stale.out);
   assert.match(stale.out, /evidence is for commit/);
   assert.doesNotMatch(stale.out, /command: receipt/, 'a failed check refuses before the receipt is read');
 });
@@ -664,7 +699,7 @@ for (const remote of [true, false]) test(`the Firstmate merge gate reads a local
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
   sh('commit', '-qam', 'change the app');
   const stale = gate();
-  assert.equal(stale.code, 1, stale.out);
+  assert.equal(stale.code, 2, stale.out);
   assert.match(stale.out, /evidence is for commit/, 'the default branch\'s ignore_paths do not cover src/, so the change makes the proof stale');
 });
 
@@ -676,7 +711,7 @@ test('the Firstmate merge gate refuses - (no worktree recorded) from any folder,
   mkdirSync(bin);
   writeFileSync(join(bin, 'done-done'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"\n`, { mode: 0o755 });
   const fm = join(dir, 'fm');
-  const judged = gateJudge(env, { correct: 0.04, wrong: 0.93, unclear: 0.03 });
+  let judged;
   const gate = (worktree, cwd) => {
     const r = spawnSync(join(dirname(CLI), '..', 'integrations', 'firstmate', 'merge-gate'), ['t3', worktree, head(), '-'], {
       encoding: 'utf8', env: { ...judged.env, FM_HOME: fm, PATH: `${bin}:${judged.env.PATH}` }, cwd,
@@ -688,6 +723,7 @@ test('the Firstmate merge gate refuses - (no worktree recorded) from any folder,
   mkdirSync(join(fm, 'data', 't3'), { recursive: true });
   writeFileSync(join(fm, 'data', 't3', 'checks.md'), checks);
   assert.equal(dd('receipt', '--from', join(fm, 'data', 't3', 'checks.md')).code, 0);
+  judged = gateJudge(env, { correct: 0.04, wrong: 0.93, unclear: 0.03 });
   const none = gate('-', repo); assert.equal(none.code, 2, none.out);
   assert.match(none.out, /task t3 recorded no worktree, so there is no repo to check/, 'even run from the task\'s own repo, - is never checked');
   assert.equal(judged.calls().length, 0);
@@ -1643,6 +1679,7 @@ test('init outside a git repository reports a clear usage error', () => {
 
 test('a repo set up by init captures, checks and receipts real evidence that outlives the checkout', () => {
   const { dir, repo, env, sh, dd } = bareRepo();
+  withStubJudge(env, dir);
   const init = dd('init');
   assert.equal(init.code, 2);
   // Follow init's hint as printed: its example journey, placeholder filled in, becomes the config.
@@ -1656,7 +1693,7 @@ test('a repo set up by init captures, checks and receipts real evidence that out
   const { run_id: id } = toon(r);
   assert.equal(log, join(dir, 'home', 'evidence', 'repo', id, `${id}.log`), 'evidence lands outside the repo, in the run\'s own folder');
   assert.equal(dd('check', '--outcome', 'notes add works', log).code, 0);
-  assert.equal(dd('check', '--outcome', 'gone', `${log}-missing.log`).code, 1, 'a missing file fails');
+  assert.equal(dd('check', '--outcome', 'gone', `${log}-missing.log`).code, 2, 'a missing file stops the check');
   const h = sh('rev-parse', 'HEAD').toString().trim();
   assert.equal(dd('receipt', '--outcome', 'notes add works', log).code, 0);
   // The worker's checkout goes away; a fresh clone elsewhere (a merge gate) re-verifies the same proof.
@@ -1680,13 +1717,14 @@ test('a repo set up by init captures, checks and receipts real evidence that out
   writeFileSync(join(clone, 'app.js'), 'export const app = 2;\n');
   execFileSync('git', ['commit', '-qam', 'code'], { cwd: clone, env });
   const stale = inClone(env, 'check', '--outcome', 'notes add works', log);
-  assert.equal(stale.code, 1, stale.out);
+  assert.equal(stale.code, 2, stale.out);
   assert.match(stale.out, /evidence is for commit/);
   assert.equal(toon(stale).help[0], 'Commit your change, re-capture with done-done run smoke, then check the new files', 'evidence is ignored, so the hint never says to commit it');
 });
 
 test('overlapping runs from two checkouts sharing the evidence root never claim each other\'s files', () => {
   const { dir, repo, env, sh, dd } = bareRepo();
+  withStubJudge(env, dir);
   assert.equal(dd('init').code, 2);
   sh('add', '-A');
   sh('commit', '-qm', 'config');
@@ -1709,7 +1747,7 @@ test('overlapping runs from two checkouts sharing the evidence root never claim 
   assert.deepEqual(toon(closed).evidence, [join(open.evidence_root, 'a.log')], 'lane 1 records only its own folder');
   // The failed run's file cannot pass through lane 1's successful record.
   const fromFailed = dd('check', '--outcome', 'notes add works', toon(failed).evidence[0]);
-  assert.equal(fromFailed.code, 1, fromFailed.out);
+  assert.equal(fromFailed.code, 2, fromFailed.out);
   assert.match(fromFailed.out, /its run command exited 1/);
   // Byte-identical captures in both lanes: each lane's own file passes, tied to its own commit.
   assert.equal(in2('check', '--outcome', 'notes add works', toon(passed).evidence[0]).code, 0, 'lane 2 is not stale through lane 1');
@@ -1727,7 +1765,9 @@ test('a result is one TOON document by default, and --json is the same data as J
   assert.equal(d.files, 2);
   const j = dd('check', '--json', '--outcome', 'home renders', ...files);
   assert.equal(j.code, 0, j.out);
-  assert.deepEqual(json(j), d);
+  // The second check reads the judge's verdicts from its cache; everything else is the same data.
+  const uncached = (x) => ({ ...x, judge: { ...x.judge, judged: x.judge.judged.map(({ cached, ...r }) => r) } });
+  assert.deepEqual(uncached(json(j)), uncached(d));
 });
 
 test('a noisy journey leaves run stdout as one document; its words go to stderr', () => {
@@ -1741,22 +1781,26 @@ test('a noisy journey leaves run stdout as one document; its words go to stderr'
     assert.match(r.stderr, /wrote \.proof\/SMOKE\/smoke\.log/, `${args.join(' ')} still shows the journey line live on stderr`);
     // decode() and JSON.parse() throw unless stdout is exactly one result document.
     const d = args.includes('--json') ? JSON.parse(r.stdout) : decode(r.stdout);
-    assert.equal(d.result, 'pass', `${args.join(' ')} stdout is only done-done's result`);
+    assert.equal(d.result, 'recorded', `${args.join(' ')} stdout is only done-done's result`);
   }
 });
 
 test('--full lists every finding; the compact default truncates and says how many it dropped', () => {
-  const { dd } = setup();
-  const missing = ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png'];
-  const compact = dd('check', '--outcome', 'many missing', ...missing);
-  assert.equal(compact.code, 1, compact.out);
+  const { dir, dd, shots } = setup();
+  const { files } = shots();
+  // Files in no run record are inconclusive, one finding each; the judged screens pass, so the result is inconclusive.
+  const stray = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n) => join(dir, `${n}.log`));
+  for (const f of stray) writeFileSync(f, `${f}\n`);
+  const cited = [...files, ...stray];
+  const compact = dd('check', '--outcome', 'many unrecorded', ...cited);
+  assert.equal(compact.code, 3, compact.out);
   const c = toon(compact);
   assert.equal(c.evidence.length, 5, 'compact shows the first five evidence files');
-  assert.equal(c.evidence_omitted, 2);
+  assert.equal(c.evidence_omitted, cited.length - 5);
   assert.equal(c.findings.length, 5, 'compact shows the first five findings');
   assert.equal(c.findings_omitted, 2);
-  const f = toon(dd('check', '--full', '--outcome', 'many missing', ...missing));
-  assert.equal(f.evidence.length, 7, '--full shows every evidence file');
+  const f = toon(dd('check', '--full', '--outcome', 'many unrecorded', ...cited));
+  assert.equal(f.evidence.length, cited.length, '--full shows every evidence file');
   assert.equal(f.findings.length, 7, '--full shows every finding');
   assert.equal(f.findings_omitted, undefined);
   assert.equal(f.evidence_omitted, undefined);
@@ -1844,7 +1888,7 @@ test('verify goes on in a detached runner after the calling shell is killed, and
   const s = toon(r);
   assert.equal(s.run_id, run.run_id);
   assert.equal(s.result, 'pass');
-  assert.deepEqual(s.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'skipped'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']], 'the judge is off');
+  assert.deepEqual(s.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']], 'the judge always runs');
   assert.deepEqual(s.evidence, [`.proof/${run.run_id}/home.png`, `.proof/${run.run_id}/settings.png`]);
   assert.match(s.help[0], /done-done receipt --verify [0-9a-f]{40}$/);
   assert.ok(existsSync(join(repo, s.receipt)), 'the runner recorded a receipt');
@@ -1956,7 +2000,7 @@ test('a journey past its timeout is killed and the run ends inconclusive', async
   assert.ok(await groupGone(pgid), 'the timed-out journey is gone');
 });
 
-test('the run store and check log keep every finding, not only the five shown', () => {
+test('a check that stops before the judge keeps every cause in the run store, not only the five shown', () => {
   const t = setup();
   writeFileSync(
     join(t.repo, 'dup.mjs'),
@@ -1966,14 +2010,24 @@ test('the run store and check log keep every finding, not only the five shown', 
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'dup journey');
   const r = t.dd('verify', 'dup', '--outcome', 'the copies render', '--foreground');
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   const s = toon(r);
-  const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', s.run_id);
-  const check = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')).steps.find((x) => x.name === 'check');
-  assert.equal(check.findings.length, 6, 'run.json keeps all six findings');
-  const log = decode(readFileSync(join(runDir, 'logs', 'check.log'), 'utf8'));
-  assert.equal(log.findings.length, 6, 'check.log keeps all six findings');
-  assert.equal(log.findings_omitted, undefined);
+  assert.deepEqual([s.status, s.result], ['failed', undefined], 'a stopped check is no verdict');
+  assert.equal(s.steps.find((x) => x.name === 'judge').status, 'skipped');
+  const rec = JSON.parse(readFileSync(join(t.env.DONE_DONE_HOME, 'runs', 'notes', s.run_id, 'run.json'), 'utf8'));
+  assert.match(rec.reason, /^check: the judge was not asked, so there is no verdict: /);
+  assert.equal(rec.reason.match(/byte-identical to/g).length, 6, 'run.json keeps all six causes');
+});
+
+test('a judge that does not answer fails a verify run with exit 2 and writes no receipt', () => {
+  const j = judgeSetup('error');
+  const r = j.dd('verify', 'shots', '--outcome', 'home and settings render', '--foreground');
+  assert.equal(r.code, 2, r.out);
+  const s = toon(r);
+  assert.equal(s.status, 'failed');
+  const rec = JSON.parse(readFileSync(join(j.env.DONE_DONE_HOME, 'runs', 'notes', s.run_id, 'run.json'), 'utf8'));
+  assert.match(rec.reason, /^judge: the judge did not answer: /);
+  assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
 });
 
 test('verify waits until the run ends by default', () => {
@@ -1984,7 +2038,7 @@ test('verify waits until the run ends by default', () => {
 });
 
 test('a verify run fails when its log or text evidence holds a secret, naming where but never the value', () => {
-  const t = setup(JUDGED.replace('journeys:', 'judge:\n  enabled: false\nsecrets:\n  patterns:\n    house-key: "HOUSE-\\\\d{4}"\n  allow: ["F4KE"]\njourneys:'));
+  const t = setup(JUDGED.replace('journeys:', 'secrets:\n  patterns:\n    house-key: "HOUSE-\\\\d{4}"\n  allow: ["F4KE"]\njourneys:'));
   const leak = join(t.dir, 'leak.txt');
   appendFileSync(join(t.repo, '.done-done.yaml'), '  logged:\n    command: node make-shots.mjs ${RUN_ID} && cat ../leak.txt\n  saved:\n    command: node make-shots.mjs ${RUN_ID} && cp ../leak.txt "$DONE_DONE_EVIDENCE_ROOT/session.log"\n');
   t.sh('add', '-A'); t.sh('commit', '-qm', 'journeys');
@@ -2017,7 +2071,7 @@ test('a verify run fails when its log or text evidence holds a secret, naming wh
 });
 
 test('a failed verify drive whose output holds a secret names where and never prints the value', () => {
-  const t = setup(JUDGED.replace('journeys:', 'judge:\n  enabled: false\njourneys:'));
+  const t = setup(JUDGED.replace('journeys:', 'journeys:'));
   const token = `API_${'TOKEN'}=${'f4ke0'.repeat(6)}`;
   writeFileSync(join(t.dir, 'leak.txt'), `starting\n${token}\n`);
   appendFileSync(join(t.repo, '.done-done.yaml'), '  failer:\n    command: cat ../leak.txt; exit 1\n');
@@ -2028,7 +2082,7 @@ test('a failed verify drive whose output holds a secret names where and never pr
 });
 
 test('auto_fix.verify never re-runs a spends journey: one approval buys one spend, and the reason says so', () => {
-  const t = setup(JUDGED.replace('journeys:', 'judge:\n  enabled: false\nauto_fix:\n  verify: 2\njourneys:'));
+  const t = setup(JUDGED.replace('journeys:', 'auto_fix:\n  verify: 2\njourneys:'));
   appendFileSync(join(t.repo, '.done-done.yaml'), '  paid:\n    command: echo spent >> ../spent.txt && node shot.mjs\n    spends: one live generation\n');
   writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
@@ -2040,7 +2094,7 @@ writeFileSync('src/app.js', 'export const title = "Notes";\\n');
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed the title', blocker: '' }) } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const spent = join(t.dir, 'spent.txt');
   const spends = () => (existsSync(spent) ? readFileSync(spent, 'utf8').split('\n').filter(Boolean).length : 0);
   const parked = toon(t.dd('verify', 'paid', '--outcome', 'home and settings render'));
@@ -2108,7 +2162,7 @@ test('verify --foreground fails at a broken journey and skips the rest; usage er
 test('a failing check points at the exact command that produces the proof', () => {
   const { dd } = setup();
   const r = dd('check', '--outcome', 'nothing captured yet', '.proof/nope/session.log');
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.match(toon(r).help[0], /done-done run shots/);
 });
 
@@ -2192,24 +2246,32 @@ process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'succe
 }
 const CORRECT = { correct: 0.95, wrong: 0.03, unclear: 0.02 };
 
-test('with the judge off, check output is unchanged and no model is asked', () => {
+test('with no judge set, check and receipt give no result and write no receipt: they ask for the judge', () => {
   const t = setup();
   const { files } = t.shots();
-  const before = t.dd('check', '--outcome', 'home and settings render', ...files);
-  const j = judgeSetup(CORRECT);
-  const { files: files2 } = j.shots();
-  const after = j.dd('check', '--outcome', 'home and settings render', ...files2);
-  assert.equal(after.code, 0, after.out);
-  assert.equal(after.out.replaceAll(files2[0].split('/')[1], 'RUN'), before.out.replaceAll(files[0].split('/')[1], 'RUN'), 'same bytes with judge config present but off');
-  assert.equal(toon(after).judge, undefined);
-  assert.equal(j.calls().length, 0);
+  rmSync(join(t.env.DONE_DONE_HOME, 'config.yaml'));
+  for (const cmd of ['check', 'receipt']) {
+    const r = t.dd(cmd, '--outcome', 'home and settings render', ...files);
+    assert.equal(r.code, 2, r.out);
+    const e = toon(r);
+    assert.equal(e.result, undefined, `${cmd} gives no result without its judge`);
+    assert.match(e.error, /^no judge is set: ask the user which judge to use/);
+    assert.match(e.help[0], /done-done init --judge <agent> --judge-model <model>/);
+    // A failed plain check stops first with its own cause: the judge is never asked for.
+    const gone = t.dd(cmd, '--outcome', 'home and settings render', 'missing.png');
+    assert.equal(gone.code, 2, gone.out);
+    assert.match(toon(gone).error, /^check: the judge was not asked, so there is no verdict: missing\.png: no such file/, cmd);
+    assert.ok(!gone.out.includes('no judge is set'), `${cmd} asks for no judge before its plain checks pass`);
+  }
+  assert.ok(!existsSync(join(t.repo, '.proof', '.done-done', 'receipts')), 'no receipt was written');
+  assert.match(t.dd('receipt', '--verify', t.head()).out, /no receipt/);
 });
 
 test('judge pass exits 0, sends one downscaled image and the outcome only, and a re-run is a cache hit', () => {
   const j = judgeSetup(CORRECT);
   writeFileSync(join(j.dir, 'screen2.png'), png(2000, 1000, (x, y) => [x % 256, y % 256, 90]));
   const { files: cited } = j.shots();
-  const r = j.dd('check', '--judge', '--outcome', 'the notes list shows three notes', ...cited);
+  const r = j.dd('check', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
   assert.equal(d.result, 'pass');
@@ -2223,7 +2285,7 @@ test('judge pass exits 0, sends one downscaled image and the outcome only, and a
   assert.ok(calls.every((c) => c.prompt.includes('the notes list shows three notes') && !c.prompt.includes('.proof') && !c.prompt.includes(j.repo)), 'only the outcome line goes with the image');
   assert.ok(calls.every((c) => c.home === j.env.HOME && c.configDir === (process.env.CLAUDE_CONFIG_DIR ?? null)), 'the judge runs your own claude: your HOME, and no sign-in folder of done-done\'s');
   assert.ok(calls.every((c) => ['--safe-mode', '--no-session-persistence', '--tools', '--setting-sources', '--input-format'].every((f) => c.argv.includes(f))), 'a fresh, tools-off, non-persistent session with your settings out, the capture as stream-json');
-  const again = j.dd('check', '--judge', '--outcome', 'the notes list shows three notes', ...cited);
+  const again = j.dd('check', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(again.code, 0, again.out);
   assert.ok(toon(again).judge.judged.every((x) => x.cached === true && x.verdict === 'pass'));
   assert.equal(j.calls().length, 2, 'a cache hit asks no model');
@@ -2239,7 +2301,7 @@ test('judge pass exits 0, sends one downscaled image and the outcome only, and a
 test('judge wrong screen fails with exit 1, unsure and low confidence are inconclusive with exit 3', () => {
   const j = judgeSetup({ correct: 0.05, wrong: 0.9, unclear: 0.05 });
   const { files } = j.shots();
-  const fail = j.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', files[0]);
+  const fail = j.dd('check', '--outcome', 'the settings page shows dark mode on', files[0]);
   assert.equal(fail.code, 1, fail.out);
   const f = toon(fail);
   assert.equal(f.result, 'fail');
@@ -2248,25 +2310,30 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
   assert.equal(f.judge.judged[0].seen, STUB_RATIONALE);
   assert.equal(f.findings[0].seen, STUB_RATIONALE);
   assert.match(f.help[0], /Capture the screen the outcome describes.*done-done run shots/);
-  const cachedFail = j.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', files[0]);
+  const cachedFail = j.dd('check', '--outcome', 'the settings page shows dark mode on', files[0]);
   assert.equal(cachedFail.code, 1, 'a cached wrong-screen verdict still fails');
   assert.equal(toon(cachedFail).judge.judged[0].cached, true);
   assert.equal(toon(cachedFail).judge.judged[0].seen, STUB_RATIONALE, 'a cached verdict keeps what the judge quoted');
   j.stub({ correct: 0.05, wrong: 0.05, unclear: 0.9 });
-  const unsure = j.dd('check', '--judge', '--outcome', 'the sync finished in the background', files[0]);
+  const unsure = j.dd('check', '--outcome', 'the sync finished in the background', files[0]);
   assert.equal(unsure.code, 3, unsure.out);
   assert.equal(toon(unsure).judge.judged[0].verdict, 'unsure');
   assert.match(toon(unsure).help[0], /Look at the capture yourself/);
   j.stub({ correct: 0.6, wrong: 0.3, unclear: 0.1 });
-  const low = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  const low = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(low.code, 3, low.out);
   assert.match(toon(low).judge.judged[0].reason, /not confident enough \(confidence 0.6 below floor 0.7\)/);
   assert.equal(j.calls().length, 3);
+  // A judge that fails gives no verdict at all: check and receipt stop with its cause (exit 2), and no receipt is written.
   j.stub('error');
-  const err = j.dd('check', '--judge', '--outcome', 'the home screen shows the sync banner', files[0]);
-  assert.equal(err.code, 3, 'a model error while signed in is inconclusive, not a sign-in error');
-  assert.match(toon(err).judge.judged[0].reason, /did not answer.*judge.model claude-test-1 and your plan's usage limit/);
-  assert.doesNotMatch(err.out, /auth login/);
+  for (const cmd of ['check', 'receipt']) {
+    const err = j.dd(cmd, '--outcome', 'the home screen shows the sync banner', files[0]);
+    assert.equal(err.code, 2, err.out);
+    assert.equal(toon(err).result, undefined, `${cmd} gives no result when the judge fails`);
+    assert.match(toon(err).error, /^judge: the judge did not answer: usage limit reached \(check judge.model claude-test-1 and your plan's usage limit\)/);
+    assert.doesNotMatch(err.out, /auth login/, 'a model error while signed in is not a sign-in error');
+  }
+  assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
 });
 
 test('an allowed claude rate-limit event does not stop the judge call, and its answer is used', () => {
@@ -2274,7 +2341,7 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
   writeFileSync(join(j.dir, 'screen2.png'), png(2000, 1000, (x, y) => [x % 256, y % 256, 90]));
   const { files: cited } = j.shots();
   j.stub(CORRECT, true, [{ type: 'system', subtype: 'api_retry', error_status: 429, error: 'rate_limit' }, { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
-  const r = j.dd('check', '--judge', '--outcome', 'the notes list shows three notes', ...cited);
+  const r = j.dd('check', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(r.code, 0, r.out);
   assert.doesNotMatch(r.out, /hit a rate limit and stopped/, 'claude retrying a 429 itself is not a stop');
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
@@ -2284,7 +2351,7 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
 test('the claude judge sends its images on stdin and leaves no copy in its scratch folder', () => {
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 0, r.out);
   assert.equal(j.calls()[0].images, 1);
   assert.deepEqual(j.calls()[0].scratch, []);
@@ -2294,7 +2361,7 @@ test('a claude answer that quotes a rate-limit banner is not stopped as a rate l
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
   j.stub(CORRECT, true, [{ type: 'assistant', message: { content: [{ type: 'text', text: 'The banner reads: Rate limit reached, retry in 60s.' }] } }]);
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
 });
@@ -2308,7 +2375,7 @@ test('a claude answer that quotes a rate-limit banner, split across output chunk
   const line = JSON.stringify(answer);
   const pad = 65536 - (line.indexOf('retry') + 'retry'.length) - init - padFrame;
   j.stub(CORRECT, true, [{ type: 'system', subtype: 'pad', text: 'x'.repeat(pad) }, answer]);
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
 });
@@ -2317,7 +2384,7 @@ test('a claude judge answer is read from its result event even when events follo
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
   j.stub(CORRECT, true, [], [{ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
 });
@@ -2326,7 +2393,7 @@ test('a claude rate-limit banner on stderr does not stop the judge call, which c
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
   j.stub(CORRECT, true, [], [], 'Error: 429 rate limit, retrying in 10s\n');
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
   assert.equal(r.code, 0, r.out);
   assert.doesNotMatch(r.out, /hit a rate limit and stopped/);
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass']);
@@ -2339,18 +2406,18 @@ test('a rejected claude rate-limit event split across output chunks still stops 
   const padFrame = JSON.stringify({ type: 'system', subtype: 'pad', text: '' }).length + 1;
   const pad = 65476 - init - padFrame;
   j.stub(CORRECT, true, [{ type: 'system', subtype: 'pad', text: 'x'.repeat(pad) }, { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1792692000 } }]);
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
-  assert.equal(r.code, 3, 'the rejection starts 60 bytes before a 64 KiB chunk boundary, so it is split across two reads');
-  assert.match(toon(r).judge.judged[0].reason, /hit a rate limit and stopped/);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 2, 'the rejection starts 60 bytes before a 64 KiB chunk boundary, so it is split across two reads');
+  assert.match(toon(r).error, /hit a rate limit and stopped/);
 });
 
 test('a rejected claude rate-limit event stops the judge call and names the reset', () => {
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
   j.stub(CORRECT, true, [{ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1792692000 } }]);
-  const r = j.dd('check', '--judge', '--outcome', 'the home screen shows the welcome card', files[0]);
-  assert.equal(r.code, 3, 'a rejected quota is inconclusive, not a sign-in error');
-  assert.match(toon(r).judge.judged[0].reason, /hit a rate limit and stopped: .*"status":"rejected".*"resetsAt":1792692000/);
+  const r = j.dd('check', '--outcome', 'the home screen shows the welcome card', files[0]);
+  assert.equal(r.code, 2, 'a rejected quota is a judge that did not answer, not a sign-in error');
+  assert.match(toon(r).error, /hit a rate limit and stopped: .*"status":"rejected".*"resetsAt":1792692000/);
 });
 
 test('judge.floor is config: the default 0.7 counts a supported pick, a higher floor makes it inconclusive, and a wrong pick is never a pass', () => {
@@ -2358,21 +2425,21 @@ test('judge.floor is config: the default 0.7 counts a supported pick, a higher f
   const outcome = 'the home screen shows the notes';
   const pass = judgeSetup(supported);
   const { files } = pass.shots();
-  const ok = pass.dd('check', '--judge', '--outcome', outcome, files[0]);
+  const ok = pass.dd('check', '--outcome', outcome, files[0]);
   assert.equal(ok.code, 0, ok.out);
   assert.equal(toon(ok).judge.judged[0].verdict, 'pass');
   const strict = judgeSetup(supported, { floor: 0.8 });
   const { files: strictFiles } = strict.shots();
-  const unsure = strict.dd('check', '--judge', '--outcome', outcome, strictFiles[0]);
+  const unsure = strict.dd('check', '--outcome', outcome, strictFiles[0]);
   assert.equal(unsure.code, 3, unsure.out);
   assert.match(toon(unsure).judge.judged[0].reason, /not confident enough \(confidence 0.75 below floor 0.8\)/);
   const wrong = judgeSetup({ correct: 0.2, wrong: 0.75, unclear: 0.05 }, { floor: 0.8 });
   const { files: wrongFiles } = wrong.shots();
-  const notFail = wrong.dd('check', '--judge', '--outcome', 'the settings page shows dark mode on', wrongFiles[0]);
+  const notFail = wrong.dd('check', '--outcome', 'the settings page shows dark mode on', wrongFiles[0]);
   assert.equal(notFail.code, 3, 'a wrong pick below the floor is inconclusive, never a pass');
   assert.equal(toon(notFail).judge.judged[0].verdict, 'unsure');
   const bad = judgeSetup(supported, { floor: 1.5 });
-  const badFloor = bad.dd('check', '--judge', '--outcome', outcome, 'missing.png');
+  const badFloor = bad.dd('check', '--outcome', outcome, 'missing.png');
   assert.equal(badFloor.code, 2, badFloor.out);
   assert.match(badFloor.out, /judge\.floor must be a number from 0 to 1/);
 });
@@ -2381,13 +2448,13 @@ test('a verdict cached at one judge.floor is asked again at another', () => {
   const j = judgeSetup({ correct: 0.75, wrong: 0.2, unclear: 0.05 }, { floor: 0.7 });
   const { files } = j.shots();
   const outcome = 'the home screen shows the notes';
-  const first = j.dd('check', '--judge', '--outcome', outcome, files[0]);
+  const first = j.dd('check', '--outcome', outcome, files[0]);
   assert.equal(first.code, 0, first.out);
   assert.equal(toon(first).judge.judged[0].verdict, 'pass');
   assert.equal(j.calls().length, 1);
   const config = join(j.env.DONE_DONE_HOME, 'config.yaml');
   writeFileSync(config, readFileSync(config, 'utf8').replace('floor: 0.7', 'floor: 0.8'));
-  const second = j.dd('check', '--judge', '--outcome', outcome, files[0]);
+  const second = j.dd('check', '--outcome', outcome, files[0]);
   assert.equal(second.code, 3, second.out);
   assert.equal(j.calls().length, 2, 'the new floor is a new cache key, so the model is asked again');
   assert.equal(toon(second).judge.judged[0].cached, false);
@@ -2408,7 +2475,7 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
   const r = j.dd('run', '--', `${cp(chat, 'chat-1440.png')} && ${cp(widths, 'widths.json')}`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
-  const ok = j.dd('check', '--judge', '--outcome', 'the sent message shows as the newest bubble at the bottom of the thread', `${mixed}/chat-1440.png`, `${mixed}/widths.json`);
+  const ok = j.dd('check', '--outcome', 'the sent message shows as the newest bubble at the bottom of the thread', `${mixed}/chat-1440.png`, `${mixed}/widths.json`);
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual(toon(ok).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
   assert.ok(j.calls().find((c) => c.images === 1 && c.width > 0 && c.width <= 1280), 'the chat PNG is sent to the judge as an image, downscaled to 1280px');
@@ -2418,8 +2485,8 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
   assert.deepEqual(sent, { checks }, 'every width and frame reaches the judge, none cut');
 });
 
-test('judge.enabled turns the judge on; text evidence is judged too; a failed check is not judged', () => {
-  const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: true\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
+test('check judges text evidence too, and a failed plain check stops with its cause, unjudged', () => {
+  const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
   const r = j.dd('run', '--', `node make-shots.mjs \${RUN_ID} && node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.log','saved 3 notes')"`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
@@ -2430,91 +2497,70 @@ test('judge.enabled turns the judge on; text evidence is judged too; a failed ch
   assert.equal(d.judge.not_judged, undefined);
   assert.match(d.judge.note, /text captures \(logs, JSON, CLI output\) are judged; video and other files are not/);
   const bad = j.dd('check', '--outcome', 'three notes are saved', `${mixed}/home.png`, '.proof/nope.png');
-  assert.equal(bad.code, 1, bad.out);
-  assert.match(toon(bad).judge.skipped, /already failed/);
+  assert.equal(bad.code, 2, bad.out);
+  assert.match(toon(bad).error, /^check: the judge was not asked, so there is no verdict: \.proof\/nope\.png: no such file/);
   writeFileSync(join(j.repo, 'stray.png'), screen(11));
   const stray = j.dd('check', '--outcome', 'three notes are saved', 'stray.png');
-  assert.equal(stray.code, 3, stray.out);
-  assert.deepEqual(toon(stray).judge.judged, [], 'a capture with no run record is never sent');
+  assert.equal(stray.code, 2, stray.out);
+  assert.match(toon(stray).error, /^check: the judge was not asked, so there is no verdict: stray\.png: not in any done-done run record/, 'a capture with no run record is never sent');
   assert.equal(j.calls().length, 2);
 });
 
-test('the judge reads text and JSON captures as text: a wrong count fails with its reason, over-cap text is unsure, a re-run is a cache hit', () => {
+test('the judge reads text and JSON captures as text: a wrong count fails with its reason, over-cap text stops with its cause, a re-run is a cache hit', () => {
   const j = judgeSetup(CORRECT);
   const r = j.dd('run', '--', `node -e "const fs = require('fs'), d = process.env.DONE_DONE_EVIDENCE_ROOT; fs.writeFileSync(d + '/count.json', JSON.stringify({ notes: 3 })); fs.writeFileSync(d + '/sync.log', 'synced 3 notes'); fs.writeFileSync(d + '/big.log', 'x'.repeat(70000))"`);
   assert.equal(r.code, 0, r.out);
   const ev = `.proof/${toon(r).run_id}`;
-  const ok = j.dd('check', '--judge', '--outcome', 'three notes are saved', `${ev}/count.json`, `${ev}/sync.log`);
+  const ok = j.dd('check', '--outcome', 'three notes are saved', `${ev}/count.json`, `${ev}/sync.log`);
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual(toon(ok).judge.judged.map((x) => [x.path, x.verdict, x.cached]), [[`${ev}/count.json`, 'pass', false], [`${ev}/sync.log`, 'pass', false]]);
   const calls = j.calls();
   assert.deepEqual(calls.map((c) => c.images), [0, 0], 'a text capture goes as text, not an image');
   assert.ok(calls[0].prompt.includes('notes\\":3') && calls[1].prompt.includes('synced 3 notes') && calls.every((c) => c.prompt.includes('three notes are saved')), calls[0].prompt);
-  const again = j.dd('check', '--judge', '--outcome', 'three notes are saved', `${ev}/count.json`, `${ev}/sync.log`);
+  const again = j.dd('check', '--outcome', 'three notes are saved', `${ev}/count.json`, `${ev}/sync.log`);
   assert.ok(toon(again).judge.judged.every((x) => x.cached && x.verdict === 'pass'), again.out);
   j.stub({ correct: 0.04, wrong: 0.93, unclear: 0.03 });
-  const bad = j.dd('check', '--judge', '--outcome', 'five notes are saved', `${ev}/count.json`);
+  const bad = j.dd('check', '--outcome', 'five notes are saved', `${ev}/count.json`);
   assert.equal(bad.code, 1, bad.out);
   assert.match(toon(bad).findings[0].why, /count\.json: judge says wrong output: The screen shows the notes list\./);
-  const big = j.dd('check', '--judge', '--outcome', 'three notes are saved', `${ev}/big.log`);
-  assert.equal(big.code, 3, big.out);
-  assert.match(toon(big).judge.judged[0].reason, /text is 70000 bytes, over the 65536 bytes the judge reads/);
+  const big = j.dd('check', '--outcome', 'three notes are saved', `${ev}/big.log`);
+  assert.equal(big.code, 2, big.out);
+  assert.match(toon(big).error, /^judge: .*big\.log cannot be sent to the judge: text is 70000 bytes, over the 65536 bytes the judge reads/);
   assert.equal(j.calls().length, 3, 'a cache hit and an over-cap capture ask no model');
 });
 
-test('judge.enabled: false: verify judges only with --judge, and a rerun repeats its source run; --no-judge turns it off', () => {
-  const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: false\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
+test('verify and rerun always judge, and the receipt keeps the judge', () => {
+  const j = judgeSetup(CORRECT);
   const judgeStep = (r) => toon(r).steps.find((x) => x.name === 'judge').status;
-  const off = j.dd('verify', 'shots', '--outcome', 'home and settings render', '--foreground');
-  assert.equal(off.code, 0, off.out);
-  assert.equal(judgeStep(off), 'skipped');
-  const on = j.dd('verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground');
+  const on = j.dd('verify', 'shots', '--outcome', 'home and settings render', '--foreground');
   assert.equal(on.code, 0, on.out);
   assert.equal(judgeStep(on), 'completed');
   const receipt = toon(j.dd('receipt', '--verify', j.head()));
   assert.deepEqual([receipt.schema, receipt.judge.route], [2, 'claude-code']);
   const again = j.dd('rerun', '--run', toon(on).run_id);
   assert.equal(again.code, 0, again.out);
-  assert.equal(judgeStep(again), 'completed', 'the rerun judges as its source did, though judge.enabled is false');
-  const plain = j.dd('rerun', '--run', toon(again).run_id, '--no-judge');
-  assert.equal(plain.code, 0, plain.out);
-  assert.equal(judgeStep(plain), 'skipped');
+  assert.equal(judgeStep(again), 'completed');
+  for (const flag of [['verify', 'shots', '--outcome', 'x', '--no-judge'], ['check', '--outcome', 'x', '--judge', 'a.png'], ['rerun', '--no-judge']])
+    assert.match(j.dd(...flag).out, /Unknown option '--(no-)?judge'/, `${flag[0]} has no way to turn the judge off`);
 });
 
-test('a failed verify suggests running again with the judge choice it was started with, under judge.enabled: false', () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: false\njourneys:\n  shots:\n    command: node -e "process.exit(3)"\n');
-  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
-  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
-  const s = stubAgents(t.env, verdict);
-  symlinkSync(process.execPath, join(s.bin, 'node'));
-  const run = (...a) => {
-    const r = spawnSync(process.execPath, [CLI, ...a], { cwd: t.repo, env: s.env, encoding: 'utf8' });
-    return { code: r.status, out: r.stdout + r.stderr };
-  };
-  const withJudge = toon(run('verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'));
-  assert.ok(withJudge.help.at(-1).startsWith('Or start a new run: done-done verify shots'), withJudge.help.at(-1));
-  assert.ok(withJudge.help.at(-1).endsWith(' --judge'), withJudge.help.at(-1));
-  const plain = toon(run('verify', 'shots', '--outcome', 'home and settings render', '--foreground'));
-  assert.ok(!plain.help.at(-1).includes('--judge'), plain.help.at(-1));
-});
 
-test('a judge that judged no capture leaves a schema 1 receipt with no judge block', () => {
-  const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: true\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
+test('a capture the judge cannot read stops before the judge and writes no receipt', () => {
+  const j = judgeSetup(CORRECT);
   const r = j.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')"`);
   assert.equal(r.code, 0, r.out);
   const log = `.proof/${toon(r).run_id}/session.bin`;
   const rec = j.dd('receipt', '--outcome', 'three notes are saved', log);
-  assert.equal(rec.code, 0, rec.out);
-  const verified = toon(j.dd('receipt', '--verify', j.head()));
-  assert.deepEqual([verified.result, verified.schema, verified.judge], ['pass', 1, undefined]);
+  assert.equal(rec.code, 2, rec.out);
+  assert.match(rec.out, /the judge was not asked, so there is no verdict: .*no cited capture is one the judge reads/);
+  assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
   assert.equal(j.calls().length, 0, 'a file the judge does not read is never sent to the model');
 });
 
 test('judge with a claude that is not signed in is a config error naming your normal claude sign-in, and writes no receipt', () => {
   const j = judgeSetup(CORRECT, { loggedIn: false });
   const { files } = j.shots();
-  const r = j.dd('receipt', '--judge', '--outcome', 'the notes list shows three notes', files[0]);
+  const r = j.dd('receipt', '--outcome', 'the notes list shows three notes', files[0]);
   assert.equal(r.code, 2, r.out);
   const e = toon(r);
   assert.match(e.error, /^judge: claude is not signed in \(claude exited 1: Not logged in/);
@@ -2522,7 +2568,7 @@ test('judge with a claude that is not signed in is a config error naming your no
   assert.equal(j.dd('receipt', '--verify', j.head()).code, 1, 'no receipt was written');
   assert.doesNotMatch(r.out, /CLAUDE_CONFIG_DIR|token|secret/i, 'no sign-in folder of done-done\'s is named');
   j.stub(CORRECT, true);
-  const ok = j.dd('receipt', '--judge', '--outcome', 'the notes list shows three notes', files[0]);
+  const ok = j.dd('receipt', '--outcome', 'the notes list shows three notes', files[0]);
   assert.equal(ok.code, 0, ok.out);
   assert.equal(toon(ok).judge.judged[0].verdict, 'pass');
   // The receipt keeps the judge block (schema 2), and --verify shows it.
@@ -2535,35 +2581,21 @@ test('judge with a claude that is not signed in is a config error naming your no
   const rec = JSON.parse(readFileSync(file, 'utf8'));
   writeFileSync(file, JSON.stringify({ ...rec, judge: { ...rec.judge, verdicts: [{ ...rec.judge.verdicts[0], verdict: 'fail' }] } }));
   assert.match(toon(j.dd('receipt', '--verify', j.head())).reason, /malformed judge block/, 'a judge block that does not pass its captures is refused');
+  // A receipt an older done-done wrote without its judge (schema 1) proves nothing now.
   writeFileSync(file, JSON.stringify({ ...rec, schema: 1, judge: undefined }));
-  assert.equal(j.dd('receipt', '--verify', j.head()).code, 0, 'a schema 1 receipt still verifies');
+  const old = j.dd('receipt', '--verify', j.head());
+  assert.equal(old.code, 1, old.out);
+  assert.match(toon(old).reason, /is malformed/);
 });
 
-test('without the optional kit, --judge is a config error naming the npx command; the default model is cheap Haiku', () => {
+test('the default claude-code judge model is cheap Haiku', () => {
   const j = judgeSetup(CORRECT);
   const { files } = j.shots();
-  // A plain install: done-done and its dependencies, without the optional @byokit/decide peer.
-  const root = join(dirname(CLI), '..');
-  const pkg = join(j.dir, 'plain');
-  cpSync(join(root, 'dist'), join(pkg, 'dist'), { recursive: true });
-  cpSync(join(root, 'package.json'), join(pkg, 'package.json'));
-  mkdirSync(join(pkg, 'node_modules', '@toon-format'), { recursive: true });
-  symlinkSync(join(root, 'node_modules', 'yaml'), join(pkg, 'node_modules', 'yaml'));
-  symlinkSync(join(root, 'node_modules', 'jpeg-js'), join(pkg, 'node_modules', 'jpeg-js'));
-  symlinkSync(join(root, 'node_modules', '@toon-format', 'toon'), join(pkg, 'node_modules', '@toon-format', 'toon'));
-  const args = ['check', '--judge', '--outcome', "Umer's notes list shows three notes", files[0]];
-  const plain = spawnSync(process.execPath, [join(pkg, 'dist', 'cli.js'), ...args], { cwd: j.repo, env: j.env, encoding: 'utf8' });
-  assert.equal(plain.status, 2, plain.stdout + plain.stderr);
-  const e = toon({ out: plain.stdout });
-  assert.match(e.error, /needs the optional @byokit\/decide@0\.8\.0 kit/);
-  assert.equal(e.help[0], `Run this check with the kit: npx -y -p done-done-axi -p @byokit/decide@0.8.0 done-done-axi check --judge --outcome 'Umer'\\''s notes list shows three notes' ${files[0]}`);
-  assert.equal(j.calls().length, 0);
   writeFileSync(join(j.env.DONE_DONE_HOME, 'config.yaml'), readFileSync(join(j.env.DONE_DONE_HOME, 'config.yaml'), 'utf8').replace('  model: claude-test-1\n', ''));
-  assert.equal(j.dd(...args).code, 0);
+  assert.equal(j.dd('check', '--outcome', 'the notes list shows three notes', files[0]).code, 0);
   assert.equal(j.calls()[0].model, 'claude-haiku-5-5');
 });
 
-// The answerer route: the judge is another agent's CLI, asked tools-off through BYOKit's answerer backend.
 test('verify judges by default with the judge the user set: opencode judges a claude author through the answerer; a right screen passes, a wrong one fails', () => {
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
@@ -2619,67 +2651,69 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   assert.deepEqual(b.steps.map((x) => x.status), ['completed', 'completed', 'completed', 'failed', 'awaiting_approval', 'pending', 'pending']);
   assert.deepEqual([b.findings.length, b.findings[0].id, b.findings[0].severity, b.findings[0].action], [2, 'gate-1', 'error', 'ask-user']);
   assert.match(b.findings[0].what, /judge says wrong screen/);
-  assert.ok(b.help.some((h) => h.includes(`done-done respond --run ${b.run_id} --action approve --reason`)), bad.out);
-  // Parked at its gate, the run's sign-off message is a gate that recommends fix, since the judge failed a capture.
+  assert.ok(b.help.some((h) => h.includes(`done-done respond --run ${b.run_id} --action fix`)), bad.out);
+  assert.ok(!b.help.some((h) => /--action (approve|skip)/.test(h)), 'nothing moves a run past its judge');
+  // Parked at its gate, the run's sign-off message is a gate whose one answer is fix, since the judge failed a capture.
   const gated = t.dd('signoff');
   assert.equal(gated.code, 0, gated.out);
   assert.deepEqual(JSON.parse(readFileSync(toon(gated).file, 'utf8')), {
-    contract: 1, kind: 'gate', schema: 1, key: `dd-gate-${b.run_id}`, filer: 'done-done', title: 'Move the notes shots run on past its judge?',
+    contract: 1, kind: 'gate', schema: 1, key: `dd-gate-${b.run_id}`, filer: 'done-done', title: 'End the notes shots run its judge did not pass, to fix it?',
     about: 'home.png: judge says wrong screen: The list shows the notes. (and 1 more)', run: { run_id: b.run_id, commit: t.head() },
-    options: [{ value: 'approve', label: 'Approve' }, { value: 'skip', label: 'Skip the judge' }, { value: 'fix', label: 'Fix first' }], recommend_value: 'fix', close: 'done',
+    options: [{ value: 'fix', label: 'Fix first' }], recommend_value: 'fix', close: 'done',
   });
-  // An approve needs a reason; with one, the run ends overridden (exit 1, never pass) and the receipt says who and why.
-  const noReason = t.dd('respond', '--run', b.run_id, '--action', 'approve');
-  assert.equal(noReason.code, 2, noReason.out);
-  assert.match(toon(noReason).error, /needs --reason/);
+  // Approve and skip never move a run past its judge, with or without a reason: the run stays parked.
+  for (const answer of [['--action', 'approve'], ['--action', 'skip', '--reason', 'dark mode is on in the capture']]) {
+    const refused = t.dd('respond', '--run', b.run_id, ...answer);
+    assert.equal(refused.code, 2, refused.out);
+    assert.match(toon(refused).error, /is at its judge gate, which takes only --action fix: done-done never moves a run past its judge, and writes no receipt without a judge pass/);
+  }
+  assert.equal(toon(t.dd('status', '--run', b.run_id)).status, 'awaiting_approval', 'a refused answer leaves the run parked');
   const runJson = join(t.env.DONE_DONE_HOME, 'runs', 'notes', b.run_id, 'run.json'), saved = readFileSync(runJson, 'utf8');
   writeFileSync(runJson, '{');
-  assert.equal(t.dd('respond', '--run', b.run_id, '--action', 'approve', '--reason', 'dark mode is on').code, 2);
+  assert.equal(t.dd('respond', '--run', b.run_id, '--action', 'fix').code, 2);
   writeFileSync(runJson, saved);
-  const ok2 = t.dd('respond', '--run', b.run_id, '--action', 'approve', '--reason', 'dark mode is on in the capture');
-  assert.equal(ok2.code, 1, ok2.out);
-  const a = toon(ok2);
-  assert.deepEqual([a.status, a.result, a.response.action, a.response.reason], ['completed', 'overridden', 'approve', 'dark mode is on in the capture']);
+  // fix ends the run fail, records who answered, and writes no receipt.
+  const fixed = t.dd('respond', '--run', b.run_id, '--action', 'fix');
+  assert.equal(fixed.code, 1, fixed.out);
+  const a = toon(fixed);
+  assert.deepEqual([a.status, a.result, a.response.action], ['completed', 'fail', 'fix']);
   assert.ok(a.response.by, 'who answered is recorded');
-  assert.deepEqual(a.steps.map((x) => x.status), ['completed', 'completed', 'completed', 'failed', 'completed', 'completed', 'completed']);
   const events = readFileSync(join(t.env.DONE_DONE_HOME, 'runs', 'notes', b.run_id, 'events.jsonl'), 'utf8');
-  assert.match(events, /"step":"gate","response":"approve","by":"[^"]+","reason":"dark mode is on in the capture"/, 'the answer is logged');
-  const ov = t.dd('receipt', '--verify', t.head());
-  assert.equal(ov.code, 1, ov.out);
-  assert.deepEqual([toon(ov).result, toon(ov).override.action, toon(ov).judge.verdicts.map((x) => x.verdict)], ['overridden', 'approve', ['fail', 'fail']]);
-  assert.match(toon(ov).help[0], /not proven/);
-  assert.equal(t.dd('respond', '--run', b.run_id, '--action', 'skip', '--reason', 'again').code, 2, 'a run is answered once');
+  assert.match(events, /"step":"gate","response":"fix","by":"[^"]+"/, 'the answer is logged');
+  assert.equal(a.receipt, undefined, 'the run wrote no receipt');
+  assert.equal(toon(t.dd('receipt', '--verify', t.head())).claim, 'home and settings render', "the head's receipt is still the passing run's");
+  assert.equal(t.dd('respond', '--run', b.run_id, '--action', 'fix').code, 2, 'a run is answered once');
   // A rerun of the judged run judges again (the cached wrong verdict), so it cannot pass with the judge left out.
   const re = spawnSync(process.execPath, [CLI, 'rerun', '--run', b.run_id], { cwd: t.repo, env: right.env, encoding: 'utf8' });
   assert.equal(re.status, 4, re.stdout + re.stderr);
   assert.deepEqual(toon({ out: re.stdout }).steps.map((x) => [x.name, x.status]).slice(3, 6), [['judge', 'failed'], ['gate', 'awaiting_approval'], ['receipt', 'pending']]);
   assert.equal(t.dd('respond', '--run', toon({ out: re.stdout }).run_id, '--action', 'fix').code, 1);
-  // The author's own agent and model as the judge is a usage error before any run starts, unless allow_same accepts it.
-  // Another claim, since run b still waits at its gate on this one.
+  // The author's own agent and model may judge too: the user's choice runs, in a fresh session, and the log says how apart it is.
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: answerer:opencode\n');
-  const same = verify(right.env, 'home and settings render', '--claim-id', 'settings');
-  assert.equal(same.code, 2, same.out);
-  assert.match(toon(same).error, /is the author's own agent and model/);
-  assert.match(toon(same).help[0], /done-done init --judge <agent> --judge-model <model>/);
+  const same = verify(right.env, 'home and settings render');
+  assert.equal(same.code, 0, same.out);
+  const sameLog = decode(readFileSync(join(t.env.DONE_DONE_HOME, 'runs', 'notes', toon(same).run_id, 'logs', 'judge.log'), 'utf8'));
+  assert.equal(sameLog.independence, 'session-only');
 });
 
-test('verify --judge on the answerer route: a malformed judge answer is one request per capture, never re-asked, and the verdict is unsure', () => {
+test('verify on the answerer route: a malformed judge answer fails the run at its judge step, with the cause and no receipt', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   const s = stubAgents(t.env, 'I think the screen is right, but I will not answer in JSON.');
   symlinkSync(process.execPath, join(s.bin, 'node'));
-  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   const o = toon({ out: r.stdout });
   const calls = s.calls();
-  assert.equal(calls.length, 2, 'one tools-off request per capture, no re-ask after a malformed answer');
+  assert.equal(calls.length, 1, 'the first unreadable answer stops the judge: no more requests');
   assert.ok(calls.every((c) => c.agent === 'opencode'));
-  assert.equal(r.status, 4, r.stdout);
-  assert.deepEqual([o.status, o.findings[0].severity], ['awaiting_approval', 'warning'], 'an unsure judge parks at the gate');
-  assert.match(o.findings[0].what, /judge says unsure: the judge did not answer: the agent did not answer with valid JSON after 1 try/, r.stdout);
+  assert.equal(r.status, 2, r.stdout);
+  assert.deepEqual([o.status, o.result, o.steps.find((x) => x.name === 'judge').status], ['failed', undefined, 'failed'], 'a judge that does not answer gives no verdict');
+  assert.match(o.reason, /^judge: the judge did not answer: the agent did not answer with valid JSON after 1 try/, r.stdout);
+  assert.equal(spawnSync(process.execPath, [CLI, 'receipt', '--verify', t.head()], { cwd: t.repo, env: s.env }).status, 1, 'no receipt was written');
 });
 
-test('verify --judge on the answerer route: an OpenCode free-tier 403 names the cause and judge.model, and writes no verdict or receipt', () => {
+test('verify on the answerer route: an OpenCode free-tier 403 stops the run with its cause and judge.model, and writes no verdict or receipt', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
@@ -2688,17 +2722,16 @@ test('verify --judge on the answerer route: an OpenCode free-tier 403 names the 
 process.exitCode = 1;`;
   const s = stubAgents(t.env, '{}', freeTier);
   symlinkSync(process.execPath, join(s.bin, 'node'));
-  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   const o = toon({ out: r.stdout });
-  assert.equal(s.calls().length, 2, 'one tools-off request per capture, no retry for a refusal that retries cannot clear');
-  assert.equal(r.status, 4, r.stdout);
-  assert.equal(o.findings[0].severity, 'warning', r.stdout);
-  assert.match(o.findings[0].what, /judge says unsure: the judge did not answer: opencode exited 1: .*free tier can only be used from within OpenCode/, 'the original error text is kept');
-  assert.match(o.findings[0].what, /set judge\.model in ~\/\.done-done\/config\.yaml to a model that is not on the free tier/, 'the fix names the config key');
+  assert.equal(s.calls().length, 1, 'the refusal stops the judge at its first request: retries cannot clear it');
+  assert.equal(r.status, 2, r.stdout);
+  assert.match(o.reason, /^judge: the judge did not answer: opencode exited 1: .*free tier can only be used from within OpenCode/, 'the original error text is kept');
+  assert.match(o.reason, /set judge\.model in ~\/\.done-done\/config\.yaml to a model that is not on the free tier/, 'the fix names the config key');
   assert.notEqual(t.dd('receipt', '--verify', t.head()).code, 0, 'no receipt is written');
 });
 
-test('verify with no journey: the author agent drives the verify skill feature, the judge passes it; a wrong claim parks at the gate until respond', () => {
+test('verify with no journey: the author agent drives the verify skill feature, the judge passes it; a wrong claim parks at the gate until respond --action fix', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\n');
   const skill = join(t.repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
@@ -2708,7 +2741,7 @@ test('verify with no journey: the author agent drives the verify skill feature, 
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'verify skill');
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\n${judgeYaml(t.env)}`);
   const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the note.', personReason: 'The list shows the note.' } });
   // claude is the author: it saves a capture into the run's evidence folder and answers; DRIVE=edit also edits a tracked file.
   const agents = (p) => {
@@ -2766,22 +2799,18 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.ok(!judged[0].file.includes('verify-notes'), 'the judge sees the claim and the capture, not the recipe or the drive');
   assert.equal(JSON.parse(readFileSync(join(runDir, 'agents', 'drive.json'), 'utf8')).ok, true, 'the drive call leaves a record');
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 0);
-  // A wrong claim parks at the gate; skip needs a reason and ends the run overridden, never pass.
+  // A wrong claim parks at the gate; skip and approve are refused there, and fix ends the run fail.
   const wrong = agents({ correct: 0.04, wrong: 0.93, unclear: 0.03 });
   const bad = verify(wrong.env, 'the note list is sorted by date');
   assert.equal(bad.code, 4, bad.out);
   assert.deepEqual([bad.o.status, bad.o.step, bad.o.findings.length], ['awaiting_approval', 'gate', 1]);
-  assert.equal(t.dd('respond', '--action', 'skip').code, 2, 'skip needs a reason');
   const skip = t.dd('respond', '--action', 'skip', '--reason', 'the sort is checked by hand');
-  assert.equal(skip.code, 1, skip.out);
-  assert.deepEqual([toon(skip).run_id, toon(skip).result, toon(skip).response.action], [bad.o.run_id, 'overridden', 'skip'], 'respond answers the newest run by default');
-  const ov = t.dd('receipt', '--verify', t.head());
-  assert.deepEqual([ov.code, toon(ov).result, toon(ov).override.reason], [1, 'overridden', 'the sort is checked by hand']);
-  // fix ends a parked run as fail; abort cancels one; neither can be answered again.
-  const fixRun = verify(wrong.env, 'the note list is sorted by date');
-  const fix = t.dd('respond', '--run', fixRun.o.run_id, '--action', 'fix');
+  assert.equal(skip.code, 2, skip.out);
+  assert.match(toon(skip).error, new RegExp(`run ${bad.o.run_id} is at its judge gate, which takes only --action fix`), 'respond answers the newest run by default');
+  const fix = t.dd('respond', '--action', 'fix');
   assert.equal(fix.code, 1, fix.out);
-  assert.deepEqual([toon(fix).result, toon(fix).steps.find((x) => x.name === 'gate').status], ['fail', 'failed']);
+  assert.deepEqual([toon(fix).run_id, toon(fix).result, toon(fix).steps.find((x) => x.name === 'gate').status], [bad.o.run_id, 'fail', 'failed']);
+  // abort cancels a parked run; neither can be answered again.
   const abortRun = verify(wrong.env, 'the note list is sorted by date');
   assert.equal(t.dd('abort', '--run', abortRun.o.run_id).code, 0);
   assert.equal(toon(t.dd('status', '--run', abortRun.o.run_id)).status, 'cancelled');
@@ -2813,7 +2842,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
     const out = again.out ?? again.stdout;
     assert.equal(again.code ?? again.status, 2, out);
     assert.match(out, new RegExp(`run ${logged.o.run_id} waiting at its gate`));
-    assert.match(out, new RegExp(`done-done respond --run ${logged.o.run_id} --action approve\\|skip\\|fix .*done-done abort --run ${logged.o.run_id}`));
+    assert.match(out, new RegExp(`done-done respond --run ${logged.o.run_id} --action fix .*done-done abort --run ${logged.o.run_id}`));
   }
   // A rerun keeps the claim of its source run, so switching branches does not get around the gate.
   t.sh('checkout', '-qb', 'other');
@@ -2830,12 +2859,6 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.match(legacy.out, new RegExp(`run ${logged.o.run_id} waiting at its gate`));
   assert.equal(right.calls().length, calls, 'no agent was started');
   assert.equal(t.dd('respond', '--run', logged.o.run_id, '--action', 'fix').code, 1);
-  // With the judge off, an agent drive parks at the gate saying so, and its judge step shows skipped, not pending.
-  const off = verify(right.env, 'the note Umer added shows in the list', '--no-judge');
-  assert.equal(off.code, 4, off.out);
-  assert.equal(off.o.findings[0].what, 'the judge is off (--no-judge), and an agent drive passes only with a judge pass');
-  assert.equal(off.o.steps.find((x) => x.name === 'judge').status, 'skipped');
-  assert.equal(t.dd('respond', '--run', off.o.run_id, '--action', 'fix').code, 1);
   // A run record that cannot be parsed stops the command with the file to fix, never a stack trace.
   const brokenRun = join(t.env.DONE_DONE_HOME, 'runs', 'notes', 'broken-run');
   mkdirSync(brokenRun);
@@ -2911,7 +2934,7 @@ test('signoff on a rerun that reused its drive sends the captures of the run tha
 
 // auto_fix.verify's sign-off evidence shows the fix pass, the one the run's receipt is bound to, never the failing first pass.
 test('signoff on a verify run fixed by auto_fix sends the fix pass: its captures, its commit and a repro naming its branch', () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: false\nauto_fix:\n  verify: 1\njourneys:\n  shots:\n    command: node shot.mjs\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\nauto_fix:\n  verify: 1\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
   writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
@@ -2923,7 +2946,7 @@ writeFileSync('src/app.js', 'export const title = "Notes";\\n');
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed the title', blocker: '' }) } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).result], [1, 'changed'], r.out);
   const id = toon(r).run_id;
@@ -2943,20 +2966,21 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 test('signoff on a fix-pass gate names the capture file, not the fix pass folder', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\nauto_fix:\n  verify: 1\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/out.txt', 'the notes list shows three notes\\n'.repeat(3000));\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/out.txt', 'the notes list shows three notes\\n');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}\nconst { writeFileSync } = require('node:fs');\nwriteFileSync('src/app.js', 'export const title = "Notes";\\n');\nconsole.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed the title', blocker: '' }) } }));\n`, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  route: claude-code\n');
+  // The judge is unsure of the fix pass's capture, so the run parks at its gate.
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${JUDGE_CONFIG(stubJudge(t.dir, { correct: 0.05, wrong: 0.05, unclear: 0.9 }))}`);
   const env = { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` };
   const r = doctorIn(t.repo, env, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).status, toon(r).step], [4, 'awaiting_approval', 'gate'], r.out);
   const g = doctorIn(t.repo, env, 'signoff');
   assert.equal(g.code, 0, g.out);
   const about = JSON.parse(readFileSync(toon(g).file, 'utf8')).about;
-  assert.match(about, /^out\.txt: judge says unsure: text is \d+ bytes/);
+  assert.match(about, /^out\.txt: judge says unsure: /);
   assert.ok(!about.includes('.proof'), 'the finding names the capture file, never its fix pass folder');
 });
 
@@ -2966,14 +2990,14 @@ test('a rerun refused by the judge preflight exits 2 and creates no run folder',
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   const s = stubAgents(t.env, JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } }));
   symlinkSync(process.execPath, join(s.bin, 'node'));
-  const first = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  const first = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   assert.equal(first.status, 0, first.stdout + first.stderr);
   const runs = join(t.env.DONE_DONE_HOME, 'runs', 'notes');
   const before = readdirSync(runs).sort();
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: answerer:opencode\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
   const re = spawnSync(process.execPath, [CLI, 'rerun', '--run', toon({ out: first.stdout }).run_id], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   assert.equal(re.status, 2, re.stdout + re.stderr);
-  assert.match(toon({ out: re.stdout }).error, /is the author's own agent and model/);
+  assert.match(toon({ out: re.stdout }).error, /^no judge is set: ask the user which judge to use/);
   assert.deepEqual(readdirSync(runs).sort(), before, 'the refused rerun leaves no new run folder');
 });
 
@@ -3007,7 +3031,7 @@ test('a pi judge on a claude-bridge model loads only that provider extension: th
   const s = stubAgents(t.env, verdict);
   stubPiBridge(s.env, verdict);
   symlinkSync(process.execPath, join(s.env.PATH, 'node'));
-  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--judge', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const judged = s.calls().filter((c) => c.agent === 'pi');
   assert.equal(judged.length, 2, 'one tools-off call per capture');
@@ -3016,7 +3040,7 @@ test('a pi judge on a claude-bridge model loads only that provider extension: th
   }
 });
 
-test('verify --judge through pi and gemini: each judges tools-off with the capture attached; a right screen passes, a wrong one fails', () => {
+test('verify through pi and gemini: each judges tools-off with the capture attached; a right screen passes, a wrong one fails', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
@@ -3026,7 +3050,7 @@ test('verify --judge through pi and gemini: each judges tools-off with the captu
     return s;
   };
   const verify = (env, outcome) => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--judge', '--foreground'], { cwd: t.repo, env, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground'], { cwd: t.repo, env, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
   // The user names the judge: a pi author is judged by gemini at its cheap model; a gemini author by pi, each at its configured model.
@@ -3089,7 +3113,7 @@ globalThis.fetch = async (url, init) => {
   const key = 'sk-test-not-a-real-key';
   const withKey = (p) => ({ ...env, OPENAI_API_KEY: key, NODE_OPTIONS: `--import=${pathToFileURL(stub)}`, STUB_VERDICT: typeof p === 'string' ? p : JSON.stringify(p) });
   const verify = (e, outcome) => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--judge', '--foreground'], { cwd: t.repo, env: e, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground'], { cwd: t.repo, env: e, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
   const requests = () => readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -3109,10 +3133,11 @@ globalThis.fetch = async (url, init) => {
   assert.equal(toon(bad).status, 'awaiting_approval');
   assert.match(toon(bad).findings[0].what, /judge says wrong screen/);
   assert.equal(t.dd('respond', '--run', toon(bad).run_id, '--action', 'fix').code, 1);
-  // A refused key is unsure, and the reason names the real cause and where the key comes from.
+  // A refused key gives no verdict: the run stops at its judge step (exit 2), and the reason names the real cause and where the key comes from.
   const refused = verify(withKey('401'), 'the home screen shows the sync banner');
-  assert.equal(refused.code, 4, refused.out);
-  assert.match(toon(refused).findings[0].what, /the judge did not answer: http 401 \(check judge\.model vision-test-1 and the key in OPENAI_API_KEY\)/);
+  assert.equal(refused.code, 2, refused.out);
+  assert.deepEqual([toon(refused).status, toon(refused).result], ['failed', undefined]);
+  assert.match(toon(refused).reason, /^judge: the judge did not answer: http 401 \(check judge\.model vision-test-1 and the key in OPENAI_API_KEY\)/);
   assert.equal(spawnSync('grep', ['-rl', key, t.env.DONE_DONE_HOME, t.repo], { encoding: 'utf8' }).stdout, '', 'the key is written nowhere');
   // Doctor names a missing key and a missing model with their fixes, and never calls the model.
   const doctorEnv = { ...env, OPENAI_API_KEY: '' };
@@ -3125,7 +3150,9 @@ globalThis.fetch = async (url, init) => {
   writeFileSync(join(env.PATH, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: codex\nagent_config:\n  codex:\n    model: vision-test-1\njudge:\n  route: openai:key\n  model: vision-test-1\n');
   const sameModel = toon(doctorIn(t.repo, { ...env, OPENAI_API_KEY: key }, 'doctor')).checks.find((c) => c.check === 'judge_choice');
-  assert.deepEqual([sameModel.status, sameModel.detail, sameModel.fix], ['missing', "judge: the judge openai:key (model vision-test-1) is the author's own agent and model (codex), and the judge must differ from the author by agent or by model", 'done-done init --judge <agent> --judge-model <model>, with another agent or the same agent at another model; judge.allow_same: true in ~/.done-done/config.yaml is an opt-out only, for a fresh session of the same agent and model']);
+  // The user's own model as the judge runs: doctor shows how apart it is and never asks for another.
+  assert.deepEqual([sameModel.status, sameModel.fix], ['ok', '']);
+  assert.match(sameModel.detail, /the author's agent and model in a fresh session/);
 });
 
 // done-done never picks the judge: no auto pick, no PATH detection, no fallback. With none set, verify asks the user.
@@ -3142,7 +3169,7 @@ test('with no judge set, verify stops with the ask (exit 2, the choices, the sav
   };
   const v = run('verify', 'shots', '--outcome', 'home and settings render', '--foreground');
   assert.equal(v.code, 2, v.out);
-  assert.equal(toon(v).error, 'no judge is set: ask the user which judge to use (claude, opencode, pi, gemini); never pick one for them, and never the agent that did the work');
+  assert.equal(toon(v).error, 'no judge is set: ask the user which judge to use (claude, opencode, pi, gemini); never pick one for them');
   assert.equal(toon(v).help[0], "Save the user's answer: done-done init --judge <agent> --judge-model <model>, e.g. done-done init --judge opencode --judge-model opencode-go/muse-spark-1.3-contributor");
   assert.ok(!existsSync(join(t.env.DONE_DONE_HOME, 'runs', 'notes')), 'no run starts');
   assert.equal(s.calls().length, 0, 'no agent is started or picked, though claude and opencode are both on PATH');
@@ -3151,15 +3178,12 @@ test('with no judge set, verify stops with the ask (exit 2, the choices, the sav
     const c = d.checks.find((x) => x.check === row);
     assert.deepEqual([c.status, c.detail, c.fix], ['missing', toon(v).error, toon(v).help[0]], `doctor's ${row} row is the same ask`);
   }
-  // check and receipt start no model, so they need no judge.
+  // check needs the judge too, and with none set it gives no result either; there is no way to skip the judge.
   const { files } = t.shots();
-  assert.equal(run('check', '--outcome', 'home and settings render', ...files).code, 0);
-  // The user turns the judge off by choice: --no-judge, or judge.enabled: false.
-  const off = run('verify', 'shots', '--outcome', 'home and settings render', '--foreground', '--no-judge');
-  assert.equal(off.code, 0, off.out);
-  assert.equal(toon(off).steps.find((x) => x.name === 'judge').status, 'skipped');
+  const check = run('check', '--outcome', 'home and settings render', ...files);
+  assert.deepEqual([check.code, toon(check).result, toon(check).error], [2, undefined, toon(v).error]);
+  assert.match(run('verify', 'shots', '--outcome', 'x', '--no-judge').out, /Unknown option '--no-judge'/);
   assert.equal(s.calls().length, 0);
-  assert.match(run('verify', 'shots', '--outcome', 'x', '--judge', '--no-judge').out, /pass only one of --judge and --no-judge/);
   // The save command sets it; the next verify judges with exactly that judge.
   const saved = run('init', '--judge', 'claude', '--judge-model', 'claude-haiku-5-5');
   assert.equal(toon(saved).judge, `claude-code (model claude-haiku-5-5) saved to ${join(t.env.DONE_DONE_HOME, 'config.yaml')}`);
@@ -3185,7 +3209,7 @@ test('a judge.route auto from an old config exits 2 naming the file; deleting th
   assert.deepEqual(parse(readFileSync(file, 'utf8')).judge, { route: 'claude-code', model: 'claude-haiku-5-5' });
 });
 
-test('init --judge saves the user\'s judge, refuses one done-done cannot judge through and the author\'s own agent and model', () => {
+test('init --judge saves the user\'s judge, the author\'s own agent and model too, and refuses one done-done cannot judge through', () => {
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
@@ -3193,13 +3217,13 @@ test('init --judge saves the user\'s judge, refuses one done-done cannot judge t
   const bad = t.dd('init', '--judge', 'acp:gemini');
   assert.equal(bad.code, 2, bad.out);
   assert.match(toon(bad).error, /^done-done cannot judge through acp:gemini; it judges through claude, opencode, pi, gemini$/);
-  const same = t.dd('init', '--judge', 'opencode', '--judge-model', 'opencode-go/muse-spark-1.3-contributor');
-  assert.equal(same.code, 2, same.out);
-  assert.match(toon(same).error, /^judge: the judge opencode \(model opencode-go\/muse-spark-1\.3-contributor\) is the author's own agent and model \(opencode\), and the judge must differ from the author by agent or by model$/);
-  assert.match(toon(same).help[0], /^done-done init --judge <agent> --judge-model <model>, with another agent or the same agent at another model; judge\.allow_same: true .* is an opt-out only/);
   assert.equal(parse(readFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'utf8')).judge, undefined, 'a refused judge writes nothing');
+  // The author's own agent and model is the user's choice, so it is saved as asked.
+  const same = t.dd('init', '--judge', 'opencode', '--judge-model', 'opencode-go/muse-spark-1.3-contributor');
+  assert.equal(same.code, 0, same.out);
+  assert.equal(toon(same).judge, `answerer:opencode (model opencode-go/muse-spark-1.3-contributor) saved to ${join(t.env.DONE_DONE_HOME, 'config.yaml')}`);
   assert.equal(toon(t.dd('init', '--judge-model', 'x')).error, '--judge-model needs --judge');
-  // The author's agent at another model is allowed, and saved as answerer:opencode.
+  // The author's agent at another model is saved too, as answerer:opencode.
   const other = t.dd('init', '--judge', 'opencode', '--judge-model', 'opencode-go/other-model');
   assert.equal(toon(other).judge, `answerer:opencode (model opencode-go/other-model) saved to ${join(t.env.DONE_DONE_HOME, 'config.yaml')}`);
   assert.equal(toon(t.dd('init')).judge, 'unchanged (answerer:opencode)');
@@ -3217,16 +3241,17 @@ test('re-saving a judge without --judge-model keeps its model on the same route 
   assert.equal(parse(readFileSync(file, 'utf8')).judge.model, undefined);
 });
 
-test('a judge is never the author, even an acp author that cannot start: a claude judge for acp:claude-code is refused and nothing is saved', () => {
+test('the judge is the user\'s call, even the author\'s own agent: a claude judge for an acp:claude-code author is saved', () => {
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const file = join(t.env.DONE_DONE_HOME, 'config.yaml');
   writeFileSync(file, `agent: acp:claude-code\nacpx_path: ${JSON.stringify(join(t.dir, 'no-acpx'))}\n`);
-  const before = readFileSync(file, 'utf8');
   const r = t.dd('init', '--judge', 'claude', '--judge-model', 'claude-haiku-5-5');
-  assert.equal(r.code, 2, r.out);
-  assert.match(toon(r).error, /^judge: the judge claude \(model claude-haiku-5-5\) is the author's own agent and model \(acp:claude-code\)/);
-  assert.equal(readFileSync(file, 'utf8'), before, 'a refused judge writes nothing');
+  // The judge is saved; only the verify skill is not written, since this acp author cannot start.
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: acp:claude-code did not answer/);
+  assert.equal(toon(r).judge, `claude-code (model claude-haiku-5-5) saved to ${file}`);
+  assert.deepEqual(parse(readFileSync(file, 'utf8')).judge, { route: 'claude-code', model: 'claude-haiku-5-5' });
 });
 
 test('init --judge pi without a model exits 2 with the save command and writes nothing', () => {
@@ -3264,6 +3289,7 @@ test('with no judge set, verify in a terminal asks from a list, saves the pick a
 test('init in a terminal says why it asks again and refuses a model the agent does not list', { skip: !existsSync('/usr/bin/script') && 'no script(1)' }, () => {
   const t = setup();
   keepSkill(t.repo, 'notes');
+  rmSync(join(t.env.DONE_DONE_HOME, 'config.yaml')); // no agent and no judge set, so init asks for both
   const bin = join(t.dir, 'bin');
   mkdirSync(bin);
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh\necho opencode-go/muse-spark-1.3-contributor\n`, { mode: 0o755 });
@@ -3281,6 +3307,7 @@ test('init in a terminal says why it asks again and refuses a model the agent do
 
 test('init in a terminal says a typed model is saved unchecked when its agent is not on PATH', { skip: !existsSync('/usr/bin/script') && 'no script(1)' }, () => {
   const t = setup();
+  rmSync(join(t.env.DONE_DONE_HOME, 'config.yaml')); // no agent and no judge set, so init asks for both
   const bin = join(t.dir, 'bin');
   mkdirSync(bin);
   const cmd = [process.execPath, CLI, 'init'].join(' ');
@@ -3347,9 +3374,9 @@ test('design fails a screen on each defect the judge names, alone or next to its
   assert.equal(unsure.code, 3, unsure.out);
   assert.match(toon(unsure).screens[0].reason, /^not confident enough about layout$/);
   const empty = design(answer(), 'blank.png');
-  assert.equal(empty.code, 1, empty.out);
-  assert.match(toon(empty).screens[0].reason, /blank frame/);
-  assert.equal(empty.calls.length, 0, 'a blank frame fails without a request');
+  assert.equal(empty.code, 2, empty.out);
+  assert.equal(toon(empty).error, 'design: blank.png: png is a blank frame (luminance spread 0.0000), so it cannot be sent to the judge');
+  assert.equal(empty.calls.length, 0, 'a blank frame stops with its cause and no verdict');
   assert.equal(design(answer(), '--mock', 'screen.png').code, 2);
   assert.match(toon(design(answer(), 'gone.png')).error, /gone\.png: cannot read \(ENOENT\)/);
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: answerer:opencode\n'); const judgeOnly = design(answer(), 'screen.png');
@@ -3358,7 +3385,7 @@ test('design fails a screen on each defect the judge names, alone or next to its
 
 // A cheap model sometimes answers every kind with all-zero probabilities: that is a malformed answer to ask again, not
 // a judge unsure of all seven kinds, so the same screen gets the same verdict on every run.
-test('design asks again when the judge answers with probabilities it cannot read, and never calls that unsure', () => {
+test('design asks again when the judge answers with probabilities it cannot read, and stops with an error when it still cannot', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
@@ -3381,14 +3408,16 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: replies[M
   assert.equal(again.code, 0, again.out);
   assert.equal(toon(again).screens[0].verdict, 'pass');
   assert.equal(again.calls.length, 2, 'the all-zero answer is asked once more');
+  // An answer that still cannot be read gives no verdict: design stops with the cause (exit 2), never "unsure".
   const never = design(zero);
-  assert.equal(never.code, 3, never.out);
+  assert.equal(never.code, 2, never.out);
   assert.equal(never.calls.length, 2);
-  assert.equal(toon(never).screens[0].reason, 'the judge did not answer: no probabilities for aspect, clipped-text, overlap, off-screen, blank-strip, squashed-text, layout that are each 0 to 1 and sum to 1');
+  assert.equal(toon(never).screens, undefined);
+  assert.equal(toon(never).error, 'judge: the judge did not answer: no probabilities for aspect, clipped-text, overlap, off-screen, blank-strip, squashed-text, layout that are each 0 to 1 and sum to 1');
   // One kind left without an option is malformed too, and only that kind is named.
   const partial = JSON.parse(answer({ defect: 0.02, none: 0.98 }));
   partial.layout.probabilities = { defect: 0.02 };
-  assert.match(toon(design(JSON.stringify(partial))).screens[0].reason, /^the judge did not answer: no probabilities for layout that/);
+  assert.match(toon(design(JSON.stringify(partial))).error, /^judge: the judge did not answer: no probabilities for layout that/);
 });
 
 test('design fails an overlay the approved mock does not draw in that place', () => {
@@ -3411,7 +3440,7 @@ test('design fails an overlay the approved mock does not draw in that place', ()
   assert.doesNotMatch(s.calls()[1].file, /dialog, sheet, menu, popover or toast/, 'alone, an overlay is judged as any element');
 });
 
-test('design measures a blank strip along an edge, but not a nav rail with icons or a uniform frame', () => {
+test('design gives the judge a blank strip it measured along an edge, but not a nav rail with icons; a uniform frame stops before the judge', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
@@ -3424,23 +3453,25 @@ test('design measures a blank strip along an edge, but not a nav rail with icons
   const clean = JSON.stringify(Object.fromEntries(['aspect', 'clipped-text', 'overlap', 'off-screen', 'blank-strip', 'squashed-text', 'layout'].map((k) => [k, { probabilities: { defect: 0.02, none: 0.98 }, rationale: 'Looked.', personReason: 'Nothing of this kind.' }])));
   const s = stubAgents(t.env, clean);
   symlinkSync(process.execPath, join(s.bin, 'node'));
+  // The measurement goes to the judge as input; the verdict is the judge's alone.
   const design = (...args) => {
     const r = spawnSync(process.execPath, [CLI, 'design', '--full', ...args], { cwd: t.dir, env: s.env, encoding: 'utf8' });
-    return { code: r.status, out: r.stdout + r.stderr };
+    return { code: r.status, out: r.stdout + r.stderr, sent: s.calls().at(-1)?.file ?? '' };
   };
   const strip = design('strip.png');
-  assert.equal(strip.code, 1, strip.out);
-  assert.deepEqual(toon(strip).screens[0].defects, [{ kind: 'blank-strip', where: 'left edge: a plain #141614 band 24 px deep (10% of the width), full height, with nothing in it' }]);
+  assert.equal(strip.code, 0, strip.out);
+  assert.ok(strip.sent.includes('measured_from_pixels') && strip.sent.includes('left edge: a plain #141614 band 24 px deep (10% of the width), full height, with nothing in it'), strip.sent);
   const rail = design('rail.png');
   assert.equal(rail.code, 0, rail.out);
-  assert.deepEqual(toon(rail).screens[0].defects, [], 'a dark rail that holds icons is content, not a strip');
+  assert.ok(!rail.sent.includes('measured_from_pixels'), 'a dark rail that holds icons is content, not a strip');
+  const calls = s.calls().length;
   const uniform = design('uniform.png');
-  assert.equal(uniform.code, 1, uniform.out);
-  assert.match(toon(uniform).screens[0].reason, /blank frame/);
-  assert.deepEqual(toon(uniform).screens[0].defects, [], 'a whole uniform screen is the blank-frame check, not a strip');
+  assert.equal(uniform.code, 2, uniform.out);
+  assert.match(toon(uniform).error, /^design: uniform\.png: png is a blank frame/);
+  assert.equal(s.calls().length, calls, 'a whole uniform screen is the blank-frame check, with no request');
 });
 
-test('design does not report a strip its approved mock has too, but reports one the mock lacks', () => {
+test('design does not tell the judge of a strip its approved mock has too, but tells it of one the mock lacks', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
@@ -3453,18 +3484,21 @@ test('design does not report a strip its approved mock has too, but reports one 
   symlinkSync(process.execPath, join(s.bin, 'node'));
   const design = (...args) => {
     const r = spawnSync(process.execPath, [CLI, 'design', '--full', ...args], { cwd: t.dir, env: s.env, encoding: 'utf8' });
-    return { code: r.status, out: r.stdout + r.stderr };
+    return { code: r.status, out: r.stdout + r.stderr, sent: s.calls().at(-1)?.file ?? '' };
   };
   const matched = design('strip.png', '--mock', 'strip.png=band-mock.png');
   assert.equal(matched.code, 0, matched.out);
-  assert.deepEqual(toon(matched).screens[0].defects, [], 'a band the approved mock has too is approved design');
+  assert.ok(!matched.sent.includes('measured_from_pixels'), 'a band the approved mock has too is approved design');
   const unmatched = design('strip.png', '--mock', 'strip.png=plain-mock.png');
-  assert.equal(unmatched.code, 1, unmatched.out);
-  assert.deepEqual(toon(unmatched).screens[0].defects, [{ kind: 'blank-strip', where: 'left edge: a plain #141614 band 24 px deep (10% of the width), full height, with nothing in it' }]);
+  assert.equal(unmatched.code, 0, unmatched.out);
+  assert.ok(unmatched.sent.includes('left edge: a plain #141614 band 24 px deep (10% of the width), full height, with nothing in it'), unmatched.sent);
+  // A mock the judge cannot be sent stops design with its cause, before any request and with no verdict.
   writeFileSync(join(t.dir, 'mock.webp'), Buffer.concat([Buffer.from('RIFF'), Buffer.from([4, 0, 0, 0]), Buffer.from('WEBP')]));
-  const unmeasurable = design('strip.png', '--mock', 'strip.png=mock.webp');
-  assert.equal(unmeasurable.code, 3, unmeasurable.out);
-  assert.deepEqual([toon(unmeasurable).screens[0].verdict, toon(unmeasurable).screens[0].reason], ['unsure', 'approved mock could not be measured; give a PNG or JPEG mock']);
+  const calls = s.calls().length;
+  const unsendable = design('strip.png', '--mock', 'strip.png=mock.webp');
+  assert.equal(unsendable.code, 2, unsendable.out);
+  assert.equal(toon(unsendable).error, 'design: mock.webp: only PNG and JPEG screens are judged, so it cannot be sent to the judge');
+  assert.equal(s.calls().length, calls);
 });
 
 test('design does not read a transparent margin as a strip, on a dark screen either', () => {
@@ -3481,7 +3515,7 @@ test('design does not read a transparent margin as a strip, on a dark screen eit
   assert.deepEqual(toon({ out: r.stdout + r.stderr }).screens[0].defects, [], 'the margin is transparent, not a band');
 });
 
-test('design reports an opaque black strip that has transparent pixels beside it on the same edge', () => {
+test('design measures an opaque black strip that has transparent pixels beside it on the same edge', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
@@ -3491,16 +3525,20 @@ test('design reports an opaque black strip that has transparent pixels beside it
   const clean = JSON.stringify(Object.fromEntries(['aspect', 'clipped-text', 'overlap', 'off-screen', 'blank-strip', 'squashed-text', 'layout'].map((k) => [k, { probabilities: { defect: 0.02, none: 0.98 }, rationale: 'Looked.', personReason: 'Nothing of this kind.' }])));
   const s = stubAgents(t.env, clean);
   symlinkSync(process.execPath, join(s.bin, 'node'));
-  const design = (name) => spawnSync(process.execPath, [CLI, 'design', '--full', name], { cwd: t.dir, env: s.env, encoding: 'utf8' });
+  // Each measured strip reaches the judge as input; the stub judge passes the screen.
+  const design = (name) => {
+    const r = spawnSync(process.execPath, [CLI, 'design', '--full', name], { cwd: t.dir, env: s.env, encoding: 'utf8' });
+    return { ...r, sent: s.calls().at(-1)?.file ?? '' };
+  };
   const partial = design('partial.png');
-  assert.equal(partial.status, 1, partial.stdout + partial.stderr);
-  assert.deepEqual(toon({ out: partial.stdout + partial.stderr }).screens[0].defects, [{ kind: 'blank-strip', where: 'left edge: a plain #000000 band 24 px deep (10% of the width), full height, with nothing in it' }]);
+  assert.equal(partial.status, 0, partial.stdout + partial.stderr);
+  assert.ok(partial.sent.includes('left edge: a plain #000000 band 24 px deep (10% of the width), full height, with nothing in it'), partial.sent);
   const edge = design('clear-edge.png');
-  assert.equal(edge.status, 1, edge.stdout + edge.stderr);
-  assert.deepEqual(toon({ out: edge.stdout + edge.stderr }).screens[0].defects, [{ kind: 'blank-strip', where: 'left edge: a plain #000000 band 24 px deep (10% of the width), full height, with nothing in it' }]);
+  assert.equal(edge.status, 0, edge.stdout + edge.stderr);
+  assert.ok(edge.sent.includes('left edge: a plain #000000 band 24 px deep (10% of the width), full height, with nothing in it'), edge.sent);
   const inside = design('clear-inside.png');
-  assert.equal(inside.status, 1, inside.stdout + inside.stderr);
-  assert.deepEqual(toon({ out: inside.stdout + inside.stderr }).screens[0].defects, [{ kind: 'blank-strip', where: 'left edge: a plain #000000 band 8 px deep (3% of the width), full height, with nothing in it' }]);
+  assert.equal(inside.status, 0, inside.stdout + inside.stderr);
+  assert.ok(inside.sent.includes('left edge: a plain #000000 band 8 px deep (3% of the width), full height, with nothing in it'), inside.sent);
 });
 
 test('design judges a JPEG longer than the judge size, downscaled to a PNG', () => {
@@ -3524,8 +3562,8 @@ test('design judges a JPEG longer than the judge size, downscaled to a PNG', () 
   assert.deepEqual(calls[0].attached, ['PNG'], 'the judge is sent the downscaled screen');
 });
 
-// doctor: read-only health check. Required items (git, config, evidence root) gate
-// exit 0/2; the skill, agent, judge and ffprobe items are optional and never fail it.
+// doctor: read-only health check. Required items (git, config, evidence root, agent, judge) gate
+// exit 0/2; the verify skill, ffprobe and warning rows never fail it.
 // An isolated PATH holding only git plus the named stub binaries, so agent/judge/ffprobe
 // detection never depends on what the host happens to have installed.
 function pathEnv(env, bins) {
@@ -3544,10 +3582,12 @@ const doctorIn = (cwd, env, ...args) => {
 };
 
 test('doctor passes in a set-up repo and lists every check', () => {
-  const { dd, env } = setup();
+  const { repo, env } = setup();
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
-  const r = dd('doctor');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\n${judgeYaml(env)}`);
+  // doctor requires the agent it is given, so the PATH is the isolated stub one: no host claude, judge, or ffprobe leaks in.
+  const stubs = pathEnv(env, ['claude']);
+  const r = doctorIn(repo, stubs, 'doctor');
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
   assert.equal(d.result, 'pass');
@@ -3557,7 +3597,7 @@ test('doctor passes in a set-up repo and lists every check', () => {
   assert.equal(d.checks[3].status, 'missing', 'no verify skill yet, and that is optional');
   assert.match(d.checks[3].fix, /SKILL\.md/);
   assert.ok(d.help.length >= 1);
-  const j = json(dd('doctor', '--json'));
+  const j = json(doctorIn(repo, stubs, 'doctor', '--json'));
   assert.equal(j.result, 'pass');
   assert.equal(j.checks.length, 9);
 });
@@ -3622,25 +3662,28 @@ test('doctor in a bare repo fails with the init fix; a malformed config names th
   assert.match(toon(outside).checks[0].fix, /inside a git repository/);
 });
 
-test('with no agent set, done-done never picks one: doctor, maintain and verify --judge tell the calling agent to ask the user', () => {
+test('with no agent or judge set, done-done never picks one and gives no result: doctor, maintain and verify tell the calling agent to ask the user', () => {
   const { repo, env } = setup();
+  rmSync(join(env.DONE_DONE_HOME, 'config.yaml'));
   mkdirSync(join(env.DONE_DONE_HOME, 'claude'), { recursive: true });
   const path = pathEnv(env, ['claude', 'opencode']);
   const d = doctorIn(repo, path, 'doctor');
-  assert.equal(d.code, 0, 'the agent is optional for doctor');
+  assert.equal(d.code, 2, 'the agent and the judge are required, so doctor fails without them');
+  assert.equal(toon(d).result, 'fail');
   const ag = toon(d).checks[4];
   assert.equal(ag.status, 'missing', 'an installed claude and opencode are not a choice');
   assert.equal(ag.detail, 'no agent is set: ask the user which agent to use (claude, codex, opencode, pi, gemini, acp:<target>); never pick one for them');
   assert.match(ag.fix, /^Save the user's answer: done-done init --agent <agent> --model <model>, e\.g\. done-done init --agent opencode --model opencode-go\/muse-spark-1\.3-contributor$/);
   assert.ok(!toon(d).checks.some((c) => c.check === 'agent_settings'));
-  const by = (n) => toon(d).checks.find((c) => c.check === n); assert.deepEqual([by('judge').status, by('judge').fix], ['missing', "Save the user's answer: done-done init --judge <agent> --judge-model <model>, e.g. done-done init --judge opencode --judge-model opencode-go/muse-spark-1.3-contributor"]); assert.deepEqual([by('judge_choice').status, by('judge_choice').detail, by('judge_choice').fix], ['missing', 'unknown until the agent is set, since the judge is kept apart from it', '']);
+  const by = (n) => toon(d).checks.find((c) => c.check === n); assert.deepEqual([by('judge').status, by('judge').fix], ['missing', "Save the user's answer: done-done init --judge <agent> --judge-model <model>, e.g. done-done init --judge opencode --judge-model opencode-go/muse-spark-1.3-contributor"]); assert.deepEqual([by('judge_choice').status, by('judge_choice').detail, by('judge_choice').fix], ['missing', 'unknown until the agent is set', '']);
   const runs = join(env.DONE_DONE_HOME, 'runs', 'notes');
-  for (const args of [['maintain', '--foreground'], ['verify', 'shots', '--outcome', 'home renders', '--judge', '--foreground']]) {
+  // maintain needs the agent; a journey drive needs the judge. Neither starts a run without it.
+  for (const [args, row] of [[['maintain', '--foreground'], ag], [['verify', 'shots', '--outcome', 'home renders', '--foreground'], by('judge')]]) {
     const r = doctorIn(repo, path, ...args);
     assert.equal(r.code, 2, r.out);
-    assert.equal(toon(r).error, ag.detail);
-    assert.deepEqual(toon(r).help, [ag.fix]);
-    assert.equal(existsSync(runs), false, 'no run starts without the user\'s agent');
+    assert.equal(toon(r).error, row.detail);
+    assert.deepEqual(toon(r).help, [row.fix]);
+    assert.equal(existsSync(runs), false, 'no run starts without the user\'s agent and judge');
   }
   // init --agent saves the user's answer in place in the commented global config; doctor then names it.
   const init = toon(doctorIn(repo, path, 'init', '--agent', 'opencode', '--model', 'opencode-go/test-model'));
@@ -3737,11 +3780,16 @@ test('the run error names agent_path_override only when the override is set and 
   sh('commit', '-qm', 'skill');
   const path = pathEnv(env, ['ffprobe']);
   const config = join(env.DONE_DONE_HOME, 'config.yaml');
-  writeFileSync(config, 'agent: pi\n');
-  assert.match(toon(doctorIn(repo, path, 'maintain', '--foreground')).reason, /\(pi is not on PATH\)/);
+  writeFileSync(config, `agent: pi\n${judgeYaml(env)}`);
+  // An agent that cannot start is no reader: maintain stops before its run (exit 2) and gives no result.
+  const off = doctorIn(repo, path, 'maintain', '--foreground');
+  assert.equal(off.code, 2, off.out);
+  assert.equal(toon(off).result, undefined);
+  assert.match(toon(off).error, /\(pi is not on PATH\)/);
+  assert.doesNotMatch(toon(off).error, /agent_path_override/);
   const gone = join(env.DONE_DONE_HOME, 'gone', 'pi');
-  writeFileSync(config, `agent: pi\nagent_path_override: { pi: ${JSON.stringify(gone)} }\n`);
-  assert.match(toon(doctorIn(repo, path, 'maintain', '--foreground')).reason, /\(agent_path_override\.pi .*gone\/pi is not an executable file\)/);
+  writeFileSync(config, `agent: pi\njudge:\n  route: answerer:gemini\n  model: stub-judge\nagent_path_override: { pi: ${JSON.stringify(gone)}, gemini: ${JSON.stringify(env.DD_STUB_JUDGE)} }\n`);
+  assert.match(toon(doctorIn(repo, path, 'maintain', '--foreground')).error, /\(agent_path_override\.pi .*gone\/pi is not an executable file\)/);
 });
 
 test('doctor reports the judge ok with a claude binary alone: its sign-in is checked only when a capture is judged', () => {
@@ -3783,7 +3831,7 @@ test('doctor reports the judge missing when agent_path_override.claude is a dire
   assert.equal(j.checks[5].detail, `judge: agent_path_override.claude ${dirBin} is not an executable file`);
 });
 
-test('doctor finds agent, judge and ffprobe binaries from PATH; missing optionals never fail it', () => {
+test('doctor finds agent, judge and ffprobe binaries from PATH; a missing ffprobe never fails it', () => {
   const { repo, env } = setup();
   mkdirSync(join(env.DONE_DONE_HOME, 'claude'), { recursive: true });
   const agent = (a, judge = 'route: answerer:opencode\n') => writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: ${a}\njudge:\n  ${judge}`);
@@ -3808,12 +3856,11 @@ test('doctor finds agent, judge and ffprobe binaries from PATH; missing optional
   agent('opencode');
   const two = toon(doctorIn(repo, pathEnv(env, ['codex', 'opencode']), 'doctor'));
   assert.match(two.checks[4].detail, /^opencode .* at /);
-  assert.equal(two.checks[7].status, 'missing', 'a judge that is the author\'s own agent and model is refused');
-  assert.match(two.checks[7].detail, /^judge: the judge opencode \(model opencode-go\/muse-spark-1\.3-contributor\) is the author's own agent and model \(opencode\)/);
-  assert.match(two.checks[7].fix, /^done-done init --judge <agent> --judge-model <model>, with another agent or the same agent at another model; judge\.allow_same: true .* is an opt-out only/);
+  assert.deepEqual([two.checks[7].status, two.checks[7].fix], ['ok', ''], 'a judge that is the author\'s own agent and model runs, in a fresh session');
+  assert.match(two.checks[7].detail, /: the author's agent and model in a fresh session \(session-only independence\)$/);
   agent('claude');
   const none = doctorIn(repo, pathEnv(env, []), 'doctor');
-  assert.equal(none.code, 0, 'missing optionals still exit 0 when every required item is ok');
+  assert.equal(none.code, 2, 'an agent or judge that cannot start fails doctor');
   const n = toon(none);
   assert.deepEqual(n.checks.slice(4).map((c) => c.status), ['missing', 'missing', 'missing', 'ok', 'ok']);
   assert.match(n.checks[4].fix, /^Install claude, or ask the user which agent to use/, 'a missing agent is never swapped for an installed one');
@@ -3821,19 +3868,19 @@ test('doctor finds agent, judge and ffprobe binaries from PATH; missing optional
   assert.match(n.checks[6].fix, /ffprobe/);
   const repoYaml = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
   const claudeOnly = pathEnv(env, ['claude']);
-  writeFileSync(join(repo, '.done-done.yaml'), `${repoYaml.replace('judge:\n  enabled: false\n', '')}judge:\n  allow_same: true\n`);
+  writeFileSync(join(repo, '.done-done.yaml'), `${repoYaml}judge:\n  allow_same: true\n`);
   const inRepo = toon(doctorIn(repo, claudeOnly, 'doctor'));
-  assert.match(inRepo.checks[1].detail, /judge\.allow_same may only be set in the global config/, 'the project file cannot waive the judge');
+  assert.match(inRepo.checks[1].detail, /judge\.allow_same is gone: any judge the user sets runs/);
   writeFileSync(join(repo, '.done-done.yaml'), repoYaml);
   agent('claude', 'route: claude-code\n  model: claude-sonnet-5-5\n');
   const apart = toon(doctorIn(repo, claudeOnly, 'doctor'));
-  assert.deepEqual([apart.checks[7].status, apart.checks[7].detail], ['warning', 'claude-code (model claude-sonnet-5-5; from config) judges the author claude (model claude-haiku-5-5): the author\'s agent at a different model'], 'the author\'s agent at another model runs, with a warning');
-  agent('claude', 'route: claude-code\n  allow_same: true\n');
+  assert.deepEqual([apart.checks[7].status, apart.checks[7].detail], ['ok', 'claude-code (model claude-sonnet-5-5; from config) judges the author claude (model claude-haiku-5-5): the author\'s agent at a different model'], 'the author\'s agent at another model runs');
+  agent('claude', 'route: claude-code\n');
   const same = toon(doctorIn(repo, claudeOnly, 'doctor'));
-  assert.deepEqual([same.checks[7].status, /judge\.allow_same accepts it/.test(same.checks[7].detail)], ['warning', true]);
+  assert.deepEqual([same.checks[7].status, same.checks[7].detail], ['ok', 'claude-code (model claude-haiku-5-5; from config) judges the author claude (model claude-haiku-5-5): the author\'s agent and model in a fresh session (session-only independence)']);
 });
 
-test('with no agent installed, the judge is still kept apart from the author the user set: doctor names it, the agent row still names the first agent', () => {
+test('with no agent installed, a judge of another agent than the author is ok: doctor names it, the agent row still names the first agent', () => {
   const { repo, env } = setup();
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   const bin = join(env.DONE_DONE_HOME, 'claude-bin');
@@ -3858,34 +3905,30 @@ test('judge.route must name a judge, and judge.model is the judge\'s model', () 
   assert.match(d.checks[7].detail, /^claude-code \(model x; from config\)/);
 });
 
-test('a judged receipt citing nothing the judge reads needs no judge, so no installed agent does not block it', () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: true\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n');
+test('a receipt citing nothing the judge reads is no pass and writes no receipt', () => {
+  const t = setup('app: notes\nevidence:\n  root: .proof\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n');
   const r = t.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')"`);
   assert.equal(r.code, 0, r.out);
   const log = `.proof/${toon(r).run_id}/session.bin`;
-  const rec = doctorIn(t.repo, pathEnv(t.env, []), 'receipt', '--outcome', 'three notes are saved', log);
-  assert.equal(rec.code, 0, rec.out);
-  const v = t.dd('receipt', '--verify', t.head());
-  assert.deepEqual([toon(v).result, toon(v).schema, toon(v).judge], ['pass', 1, undefined]);
+  const rec = t.dd('receipt', '--outcome', 'three notes are saved', log);
+  assert.equal(rec.code, 2, rec.out);
+  assert.match(rec.out, /the judge was not asked, so there is no verdict: .*no cited capture is one the judge reads/);
+  assert.equal(t.dd('receipt', '--verify', t.head()).code, 1, 'no receipt was written');
 });
 
-test('verify --judge on evidence the judge does not read leaves the judge step skipped and writes no judge log', () => {
+test('verify on evidence the judge does not read stops with no verdict and writes no receipt', () => {
   const t = setup(`app: notes
 evidence:
   root: .proof
-judge:
-  enabled: true
 journeys:
   shots:
     command: node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin', 'saved 3 notes')"
 `);
-  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   const r = t.dd('verify', 'shots', '--outcome', 'three notes are saved', '--foreground');
-  const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', toon(r).run_id);
-  const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'));
-  assert.equal(run.steps.find((s) => s.name === 'judge').status, 'skipped', 'no capture needed the judge');
-  assert.equal(existsSync(join(runDir, 'logs', 'judge.log')), false, 'a judge that judged nothing writes no log');
+  assert.equal(r.code, 2, r.out);
+  assert.deepEqual([toon(r).status, toon(r).result], ['failed', undefined], 'the judge was not asked: no verdict, it never passes');
+  assert.match(toon(r).reason, /^check: the judge was not asked, so there is no verdict: no cited capture is one the judge reads/);
+  assert.equal(t.dd('receipt', '--verify', t.head()).code, 1, 'no receipt was written');
 });
 
 // Stub agent CLIs that log how they were started (argv, stdin, cwd) and answer like the real ones:
@@ -3910,7 +3953,10 @@ console.log(JSON.stringify({ type: 'step_start', part: { type: 'step-start' } })
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: '\\\`\\\`\\\`json\\n' + ${JSON.stringify(answer)} + '\\n\\\`\\\`\\\`' } }));`);
   // The user sets the agent; done-done never picks one. A test that needs another agent writes its own config.
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  if (!existsSync(join(env.DONE_DONE_HOME, 'config.yaml'))) writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
+  const file = join(env.DONE_DONE_HOME, 'config.yaml');
+  const cfg = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  // setup's own config holds only the stub judge, so it gets the agent too; a test's own config stays as written.
+  if (!cfg || cfg === judgeYaml(env)) writeFileSync(file, `agent: claude\n${cfg}`);
   const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
   return { env: e, calls, bin: e.PATH };
 }
@@ -3956,14 +4002,14 @@ test('the agent comes from config, and doctor --probe asks it one schema questio
   assert.deepEqual(c.argv.slice(-2), ['--effort', 'low'], 'the cheap default effort goes to claude --effort');
   // effort, extra flags and the call timeout come from the global config, and doctor names the file each came from.
   const globalYml = join(env.DONE_DONE_HOME, 'config.yaml');
-  writeFileSync(globalYml, 'agent_config:\n  claude: { effort: high }\nagent_args_override:\n  claude: [--permission-mode, plan]\nagent_timeout: 2m\n');
+  writeFileSync(globalYml, `agent_config:\n  claude: { effort: high }\nagent_args_override:\n  claude: [--permission-mode, plan]\nagent_timeout: 2m\n${judgeYaml(env)}`);
   const tuned = doctor('agent: claude\n', '--probe');
   assert.equal(tuned.code, 0, tuned.out);
   assert.deepEqual(s.calls()[2].argv.slice(-4), ['--effort', 'high', '--permission-mode', 'plan'], 'effort maps to the CLI flag, extra flags come after done-done\'s own');
   const tunedRec = JSON.parse(readFileSync(tuned.by('probe').detail.match(/record (\S+)$/)[1], 'utf8'));
   assert.deepEqual([tunedRec.effort, tunedRec.args, tunedRec.timeoutMs], ['high', ['--permission-mode', 'plan'], 120_000], 'the call record names the effort, flags and timeout');
   assert.match(tuned.by('agent_settings').detail, /^agent claude \(\.done-done\.yaml\); model claude-haiku-5-5 \(default\); effort high \(.*config\.yaml\); args 2 set \(.*config\.yaml\); path claude on PATH \(default\); agent_timeout 2m \(.*config\.yaml\)$/);
-  writeFileSync(globalYml, 'agent_config:\n  opencode: { model: opencode-go/test-model }\n');
+  writeFileSync(globalYml, `agent_config:\n  opencode: { model: opencode-go/test-model }\n${judgeYaml(env)}`);
   // A failed answer fails the probe, which --probe makes required; without --probe nothing is asked.
   const bad = stubAgents(env, 'error');
   const failed = doctorIn(repo, bad.env, 'doctor', '--probe');
@@ -3973,6 +4019,7 @@ test('the agent comes from config, and doctor --probe asks it one schema questio
   const blockedHome = join(repo, 'home');
   mkdirSync(blockedHome);
   writeFileSync(join(blockedHome, 'agents'), 'x');
+  writeFileSync(join(blockedHome, 'config.yaml'), judgeYaml(env));
   const unwritable = doctorIn(repo, { ...s.env, DONE_DONE_HOME: blockedHome }, 'doctor', '--probe');
   const unw = toon(unwritable).checks.find((x) => x.check === 'probe');
   assert.equal(unwritable.code, 0, unwritable.out);
@@ -3983,20 +4030,19 @@ test('the agent comes from config, and doctor --probe asks it one schema questio
   // An explicit judge route, and bad values.
   // The user sets one agent: no auto, no fallback list.
   for (const agent of ['auto', '[codex, gemini]']) assert.match(doctor(`agent: ${agent}\n`).by('config').detail, /agent must be one of claude, codex, opencode, pi, gemini, or acp:<target>/);
-  // The judge: another model of the author's agent is apart; its own model (judge.model, else agent_config) is refused unless allow_same.
+  // The judge: any agent and model the user sets runs, the author's own too; doctor names how far apart they are.
   const routeCfg = (extra) => writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent_config:\n  opencode: { model: opencode-go/test-model }\njudge:\n  route: answerer:opencode\n${extra}`);
   routeCfg('  model: opencode-go/muse-spark-1.3-contributor\n');
   assert.match(doctor('agent: opencode\n').by('judge_choice').detail, /^answerer:opencode \(model opencode-go\/muse-spark-1\.3-contributor; from config\) judges the author opencode \(model opencode-go\/test-model\): the author's agent at a different model$/);
   routeCfg('  model: opencode-go/test-model\n');
   const same = doctor('agent: opencode\n');
-  assert.equal(same.by('judge_choice').status, 'missing');
-  assert.match(same.by('judge_choice').detail, /^judge: the judge opencode \(model opencode-go\/test-model\) is the author's own agent and model \(opencode\)/);
+  assert.equal(same.code, 0, same.out);
+  assert.deepEqual([same.by('judge_choice').status, same.by('judge_choice').fix], ['ok', '']);
+  assert.match(same.by('judge_choice').detail, /^answerer:opencode \(model opencode-go\/test-model; from config\) judges the author opencode \(model opencode-go\/test-model\): the author's agent and model in a fresh session \(session-only independence\)$/);
   routeCfg('');
-  assert.equal(doctor('agent: opencode\n').by('judge_choice').status, 'missing', 'no judge.model is the agent_config model, here the author\'s own: never swapped for a cheap one');
-  assert.match(same.by('judge_choice').fix, /judge\.allow_same: true/);
-  routeCfg('  model: opencode-go/test-model\n  allow_same: true\n');
-  assert.equal(doctor('agent: opencode\n').by('judge_choice').status, 'warning', 'allow_same runs a session-only judge, and doctor says so');
-  routeCfg('');
+  assert.match(doctor('agent: opencode\n').by('judge_choice').detail, /^answerer:opencode \(model opencode-go\/test-model;/, 'no judge.model is the agent_config model, here the author\'s own: never swapped for a cheap one');
+  routeCfg('  allow_same: true\n');
+  assert.match(doctor('agent: opencode\n').by('config').detail, /judge\.allow_same is gone/);
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: answerer:claude\n');
   assert.match(doctor('').out, /judge\.route must be claude-code \(for claude\), answerer:<agent> for one of opencode, pi, gemini, or a key route \(openai:key\)/, 'claude judges through claude-code');
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: answerer:acp:gemini\n');
@@ -4025,7 +4071,7 @@ test('the agent comes from config, and doctor --probe asks it one schema questio
     assert.match(doctor(`${key}\n`).out, new RegExp(`${key.split(':')[0]} may only be set in the global config`), 'only agent may be set per repo, as in no-mistakes');
   assert.equal(s.calls().length, 4, 'only --probe asks the agent');
   // Without a repo config, the agent keys still come from the global config.
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\n${judgeYaml(env)}`);
   rmSync(join(repo, '.done-done.yaml'));
   const global = doctorIn(repo, s.env, 'doctor');
   assert.equal(global.code, 2, global.out);
@@ -4071,16 +4117,16 @@ process.exitCode = ${exit};
   assert.ok(!call.argv.some((a) => a.includes('connectivity probe')), 'never in argv');
   const rec = JSON.parse(readFileSync(ok.by('probe').detail.match(/record (\S+)$/)[1], 'utf8'));
   assert.deepEqual([rec.agent, rec.model, rec.ok, rec.answer], ['acp:gemini', '', true, { ok: true }]);
-  // claude through acpx is still claude: another agent is independent of it, and the claude-code route is not.
+  // claude through acpx is still claude: another agent is apart from it, and the claude-code route judges it in a fresh session.
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: answerer:opencode\n');
   const auto = doctor('agent: acp:claude-code\n').by('judge_choice');
   assert.equal(auto.status, 'ok', auto.detail);
   assert.match(auto.detail, /^answerer:opencode \(.*\) judges the author acp:claude-code \(model none\): a different agent from the author/);
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: claude-code\n');
-  assert.equal(doctor('agent: acp:claude\n').by('judge_choice').status, 'missing');
-  assert.equal(doctor('agent: acp:claude-code\n').by('judge_choice').status, 'missing');
+  assert.equal(doctor('agent: acp:claude\n').by('judge_choice').status, 'ok');
+  assert.equal(doctor('agent: acp:claude-code\n').by('judge_choice').status, 'ok');
   // A model named in the global config goes to acpx ahead of the target.
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent_config:\n  acp:gemini: { model: flash-lite }\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent_config:\n  acp:gemini: { model: flash-lite }\n${judgeYaml(env)}`);
   assert.equal(doctor('agent: acp:gemini\n', '--probe').code, 0);
   assert.deepEqual(calls()[1].argv.slice(8, 11), ['--model', 'flash-lite', 'gemini']);
   // An error with no answer fails the probe with the agent's own words.
@@ -4159,7 +4205,7 @@ test('a rerun whose check fails does not carry the earlier receipt', () => {
 });
 
 test('a rerun does not reuse a drive recorded from a dirty tree', () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\n  allow_dirty: true\njudge:\n  enabled: false\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\n  allow_dirty: true\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n');
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const app = 2;\n');
   const a = toon(t.dd('verify', 'shots', '--outcome', 'home renders', '--foreground'));
   execFileSync('git', ['checkout', '--', 'src/app.js'], { cwd: t.repo, env: t.env, stdio: 'pipe' });
@@ -4398,7 +4444,7 @@ test('doctor --probe asks pi on stdin (never in argv) with tools off and a scrat
   const { repo, env } = setup();
   const s = stubPiGemini(env);
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const r = doctorIn(repo, s.env, 'doctor', '--probe');
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
@@ -4421,7 +4467,7 @@ test('doctor --probe asks pi on stdin (never in argv) with tools off and a scrat
 test('pi is asked again when its answer is not valid JSON, then fails after three tries', () => {
   const { repo, env } = setup();
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const once = stubPiGemini(env, '{"ok":true}', 'retry');
   const r = doctorIn(repo, once.env, 'doctor', '--probe');
   assert.equal(r.code, 0, r.out);
@@ -4461,7 +4507,7 @@ test('pi is asked again when its answer is not valid JSON, then fails after thre
 test('doctor --probe asks gemini with the prompt on stdin, and reports a signed-out gemini with a sign-in fix', () => {
   const { repo, env } = setup();
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: gemini\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: gemini\n${judgeYaml(env, 'pi')}`);
   const s = stubPiGemini(env);
   const r = doctorIn(repo, s.env, 'doctor', '--probe');
   assert.equal(r.code, 0, r.out);
@@ -4490,7 +4536,7 @@ test('doctor --probe asks gemini with the prompt on stdin, and reports a signed-
 test('doctor --probe shows codex as a warning, not a failure: codex cannot run tool-less, so it asks nothing', () => {
   const { repo, env } = setup();
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: codex\nagent_config:\n  codex: { model: gpt-test, effort: low }\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: codex\nagent_config:\n  codex: { model: gpt-test, effort: low }\n${judgeYaml(env)}`);
   const s = stubPiGemini(env);
   const r = doctorIn(repo, s.env, 'doctor', '--probe');
   assert.equal(r.code, 0, r.out);
@@ -4506,7 +4552,7 @@ test('doctor warns that pi has no permission gate', () => {
   const { repo, env } = setup();
   const s = stubPiGemini(env);
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const d = toon(doctorIn(repo, s.env, 'doctor'));
   assert.match(d.checks.find((x) => x.check === 'agent').detail, /^pi \(its own default model; set agent_config\.pi\.model to choose one; from config\) at /);
   const gate = d.checks.find((x) => x.check === 'tool_gate');
@@ -4651,7 +4697,7 @@ appendFileSync(${JSON.stringify(join(s.env.PATH, 'calls.jsonl'))}, JSON.stringif
 console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Added the helper f() { return 1 }. Answer: {"ok":true}' }] } }));
 `, { mode: 0o755 });
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const r = doctorIn(repo, s.env, 'doctor', '--probe');
   assert.equal(r.code, 0, r.out);
   assert.equal(toon(r).checks.find((x) => x.check === 'probe').status, 'ok');
@@ -4667,7 +4713,7 @@ appendFileSync(${JSON.stringify(join(s.env.PATH, 'calls.jsonl'))}, JSON.stringif
 for (const text of ['Here is the code: function foo() { return 1; }', '{"ok":true}']) console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } }));
 `, { mode: 0o755 });
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const r = doctorIn(repo, s.env, 'doctor', '--probe');
   assert.equal(r.code, 0, r.out);
   assert.equal(toon(r).checks.find((x) => x.check === 'probe').status, 'ok');
@@ -4879,7 +4925,7 @@ test('maintain pins the read-only reader to read tools with no user settings, MC
   const reader = s.calls()[0].argv;
   assert.deepEqual([reader[reader.indexOf('--tools') + 1], reader[reader.indexOf('--setting-sources') + 1], reader.includes('--strict-mcp-config')], ['Read,Grep,Glob', '', true]);
   assert.deepEqual(['--add-dir', '--permission-mode', '--dangerously-skip-permissions', '--allowedTools'].filter((f) => reader.includes(f)), []);
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\n${judgeYaml(env)}`);
   assert.equal(doctorIn(repo, s.env, 'maintain', '--foreground').code, 0);
   const permission = JSON.parse(s.calls().find((c) => c.agent === 'opencode').permission);
   assert.deepEqual(permission, { '*': 'deny' });
@@ -4961,7 +5007,7 @@ test('maintain gives a pi reader no tools and puts the cited source in its promp
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
@@ -4983,7 +5029,7 @@ test('maintain sends a pi reader only the source its prompt shows, not a citatio
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
@@ -5042,7 +5088,7 @@ test('maintain gives a pi reader the cited source for a ./ path citation', () =>
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
@@ -5104,7 +5150,7 @@ test('maintain caps the source a tool-less reader gets at 60,000 characters and 
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   for (const d of ['a', 'b', 'c', 'd', ...Array.from({ length: 24 }, (_, i) => `e${i}`)]) {
@@ -5325,13 +5371,13 @@ test('maintain reports a dead link, a wrong file:line and drift from read-only r
   assert.deepEqual(readdirSync(join(run, 'agents')).sort(), ['1-reader-extra.json', '2-reader-home.json', '3-reconcile.json']);
   assert.equal(toon(dd('history')).history[0].kind, 'maintain');
   assert.match(toon(dd('logs', '--step', 'reconcile')).log.join('\n'), /src\/app\.js:50: src\/app\.js has 1 lines/);
-  // With no agent the readers do not run, but the plain citation checks still report the planted bad file:line.
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: gemini\n');
-  const noAgent = toon(dd('maintain', '--foreground', '--full'));
-  assert.deepEqual([noAgent.result, noAgent.git_status], ['blocked', 'same']);
-  assert.match(noAgent.reason, /^source-wave: no agent/);
-  assert.deepEqual(noAgent.findings.map(at).slice(3), ['citation features/home.md:3', 'citation features/home.md:4', 'citation features/home.md:4']);
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
+  // An agent that cannot start reads nothing, so maintain stops before its run (exit 2) and gives no result.
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: gemini\n${judgeYaml(env, 'pi')}`);
+  const noAgent = dd('maintain', '--foreground', '--full');
+  assert.equal(noAgent.code, 2, noAgent.out);
+  assert.equal(toon(noAgent).result, undefined);
+  assert.match(toon(noAgent).error, /^maintain: no agent done-done can start \(gemini is not on PATH\)/);
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\n${judgeYaml(env)}`);
   // A reader that writes into the repo makes the run blocked.
   writeFileSync(join(s.bin, 'claude'), `#!${process.execPath}\nrequire('node:fs').writeFileSync('stray.txt', '');\nprocess.stdout.write(JSON.stringify({ structured_output: ${answer} }));\n`, { mode: 0o755 });
   const changed = toon(dd('maintain', '--foreground'));
@@ -5374,7 +5420,7 @@ test('maintain checks and sends a tracked symlink to an in-repo file as that fil
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(repo, 'CLAUDE.md'), '# Rules\n// LINK-CITED-LINE\n');
@@ -5434,7 +5480,7 @@ test('maintain checks a bracketed or parenthesized file:line citation and sends 
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'app', '[slug]'), { recursive: true });
@@ -5476,7 +5522,7 @@ test('maintain leaves an unreadable cited file out of the reader source and name
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: pi\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
@@ -5524,11 +5570,11 @@ test('maintain does not name a file that was untracked since the window as recen
   assert.match(m.unverified.join('\n'), /missing secrets\/\.env: not in the churn list/, r.out);
 });
 
-test('maintain blocks the source wave for gemini, which cannot read tool-less, and still runs the plain checks', () => {
+test('maintain refuses gemini, which cannot read tool-less, before any run and with no result', () => {
   const { repo, env, sh } = setup();
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: gemini\n');
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: gemini\n${judgeYaml(env, 'pi')}`);
   const skill = join(repo, '.agents', 'skills', 'verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\n[Gone](gone.md)\n');
@@ -5537,10 +5583,10 @@ test('maintain blocks the source wave for gemini, which cannot read tool-less, a
   sh('add', '-A');
   sh('commit', '-qm', 'skill');
   const r = doctorIn(repo, s.env, 'maintain', '--foreground', '--full');
-  const m = toon(r);
-  assert.deepEqual([r.code, m.result], [3, 'blocked'], r.out);
-  assert.match(m.reason, /^coverage: .*gemini cannot read tool-less yet/, r.out);
-  assert.deepEqual(m.findings.map((f) => f.kind), ['dead-link', 'coverage'], r.out);
+  assert.equal(r.code, 2, r.out);
+  assert.equal(toon(r).result, undefined);
+  assert.match(toon(r).error, /^maintain: gemini cannot read tool-less yet/);
+  assert.equal(existsSync(join(env.DONE_DONE_HOME, 'runs')), false, 'no run starts');
   assert.equal(s.calls().length, 0, 'no reader or reconcile call reaches gemini');
 });
 
@@ -5587,7 +5633,7 @@ setTimeout(() => {}, 30_000);
 
 // auto_fix: the opencode author reads and fixes the skill, the pi judge triages; the stub reads its mode from a file.
 function fixSetup(autoFix) {
-  const t = setup(`app: notes\njudge:\n  enabled: false\n${autoFix === undefined ? '' : `auto_fix:\n  maintain: ${autoFix}\n`}`);
+  const t = setup(`app: notes\n${autoFix === undefined ? '' : `auto_fix:\n  maintain: ${autoFix}\n`}`);
   const e = pathEnv(t.env, []);
   const log = join(e.PATH, 'calls.jsonl');
   const stub = `#!${process.execPath}
@@ -5596,7 +5642,7 @@ const argv = process.argv.slice(2);
 const pi = argv[0] === '-p';
 const prompt = pi ? readFileSync(0, 'utf8') : readFileSync(argv[argv.indexOf('-f') + 1], 'utf8');
 const mode = readFileSync(${JSON.stringify(join(e.PATH, 'mode'))}, 'utf8').trim();
-const role = pi ? 'judge' : /You fix the verification skill/.test(prompt) ? 'fixer' : /read-only source reader/.test(prompt) ? 'reader' : 'reconcile';
+const role = pi || /Which side should change\?/.test(prompt) ? 'judge' : /You fix the verification skill/.test(prompt) ? 'fixer' : /read-only source reader/.test(prompt) ? 'reader' : 'reconcile';
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({ role, cwd: process.cwd(), argv, prompt }) + '\\n');
 let answer;
 if (role === 'judge') {
@@ -5720,20 +5766,20 @@ test('maintain with auto_fix on a clean skill ends clean with no branch and no j
   assert.equal(t.branches(), '');
 });
 
-test('maintain with auto_fix refuses a judge that is the fixer\'s own agent at any model, even with judge.allow_same', () => {
+test('maintain with auto_fix runs the judge the user set, the fixer\'s own agent and model too', () => {
   const t = fixSetup(2);
+  // judge.allow_same is gone: a config that still sets it is an error that names the key, and no run starts.
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  route: answerer:opencode\n  model: opencode-go/author\n  allow_same: true\n');
-  const { r, m } = t.maintain();
-  assert.equal(r.code, 2, r.out);
-  assert.match(m.error, /the judge is never the agent that did the work; judge\.allow_same does not apply to auto_fix/);
-  assert.match(m.help[0], /done-done init --judge <agent> --judge-model <model>/);
-  // The fixer's agent at another model is the same agent, so it is refused too.
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  route: answerer:opencode\n  model: opencode-go/other\n');
-  const other = t.maintain();
-  assert.equal(other.r.code, 2, other.r.out);
-  assert.match(other.m.error, /the judge opencode \(model opencode-go\/other\) is the fixer's own agent \(opencode\) at any model/);
+  const gone = t.maintain();
+  assert.equal(gone.r.code, 2, gone.r.out);
+  assert.match(gone.m.error, /judge\.allow_same is gone: any judge the user sets runs, the author's own agent and model too/);
   assert.deepEqual(t.calls(), [], 'no run starts, so no reader, judge or fixer is called');
-  assert.equal(t.branches(), '');
+  // The fixer's own agent and model judges in a fresh session of its own.
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  route: answerer:opencode\n  model: opencode-go/author\n');
+  const { r, m } = t.maintain();
+  assert.equal(m.result, 'changed', r.out);
+  assert.deepEqual(t.calls().map((c) => c.role), ['reader', 'reconcile', 'judge', 'fixer', 'reader', 'reconcile']);
+  assert.ok(t.calls().filter((c) => c.role === 'judge').every((c) => c.argv.includes('opencode-go/author')), 'the judge runs at the model the user set');
 });
 
 test('maintain with auto_fix triages a bare file name with the first file that has the cited line', () => {
@@ -5768,7 +5814,7 @@ test('maintain with auto_fix leaves out a cited file the numbered source would p
 
 for (const ready of ['url: http://127.0.0.1:$DONE_DONE_PORT/health', 'command: curl -sf $DONE_DONE_BASE_URL/'])
 test(`an instance (ready ${ready.split(':')[0]}) serves the journey on its own port; the journey keeps the caller HOME, only the app runs isolated`, () => {
-  const t = setup(`app: notes\njudge:\n  enabled: false\nevidence:\n  root: .proof\ninstance:\n  command: node server.mjs\n  ready:\n    ${ready}\n  ready_timeout: 15s\njourneys:\n  probe:\n    command: curl -sf $DONE_DONE_BASE_URL/ > $DONE_DONE_EVIDENCE_ROOT/reply.txt && echo "port=$DONE_DONE_PORT home=$HOME base=$DONE_DONE_BASE_URL" >> $DONE_DONE_EVIDENCE_ROOT/reply.txt\n`);
+  const t = setup(`app: notes\nevidence:\n  root: .proof\ninstance:\n  command: node server.mjs\n  ready:\n    ${ready}\n  ready_timeout: 15s\njourneys:\n  probe:\n    command: curl -sf $DONE_DONE_BASE_URL/ > $DONE_DONE_EVIDENCE_ROOT/reply.txt && echo "port=$DONE_DONE_PORT home=$HOME base=$DONE_DONE_BASE_URL" >> $DONE_DONE_EVIDENCE_ROOT/reply.txt\n`);
   writeFileSync(join(t.repo, 'server.mjs'), `import {createServer} from 'node:http';\nimport {writeSync} from 'node:fs';\nwriteSync(1, 'instance-marker\\ninstance-home=' + process.env.HOME + '\\n');\ncreateServer((q,s)=>s.writeHead(200).end('ok')).listen(Number(process.env.DONE_DONE_PORT),'127.0.0.1');\n`);
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'instance fixture');
@@ -5788,7 +5834,7 @@ test(`an instance (ready ${ready.split(':')[0]}) serves the journey on its own p
 });
 
 test('a verify whose instance never becomes ready marks its drive step failed', () => {
-  const t = setup('app: notes\njudge:\n  enabled: false\nevidence:\n  root: .proof\ninstance:\n  command: node hang.mjs\n  ready:\n    command: exit 1\n  ready_timeout: 2s\njourneys:\n  probe:\n    command: echo hi > $DONE_DONE_EVIDENCE_ROOT/out.txt\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\ninstance:\n  command: node hang.mjs\n  ready:\n    command: exit 1\n  ready_timeout: 2s\njourneys:\n  probe:\n    command: echo hi > $DONE_DONE_EVIDENCE_ROOT/out.txt\n');
   writeFileSync(join(t.repo, 'hang.mjs'), 'console.log("hang-marker");\nsetInterval(()=>{}, 1000);\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'hang fixture');
@@ -5800,7 +5846,7 @@ test('a verify whose instance never becomes ready marks its drive step failed', 
 });
 
 test('an instance ready url that is an empty string is refused', () => {
-  const t = setup('app: notes\njudge:\n  enabled: false\nevidence:\n  root: .proof\ninstance:\n  command: node hang.mjs\n  ready:\n    url: ""\njourneys:\n  probe:\n    command: echo hi\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\ninstance:\n  command: node hang.mjs\n  ready:\n    url: ""\njourneys:\n  probe:\n    command: echo hi\n');
   const r = t.dd('run', 'probe');
   assert.notEqual(r.code, 0, r.out);
   assert.match(r.out, /needs exactly one of ready\.url and ready\.command/);
@@ -5809,7 +5855,7 @@ test('an instance ready url that is an empty string is refused', () => {
 for (const [ready, why] of [['url: http://127.0.0.1:$DONE_DONE_PORT/health', /GET .* never returned 2xx/], ['command: sleep 60', /readiness command never exited 0/]])
 test(`an unreadied instance (ready ${ready.split(':')[0]}) fails the run with its reason and is killed`, () => {
   const t = setup();
-  writeFileSync(join(t.repo, '.done-done.yaml'), `app: notes\njudge:\n  enabled: false\nevidence:\n  root: .proof\ninstance:\n  command: node hang.mjs\n  ready:\n    ${ready}\n  ready_timeout: 2s\njourneys:\n  probe:\n    command: echo hi > $DONE_DONE_EVIDENCE_ROOT/out.txt\n`);
+  writeFileSync(join(t.repo, '.done-done.yaml'), `app: notes\nevidence:\n  root: .proof\ninstance:\n  command: node hang.mjs\n  ready:\n    ${ready}\n  ready_timeout: 2s\njourneys:\n  probe:\n    command: echo hi > $DONE_DONE_EVIDENCE_ROOT/out.txt\n`);
   writeFileSync(join(t.repo, 'hang.mjs'), `import {writeFileSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(join(t.dir, 'inst.pid'))}, String(process.pid));\nsetInterval(()=>{}, 1000);\n`);
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'hang fixture');
@@ -5819,12 +5865,16 @@ test(`an unreadied instance (ready ${ready.split(':')[0]}) fails the run with it
   assert.equal(r.code, 1, r.out);
   assert.match(toon(r).reason, /instance not ready within 2s/);
   assert.match(toon(r).reason, why);
-  assert.throws(() => process.kill(Number(readFileSync(join(t.dir, 'inst.pid'), 'utf8')), 0), 'the instance group is killed');
+  const pid = Number(readFileSync(join(t.dir, 'inst.pid'), 'utf8'));
+  const deadline = Date.now() + 5000;
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  while (alive() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  assert.equal(alive(), false, 'the instance group is killed');
 });
 
 // auto_fix.verify: the journey fails while src/app.js says BUG; the opencode stub fixes it, and also writes the file named in `extra`.
 test('verify with auto_fix fixes the product on a done-done branch, and never fixes a dirty checkout or keeps a fix that touches the skill, config or tests', () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njudge:\n  enabled: false\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
   writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
@@ -5839,7 +5889,7 @@ if (extra) mkdirSync(require('node:path').dirname(extra), { recursive: true }), 
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed the title', blocker: '' }) } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const [head, git] = [t.head(), (...a) => t.sh(...a).toString().trim()];
   const off = /^fix: opencode changed the verify skill, \.done-done\.yaml, a test file, a test-runner config or a copied ignored file of your checkout, which a fix never changes/;
   for (const [extra, dirty, code, reason] of [
@@ -5866,7 +5916,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 // The journey needs the checkout's ignored dep; node_modules/dep/cheat, which attempt 1 leaves, would pass a still-broken app.
 // Each re-run writes its run record into the in-repo, not ignored evidence root .ev: done-done's, not a change to the checkout.
 test('verify with auto_fix copies the ignored files into the fix worktree again before each re-run, and an in-repo evidence root is not the checkout', () => {
-  const t = setup('app: notes\nevidence:\n  root: .ev\njudge:\n  enabled: false\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
+  const t = setup('app: notes\nevidence:\n  root: .ev\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
   writeFileSync(join(t.repo, '.gitignore'), '.proof/\nnode_modules/\n');
   mkdirSync(join(t.repo, 'node_modules', 'dep'), { recursive: true });
@@ -5884,7 +5934,7 @@ else writeFileSync('src/app.js', 'export const title = "Notes";\\n');
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed the title', blocker: '' }) } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).result], [1, 'changed'], r.out);
   assert.deepEqual(readFileSync(join(e.PATH, 'calls'), 'utf8').trim().split('\n'), ['dep', 'dep'], 'two attempts, each with the ignored dep copied in');
@@ -5893,7 +5943,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 });
 
 // A mixed judge result is never fixed: the judge sorts the wrong screen (home.png), then it parks with the unsure one.
-for (const triageFails of [false, true]) test(`verify with auto_fix parks a mixed judge result after sorting its wrong screen${triageFails ? ', and parks it untriaged when the triage call fails' : ''}, and never offers judge.allow_same for the fixer's own agent`, () => {
+for (const triageFails of [false, true]) test(`verify with auto_fix parks a mixed judge result after sorting its wrong screen${triageFails ? ', and fails with the cause when the triage call fails' : ''}`, () => {
   const t = setup(JUDGED.replace('journeys:', 'auto_fix:\n  verify: 1\njourneys:'));
   const e = pathEnv(t.env, ['ffprobe']);
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(e.PATH, 'fixer'))}, '');\n`, { mode: 0o755 });
@@ -5912,24 +5962,26 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const config = (judge) => writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  ${judge}\n`);
   const verify = () => doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
-  config('route: answerer:opencode\n  model: opencode-go/author');
-  const same = verify();
-  assert.equal(same.code, 2, same.out);
-  assert.match(toon(same).error, /is the fixer's own agent \(opencode\) at any model, .*judge\.allow_same does not apply to auto_fix/);
-  assert.doesNotMatch(toon(same).help.join('\n'), /allow_same/, 'the help never offers what auto_fix refuses');
   config('route: answerer:pi\n  model: pi/judge');
   const r = verify();
-  assert.equal(r.code, 4, r.out);
   const m = toon(r);
-  assert.deepEqual(m.steps.map((x) => [x.name, x.status]).filter(([n]) => n === 'triage' || n === 'fix' || n === 'gate'), [['triage', triageFails ? 'failed' : 'completed'], ['fix', 'skipped'], ['gate', 'awaiting_approval']]);
-  assert.deepEqual(m.findings.map((f) => /; triage: fix$/.test(f.what)), triageFails ? [false, false] : [true, false], 'the wrong screen carries its class, the unsure one parks as it is');
+  if (triageFails) {
+    // A judge that cannot sort the result gives no verdict: the run fails with the cause, and nothing waits at the gate.
+    assert.deepEqual([r.code, m.status], [2, 'failed'], r.out);
+    assert.match(m.reason, /^triage: judge: the judge did not answer: /);
+    assert.deepEqual(m.steps.map((x) => [x.name, x.status]).filter(([n]) => n === 'triage' || n === 'fix' || n === 'gate' || n === 'receipt'), [['triage', 'failed'], ['fix', 'skipped'], ['gate', 'skipped'], ['receipt', 'skipped']]);
+  } else {
+    assert.equal(r.code, 4, r.out);
+    assert.deepEqual(m.steps.map((x) => [x.name, x.status]).filter(([n]) => n === 'triage' || n === 'fix' || n === 'gate'), [['triage', 'completed'], ['fix', 'skipped'], ['gate', 'awaiting_approval']]);
+    assert.deepEqual(m.findings.map((f) => /; triage: fix$/.test(f.what)), [true, false], 'the wrong screen carries its class, the unsure one parks as it is');
+  }
   const calls = readFileSync(join(e.PATH, 'calls'), 'utf8').trim().split('\n');
   assert.deepEqual([calls.slice(0, 2), calls.slice(2).every((c) => c === 'triage'), existsSync(join(e.PATH, 'fixer'))], [['judge', 'judge'], true, false], 'no fixer runs; a failed triage may be asked again');
 });
 
 // A fixer that un-ignores a copied ignored file (.env.local) and edits it is dropped before anything is committed.
 test('verify with auto_fix drops a fix that un-ignores and edits a copied ignored file, so no fix branch is made', () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njudge:\n  enabled: false\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
   writeFileSync(join(t.repo, '.gitignore'), '.proof/\n.env.local\n');
   writeFileSync(join(t.repo, '.env.local'), 'SECRET=real\n');
@@ -5945,7 +5997,7 @@ writeFileSync('.env.local', 'SECRET=changed\\n');
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed the title', blocker: '' }) } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const head = t.head();
   const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.equal(r.code, 1, r.out);
@@ -5955,7 +6007,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 
 // An unreadable ignored file cannot be copied into the fix worktree: the run ends blocked with the path, and no fixer runs.
 test('verify with auto_fix ends blocked, naming the ignored file, when a copied ignored file cannot be copied', { skip: process.getuid?.() === 0 && 'root reads any file' }, () => {
-  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njudge:\n  enabled: false\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
+  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
   writeFileSync(join(t.repo, '.gitignore'), '.proof/\nsecret.key\n');
   writeFileSync(join(t.repo, 'secret.key'), 'key\n');
@@ -5966,15 +6018,13 @@ test('verify with auto_fix ends blocked, naming the ignored file, when a copied 
   t.sh('commit', '-qm', 'a broken title');
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(e.PATH, 'fixer'))}, '');\n`, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).result, existsSync(join(e.PATH, 'fixer')), toon(r).steps.find((x) => x.name === 'fix').status], [1, 'blocked', false, 'failed'], r.out);
   assert.match(toon(r).reason, /^fix: copy of your ignored secret\.key into the fix worktree failed/);
 });
 
 const MATRIXED = `app: notes
-judge:
-  enabled: false
 evidence:
   root: .proof
   ignore_paths: ["docs/**"]
@@ -6007,7 +6057,7 @@ const shot = (cells) => (t) => {
 test('a matrix run captures every cell with its env and suffix in the manifest', () => {
   const t = matrixed(MATRIXED, "!theme || !width || form !== '' || !cell", shot(['light.390w', 'light.1280w', 'dark.390w', 'dark.1280w']));
   const d = toon(t.dd('run', 'cells'));
-  assert.equal(d.result, 'pass');
+  assert.equal(d.result, 'recorded');
   assert.deepEqual(d.matrix.cells.map((c) => c.suffix).sort(), ['dark.1280w', 'dark.390w', 'light.1280w', 'light.390w']);
   for (const c of d.matrix.cells) assert.equal(c.files.length, 1, `${c.cell} names its capture`);
   assert.deepEqual(d.matrix.skipped, []);
@@ -6030,13 +6080,12 @@ test('a matrix skip that drops every cell or matches no cell is refused when the
   }
 });
 
-test('the check fails naming a matrix cell with no capture', () => {
+test('the check stops naming a matrix cell with no capture', () => {
   const t = matrixed(MATRIXED.replace('  width: [390, 1280]\n', '').replace('[light, dark]', '[light, dark, dark-hc]'), "!theme || width !== '' || !cell", (t) => `if (theme !== 'dark') copyFileSync(${JSON.stringify(t.dir)} + (theme === 'light' ? '/screen.png' : '/screen2.png'), root + '/home.' + theme + '.png');`);
   const run = toon(t.dd('run', 'cells'));
   const r = t.dd('check', '--outcome', 'home renders light', `.proof/${run.run_id}/home.light.png`, `.proof/${run.run_id}/home.dark-hc.png`);
-  assert.equal(r.code, 1, r.out);
-  assert.equal(toon(r).findings.length, 1, r.out);
-  assert.match(toon(r).findings[0].why, /cell theme=dark has no capture: name one file \*dark\*/);
+  assert.equal(r.code, 2, r.out);
+  assert.equal(toon(r).error, 'check: the judge was not asked, so there is no verdict: cell theme=dark has no capture: name one file *dark* (journeys name captures with DONE_DONE_CELL)');
 });
 
 test('without a matrix block a run carries no manifest and sets no cell env', () => {
@@ -6061,8 +6110,6 @@ test('one verify run captures every matrix cell, and status shows the manifest',
 });
 
 const GUARDED = `app: notes
-judge:
-  enabled: false
 evidence:
   root: .proof
   ignore_paths: ["docs/**"]
@@ -6118,8 +6165,8 @@ test('without an inputs key the guard stays off and the run behaves as before', 
   assert.equal(a.code, 0, a.out, 'an added file with no inputs key still passes');
   assert.equal(JSON.parse(readFileSync(guardRun(t, toon(a).run_id), 'utf8')).guarded, undefined);
   const e = t.dd('verify', 'edit', '--outcome', 'home renders', '--foreground');
-  assert.equal(e.code, 1, e.out);
-  assert.match(toon(e).reason, /tracked files have uncommitted changes/, 'an edited file still fails only at the receipt, as before');
+  assert.equal(e.code, 2, e.out);
+  assert.match(toon(e).reason, /tracked files have uncommitted changes/, 'an edited file still stops only at the receipt, as before');
   assert.ok(!e.out.includes('input guard'), 'the guard says nothing with no inputs key');
 });
 
@@ -6175,7 +6222,7 @@ test('a watched input that cannot be read fails the run naming it, never passes'
 test('an input-guard failure is never handed to the fixer', () => {
   const t = guarded(GUARDED.replace('inputs: ["data/**"]', 'inputs: ["data/**"]\nauto_fix:\n  verify: 1'));
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\n${judgeYaml(t.env)}`);
   const e = pathEnv(t.env, []);
   const calls = join(e.PATH, 'calls');
   symlinkSync(process.execPath, join(e.PATH, 'node'));
@@ -6223,9 +6270,9 @@ const domVerify = (dom, records, capture = shot(['light', 'dark'])) => {
   const t = matrixed(MATRIXED.replace('  width: [390, 1280]\n', '').replace('journeys:', `${dom}journeys:`), '!cell', (t) =>
     `import { writeFileSync } from 'node:fs';\n${capture(t)}\nconst rec = ${JSON.stringify(records)}[cell];\nif (rec) writeFileSync(root + '/home.' + cell + '.dom.json', JSON.stringify(rec));`);
   const r = t.dd('verify', 'cells', '--outcome', 'home renders in every theme', '--foreground');
-  // verify names only the first finding; the check of the same files lists them all.
-  const c = t.dd('check', '--outcome', 'home renders in every theme', ...toon(r).evidence);
-  return { r, d: toon(r), why: toon(c).findings?.map((f) => f.why) ?? [] };
+  // A failed page check stops the check of the same files before the judge, naming every cause.
+  const c = toon(t.dd('check', '--outcome', 'home renders in every theme', ...toon(r).evidence));
+  return { r, d: toon(r), why: c.error?.replace(/^check: the judge was not asked, so there is no verdict: /, '').split('; ') ?? [] };
 };
 
 test('a dom block passes when every capture has a clean page-check record', () => {
@@ -6233,10 +6280,10 @@ test('a dom block passes when every capture has a clean page-check record', () =
   assert.equal(d.result, 'pass', r.out);
 });
 
-test('a dom block fails naming the capture and each overflow, console error and failed request', () => {
+test('a dom block stops the run naming the capture and each overflow, console error and failed request', () => {
   const { r, d, why } = domVerify('dom: {}\n', { light: CLEAN, dark: BROKEN });
-  assert.equal(r.code, 1, r.out);
-  assert.equal(d.result, 'fail');
+  assert.equal(r.code, 2, r.out);
+  assert.deepEqual([d.status, d.result], ['failed', undefined], 'a failed page check is no verdict');
   assert.deepEqual(why.filter((w) => w.includes('home.dark.png')).map((w) => w.replace(/^.*home\.dark\.png: /, '')), [
     'http://127.0.0.1/home overflows the viewport horizontally (div#wide)',
     'http://127.0.0.1/home console error: boom',
@@ -6250,9 +6297,9 @@ test('dom allow lists and fail_on_overflow: false suppress those issues', () => 
   assert.equal(d.result, 'pass', r.out);
 });
 
-test('a dom block fails each matrix cell whose capture has no page-check record, and refuses a bad block', () => {
+test('a dom block stops on each matrix cell whose capture has no page-check record, and refuses a bad block', () => {
   const { r, why } = domVerify('dom:\n', { light: CLEAN });
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.deepEqual(why.filter((w) => /page-check/.test(w)).map((w) => w.replace(/^.*\/(home\.)/, '$1')), ['home.dark.png: no page-check record home.dark.dom.json next to it (the dom block needs one per captured screen)']);
   const bad = setup(MATRIXED.replace('journeys:', 'dom:\n  allow_console: ["("]\njourneys:')).dd('run', 'cells');
   assert.equal(bad.code, 2, bad.out);
@@ -6262,7 +6309,7 @@ test('a dom block fails each matrix cell whose capture has no page-check record,
 test('a dom block asks for a page-check record of a gif capture too', () => {
   const gif = () => `writeFileSync(root + '/home.' + cell + '.gif', Buffer.from('GIF89a;', 'latin1'));`;
   const { r, why } = domVerify('dom:\n', {}, gif);
-  assert.equal(r.code, 1, r.out);
+  assert.equal(r.code, 2, r.out);
   assert.deepEqual(why.filter((w) => /page-check/.test(w)).map((w) => w.replace(/^.*\/(home\.)/, '$1')).sort(), [
     'home.dark.gif: no page-check record home.dark.dom.json next to it (the dom block needs one per captured screen)',
     'home.light.gif: no page-check record home.light.dom.json next to it (the dom block needs one per captured screen)',
@@ -6282,7 +6329,7 @@ const measure = (body) => {
 // A card title in the column left beside a long label: 20 px wide it wraps one letter per line, 270 px wide it fits.
 const card = (label) => `<div style="display:flex;width:390px"><span style="flex:none;width:${label}px">Waiting for review from the release captain</span><div style="min-width:0"><h3 class="title" style="margin:0;overflow-wrap:anywhere">Approved</h3></div></div>`;
 
-test('squashed text: the measurement flags a title wrapped one letter per line, and the dom check fails its record', { skip: !CHROME && 'no Chrome on PATH' }, () => {
+test('squashed text: the measurement flags a title wrapped one letter per line, and the dom check stops on its record', { skip: !CHROME && 'no Chrome on PATH' }, () => {
   const narrow = measure(card(370));
   assert.deepEqual(narrow.map((q) => [q.element, q.text, q.lines > 1, q.words, q.chars < 8]), [['h3.title', 'Approved', true, 1, true]]);
   assert.deepEqual(measure(card(120)), []);
@@ -6295,8 +6342,8 @@ test('squashed text: the measurement flags a title wrapped one letter per line, 
     + '<div style="transform:scale(0.65);width:90px"><p>Revenue</p></div>');
   assert.deepEqual(limits.map((q) => [q.element, q.chars < 8, q.lines, q.words]), [['div.clip', true, 1, 3], ['i.long', false, 2, 1]]);
   const { r, d, why } = domVerify('dom:\n', { light: { ...CLEAN, squashed_text: measure(card(120)) }, dark: { ...CLEAN, squashed_text: narrow } });
-  assert.equal(r.code, 1, r.out);
-  assert.equal(d.result, 'fail');
+  assert.equal(r.code, 2, r.out);
+  assert.deepEqual([d.status, d.result], ['failed', undefined]);
   assert.deepEqual(why.map((w) => w.replace(/^.*\/home\./, 'home.').replace(/[\d.]+ characters/, 'N characters')), [`home.dark.png: http://127.0.0.1/home squashed text: h3.title "Approved" is N characters wide (lines ${narrow[0].lines}, words 1)`]);
 });
 
@@ -6342,7 +6389,7 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
 });
 
 test('base_ref judges a text capture against its base text: identical text fails, changed text passes', () => {
-  const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njudge:\n  enabled: true\njourneys:\n  count:\n    command: node count.mjs\n' });
+  const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njourneys:\n  count:\n    command: node count.mjs\n' });
   writeFileSync(join(j.repo, 'count.mjs'), "import { readFileSync, writeFileSync } from 'node:fs';\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/count.json', readFileSync('page.txt'));\n");
   writeFileSync(join(j.repo, 'page.txt'), '{"notes":3}\n');
   j.sh('add', '-A');
