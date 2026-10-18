@@ -25,7 +25,8 @@ export const isAgent = (v) => AGENTS.includes(v) || (typeof v === 'string' && /^
 // whatever the vendor; any other model runs only when the user names it. gemini's is the CLI's own
 // `flash-lite` alias (its cli-reference.md: the fastest model for simple tasks). codex, pi and acp:<target> have no public
 // cheap alias, so they run their own configured default model, and agent_config.<agent>.model caps their cost.
-// As a judge, pi has no default: answerer:<agent> needs judge.model or agent_config.<agent>.model, a model that reads images.
+// Pi's judge default is separate from the author's model default.
+export const JUDGE_DEFAULT = 'openai-codex/gpt-6-luna';
 export const CHEAP = {
     claude: { model: 'claude-haiku-5-5', effort: 'low' },
     opencode: { model: 'opencode-go/muse-spark-1.3-contributor', effort: 'low' },
@@ -342,12 +343,13 @@ evidence:
   local_root: ${short(join(home(), 'evidence'))}
 
 # The judge: a fresh agent that says whether each capture shows the outcome. check, receipt, verify and design always
-# start it, and nothing turns it off. done-done never picks one: while none is set it asks you in a terminal, or stops with the command that sets it:
+# start it, and nothing turns it off. Pi defaults to openai-codex/gpt-6-luna unless agent_config.pi.model is set.
+# done-done never picks one: while none is set it asks you in a terminal, or stops with the command that sets it:
 # done-done init --judge <agent> --judge-model <model>.
 judge:
   # Which agent judges: claude-code (claude) or answerer:opencode. Any agent and model you choose, the author's own too.
   # route: answerer:opencode
-  # The judge's model; empty means that agent's agent_config model.
+  # The judge's model; empty means that agent's agent_config model, or Luna for pi.
   model: ""
   # The check and receipt judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass. Triage and the design check keep their own floors.
   floor: 0.7

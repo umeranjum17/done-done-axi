@@ -279,7 +279,7 @@ Files that are in no run record give an inconclusive result when another cited c
 The checks above prove a capture is real, fresh and tied to a commit. They do not prove it shows the outcome. The judge adds that one question: is this capture the correct screen or text for the outcome, or the wrong one (another screen, an error, a dialog or keyboard hiding the content)?
 
 ```sh
-done-done init --judge claude --judge-model claude-haiku-5-5   # once: the judge you choose
+done-done init --judge pi --judge-model openai-codex/gpt-6-luna   # once: the judge you choose
 done-done verify --outcome "<what a user can now do>"          # always judged
 done-done check --from pr-body.md                               # always judged
 ```
@@ -512,7 +512,7 @@ evidence:
   local_root: ~/.done-done/evidence   # evidence root for repos that set none (<local_root>/<app>)
 judge:                                # done-done's own judge; check, receipt, verify and design always start it
   # route: claude-code                # claude-code, answerer:<agent> (opencode, pi, gemini) or openai:key (reads OPENAI_API_KEY), set by you (`init --judge` saves the first three; `openai:key` is set by hand) and unset until then
-  model: ''                           # default: that agent's agent_config model; any agent and model, the author's own too
+  model: ''                           # default: that agent's agent_config model, or openai-codex/gpt-6-luna for pi
   floor: 0.7                          # the check and receipt judge's pick must reach this probability to count; below it the verdict is unsure (inconclusive), never a pass; triage and the design check keep their own floors
 ```
 
