@@ -23,6 +23,11 @@ const env = {
 mkdirSync(join(repo, 'src'), { recursive: true });
 mkdirSync(join(home, 'bin'));
 writeFileSync(join(home, 'bin', 'done-done'), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
+// The demo judge is a stub: it approves the captured outcome without running a model.
+const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'The screen shows the synced note.', personReason: 'The screen shows the synced note.' } });
+writeFileSync(join(home, 'bin', 'demo-judge'), `#!${process.execPath}\nrequire('node:fs').readFileSync(0, 'utf8');\nprocess.stdout.write(JSON.stringify({ response: ${JSON.stringify(answer)} }));\n`, { mode: 0o755 });
+mkdirSync(env.DONE_DONE_HOME);
+writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `judge:\n  route: answerer:gemini\n  model: demo-judge\nagent_path_override: { gemini: ${JSON.stringify(join(home, 'bin', 'demo-judge'))} }\n`);
 writeFileSync(join(repo, 'src', 'sync.js'), 'export const sync = () => "ok";\n');
 const yaml = 'app: notes\njourneys:\n  sync:\n    command: node capture.mjs\n';
 writeFileSync(join(repo, '.done-done.yaml'), yaml);
@@ -69,7 +74,7 @@ const reasons = term('done-done check --from pr-body.md');
 
 writeFileSync(join(repo, '.done-done.yaml'), yaml.replace('journeys:', 'journys:'));
 const config = term('done-done run sync');
-for (const [name, r, want] of [['run', run, 0], ['pass', pass, 0], ['stale', stale, 1], ['reasons', reasons, 1], ['config', config, 2]])
+for (const [name, r, want] of [['run', run, 0], ['pass', pass, 0], ['stale', stale, 2], ['reasons', reasons, 2], ['config', config, 2]])
   if (r.code !== want) throw new Error(`${name}: expected exit ${want}, got ${r.code}\n${r.out}`);
 
 // ---- 2. Draw it ----------------------------------------------------------------------------
@@ -86,7 +91,7 @@ const PROMPT = '~/notes $ ';
 // One output line -> [class, text] spans.
 function spans(line) {
   let m;
-  if ((m = line.match(/^(result: )(pass.*)$/))) return [['d', m[1]], ['p b', m[2]]];
+  if ((m = line.match(/^(result: )(pass.*|recorded.*)$/))) return [['d', m[1]], ['p b', m[2]]];
   if ((m = line.match(/^(result: )(fail.*|inconclusive.*)$/))) return [['d', m[1]], ['f b', m[2]]];
   if ((m = line.match(/^(error: )(.*)$/))) return [['f b', m[1]], ['', m[2]]];
   if ((m = line.match(/^(\s*)(fail|inconclusive),(.*)$/))) return [['', m[1] + m[2]], ['f b', m[3]]];
