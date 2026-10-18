@@ -2561,12 +2561,13 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const mk = (d: string) => {
     const missing: string[] = [];
     for (let c = d; !existsSync(c); c = dirname(c)) missing.unshift(c);
-    mkdirSync(d, { recursive: true });
     made.push(...missing);
+    mkdirSync(d, { recursive: true });
   };
   const undo = () => {
-    for (const p of moved) rmSync(p, { recursive: true, force: true });
-    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    for (const p of [...moved, ...(tmp ? [tmp] : [])]) {
+      try { rmSync(p, { recursive: true, force: true }); } catch { }
+    }
     for (const d of made.reverse()) {
       try { rmdirSync(d); } catch { }
     }
@@ -2592,7 +2593,7 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
     undo();
     return { status: `not written: the verify skill could not be written (${(e as Error).message}); nothing was left behind, so fix the cause and re-run init`, failed: true };
   }
-  rmSync(tmp, { recursive: true, force: true });
+  try { rmSync(tmp, { recursive: true, force: true }); } catch { }
   return { status: `written by ${agent.agent}${isolated ? '' : '; its launch is not isolated, so read Launch before a drive'}` };
 }
 
