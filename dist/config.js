@@ -70,6 +70,7 @@ const KEYS = {
     'judge.model': { scope: 'global', type: 'string' },
     'judge.route': { scope: 'global', type: 'route' },
     'judge.floor': { scope: 'global', type: 'number' },
+    'judge.env_file': { scope: 'global', type: 'string' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -106,7 +107,7 @@ export function inputPattern(p) {
 }
 // A binary: a bare name looked up on PATH, or an absolute path (~ is the home folder).
 const isBin = (v) => typeof v === 'string' && (/^[\w.-]+$/.test(v) || isAbsolute(tilde(v)));
-const tilde = (p) => p.replace(/^~(?=\/|$)/, homedir());
+export const tilde = (p) => p.replace(/^~(?=\/|$)/, homedir());
 const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isRegex = (v) => {
     try {
@@ -271,7 +272,7 @@ function defaultConfig(repo) {
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b' },
-        judge: { route: '', model: '', floor: 0.7 },
+        judge: { route: '', model: '', floor: 0.7, env_file: '' },
         trusted: false,
         from: {},
     };
@@ -353,5 +354,8 @@ judge:
   model: ""
   # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.
   floor: 0.7
+  # A file of KEY=value lines (a provider API key) handed to the judge's agent, or to openai:key, for names your shell has not
+  # exported, so the judge works in any shell. The key stays in that file: done-done never copies or prints it.
+  # env_file: ~/.config/done-done/judge.env
 `;
 }

@@ -42,7 +42,7 @@ export type Config = {
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or openai:key, set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
-  judge: { route: string; model: string; floor: number };
+  judge: { route: string; model: string; floor: number; env_file: string };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -106,6 +106,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
   'judge.floor': { scope: 'global', type: 'number' },
+  'judge.env_file': { scope: 'global', type: 'string' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -140,7 +141,7 @@ export function inputPattern(p: string): string {
 
 // A binary: a bare name looked up on PATH, or an absolute path (~ is the home folder).
 const isBin = (v: unknown) => typeof v === 'string' && (/^[\w.-]+$/.test(v) || isAbsolute(tilde(v)));
-const tilde = (p: string) => p.replace(/^~(?=\/|$)/, homedir());
+export const tilde = (p: string) => p.replace(/^~(?=\/|$)/, homedir());
 const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const isRegex = (v: unknown) => {
   try { return typeof v === 'string' && !!new RegExp(v); } catch { return false; }
@@ -283,7 +284,7 @@ function defaultConfig(repo: string): Config {
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b' },
-    judge: { route: '', model: '', floor: 0.7 },
+    judge: { route: '', model: '', floor: 0.7, env_file: '' },
     trusted: false,
     from: {},
   };
@@ -366,5 +367,8 @@ judge:
   model: ""
   # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.
   floor: 0.7
+  # A file of KEY=value lines (a provider API key) handed to the judge's agent, or to openai:key, for names your shell has not
+  # exported, so the judge works in any shell. The key stays in that file: done-done never copies or prints it.
+  # env_file: ~/.config/done-done/judge.env
 `;
 }
