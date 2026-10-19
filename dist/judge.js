@@ -10,7 +10,7 @@ const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 5; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 6; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -31,7 +31,7 @@ const TEXT_OPTIONS = {
 };
 // The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
 // capture, so every capture lists the parts the outcome names and the parts it shows. The check reads those lists.
-const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, worded as the outcome words it; list none when it names one part or none. In covers, list the parts this capture itself shows, in the same words.';
+const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the parts this capture itself shows, with the same labels.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION = {
     kind: 'choice',
