@@ -55,6 +55,8 @@ export const ANSWERER_JUDGES = ['opencode', 'pi', 'gemini'];
 // BYOKit key routes: a judge on the user's own API key, read from this environment variable, with no agent CLI.
 export const KEY_ROUTES: Record<string, string> = { 'openai:key': 'OPENAI_API_KEY' };
 // Or acp:<target>, any agent the user's acpx bridge can start; the target is one argv word, so it never reads as a flag.
+const ROUTE_FORM = `claude-code (for claude), answerer:<agent> for one of ${ANSWERER_JUDGES.join(', ')}, or a key route (${Object.keys(KEY_ROUTES).join(', ')}); an acp:<target> agent cannot judge, since done-done cannot send it an image`;
+export const isJudgeRoute = (v: unknown) => typeof v === 'string' && (v === 'claude-code' || Object.hasOwn(KEY_ROUTES, v) || ANSWERER_JUDGES.some((a) => v === `answerer:${a}`));
 export const isAgent = (v: unknown) => AGENTS.includes(v as string) || (typeof v === 'string' && /^acp:[A-Za-z0-9][\w.-]*$/.test(v));
 // The cost guard is this table: a default model for an agent here is always its cheap one, never a flagship,
 // whatever the vendor; any other model runs only when the user names it. gemini's is the CLI's own
@@ -179,7 +181,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
       : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
       : spec.type === 'agent' ? isAgent(value)
-      : spec.type === 'route' ? typeof value === 'string' && (value === 'claude-code' || Object.hasOwn(KEY_ROUTES, value) || ANSWERER_JUDGES.some((a) => value === `answerer:${a}`))
+      : spec.type === 'route' ? isJudgeRoute(value)
       : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
       : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
       : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
@@ -202,7 +204,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       number: 'a number from 0 to 1',
       regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
       auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
-      route: `claude-code (for claude), answerer:<agent> for one of ${ANSWERER_JUDGES.join(', ')}, or a key route (${Object.keys(KEY_ROUTES).join(', ')}); an acp:<target> agent cannot judge, since done-done cannot send it an image`,
+      route: ROUTE_FORM,
       inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
     } as Record<string, string>;
     if (key === 'judge.route' && (value === 'auto' || value === '')) throw new UsageError(`${file}: judge.route ${value === '' ? 'must not be empty; to leave it unset, remove the key' : 'auto is gone: done-done never picks the judge, the user sets it'}`, `Delete the judge.route line in ${file}, then run: done-done init --judge <agent> --judge-model <model>`);
