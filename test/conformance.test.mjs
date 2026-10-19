@@ -35,7 +35,7 @@ const screen = () => {
 // agent_path_override that says each capture shows the outcome.
 function stubJudge(dir) {
   const bin = join(dir, 'judge-gemini');
-  const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'It shows the outcome.', personReason: 'It shows the outcome.' } });
+  const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'It shows the outcome.', personReason: 'It shows the outcome.', parts: [], covers: [] } });
   writeFileSync(bin, `#!${process.execPath}\nrequire('node:fs').readFileSync(0, 'utf8');\nprocess.stdout.write(JSON.stringify({ response: ${JSON.stringify(answer)} }));\n`, { mode: 0o755 });
   mkdirSync(join(dir, 'home'), { recursive: true });
   writeFileSync(join(dir, 'home', 'config.yaml'), `judge:\n  route: answerer:gemini\n  model: stub-judge\nagent_path_override: { gemini: ${JSON.stringify(bin)} }\n`);

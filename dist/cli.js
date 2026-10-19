@@ -82,7 +82,7 @@ const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME mo
   agent (either file): claude, codex, opencode, pi, gemini or acp:<target>, set by the user (done-done init --agent); done-done never picks one.
   global only: agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
   (extra flags), agent_path_override.<agent> (binary), acpx_path, agent_timeout (one agent call, default 30m; a streaming agent that prints nothing for 5m is stopped early),
-  evidence.local_root, judge.{route,model} (the judge, set by the user with
+  evidence.local_root, judge.{route,model,floor} (the judge and shared confidence floor, set by the user with
   init --judge; never picked). done-done doctor shows where each agent setting came from.`;
 // One table drives `--help` and every `<command> --help`: each command's usage lines and the flags it takes.
 const FLAGS = {
@@ -776,6 +776,8 @@ async function runCheck(argv, run) {
     const shots = new Set(captures.filter(screen).map((c) => c.name));
     for (const r of j.judged.filter((r) => r.verdict !== 'pass'))
         findings.push({ level: r.verdict === 'fail' ? 'fail' : 'inconclusive', why: `${r.path}: judge says ${r.verdict !== 'fail' ? 'unsure' : shots.has(r.path) ? 'wrong screen' : 'wrong output'}: ${r.reason}`, file: r.path, ...(r.seen && { seen: r.seen }) });
+    for (const part of j.missing)
+        findings.push({ level: 'inconclusive', why: `the outcome names ${part}, but no passing capture shows it: capture ${part} and cite that capture` });
     const rows = cap(j.judged);
     const { choice } = j;
     const judged = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), judged: rows.items.map(({ sha256, ...r }) => r) };

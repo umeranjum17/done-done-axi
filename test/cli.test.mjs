@@ -51,7 +51,7 @@ const JUDGE_CONFIG = (bin, via = 'gemini') => `judge:\n  route: answerer:${via}\
 const judgeYaml = (env, via) => JUDGE_CONFIG(env.DD_STUB_JUDGE, via);
 function stubJudge(dir, probabilities = { correct: 0.95, wrong: 0.03, unclear: 0.02 }) {
   const bin = join(dir, 'judge-gemini');
-  const answer = JSON.stringify({ relevance: { probabilities, rationale: 'The screen shows the outcome.', personReason: 'The screen shows the outcome.' } });
+  const answer = JSON.stringify({ relevance: { probabilities, rationale: 'The screen shows the outcome.', personReason: 'The screen shows the outcome.', parts: [], covers: [] } });
   writeFileSync(bin, `#!${process.execPath}
 require('node:fs').readFileSync(0, 'utf8');
 process.stdout.write(JSON.stringify({ response: ${JSON.stringify(answer)} }));
@@ -608,7 +608,7 @@ function bareRepo(dirName = 'repo') {
 
 // The gate's judge: an opencode stub that logs each call, named by path so every done-done call in the test uses it.
 function gateJudge(env, probabilities) {
-  const s = stubAgents(env, JSON.stringify({ relevance: { probabilities, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } }));
+  const s = stubAgents(env, JSON.stringify({ relevance: { probabilities, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } }));
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\njudge:\n  route: answerer:opencode\nagent_path_override: { opencode: ${JSON.stringify(join(s.bin, 'opencode'))} }\n`);
   symlinkSync(process.execPath, join(s.bin, 'node'));
   return { ...s, env: { ...s.env, PATH: `${s.env.PATH}:/usr/bin:/bin` } };
@@ -2225,6 +2225,10 @@ const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prom
 appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
+// The coverage lists: every capture names the outcome's parts, and shows the positions whose needle its text holds.
+const shown = Object.entries(stub.shows ?? {}).filter(([needle]) => String(state.capture ?? '').includes(needle)).map(([, s]) => s);
+const covers = shown.flatMap((s) => s.covers);
+const parts = shown.at(-1)?.parts ?? stub.parts ?? [];
 if (p === 'error') process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 0);
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
 // stream-json prints one event per line; the after events come after the result.
@@ -2232,11 +2236,12 @@ const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
 const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
 const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
 if (stub.stderr) process.stderr.write(stub.stderr);
-process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale } } }) + after);
+const lists = stub.noLists ? {} : { parts, covers };
+process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale, ...lists } } }) + after);
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', rationale: STUB_RATIONALE, events, after, stderr }));
+  const stub = (a, li = loggedIn, events = [], after = [], stderr = '', coverage = {}) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', rationale: STUB_RATIONALE, events, after, stderr, ...coverage }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const floorLine = floor === undefined ? '' : `  floor: ${floor}\n`;
@@ -2485,6 +2490,60 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
   assert.deepEqual(sent, { checks }, 'every width and frame reaches the judge, none cut');
 });
 
+test('an outcome that names two widths passes only once a passing capture shows each one', () => {
+  const j = judgeSetup(CORRECT);
+  const shows = { '"width":390': { covers: [0] }, '"width":1440': { covers: [1] } };
+  j.stub(CORRECT, true, [], [], '', { parts: ['390 wide', '1440 wide'], shows });
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const w390 = join(j.dir, 'widths-390.json');
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const outcome = 'the sent message shows at the bottom of the thread at 390 and 1440 wide';
+  const one = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`);
+  assert.equal(one.code, 3, 'a 390 capture alone leaves 1440 unshown: inconclusive, never a pass');
+  assert.ok(toon(one).findings.some((f) => f.level === 'inconclusive' && /1440 wide/.test(f.why)), one.out);
+  const both = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(both.code, 0, both.out);
+  assert.deepEqual(toon(both).judge.judged.map((x) => [x.verdict, x.cached, x.covers]), [['pass', true, [0]], ['pass', false, [1]]], 'the 390 verdict is cached with its coverage');
+  assert.match(j.calls()[0].argv.join(' '), /"covers"/, 'the judge asks the agent for the coverage lists');
+});
+
+test('two captures that name the same part differently still cover it, since the check reads positions', () => {
+  const j = judgeSetup(CORRECT);
+  const shows = { '"width":390': { parts: ['390 wide', '1440 wide'], covers: [0] }, '"width":1440': { parts: ['390 wide', '1440px'], covers: [1] } };
+  j.stub(CORRECT, true, [], [], '', { shows });
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const w390 = join(j.dir, 'widths-390.json');
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(both.code, 0, 'each capture shows one of the two parts, so no part is missing');
+  assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
+});
+
+test('a judge reply that leaves out the coverage lists is asked again, then stops the check', () => {
+  const j = judgeSetup(CORRECT);
+  j.stub(CORRECT, true, [], [], '', { noLists: true });
+  const w390 = join(j.dir, 'widths-390.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `node -e "require('node:fs').copyFileSync('${w390}', process.env.DONE_DONE_EVIDENCE_ROOT + '/widths-390.json')"`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const one = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`);
+  assert.equal(one.code, 2, 'a reply without the lists cannot say which parts it shows, so it is never a pass');
+  assert.equal(toon(one).result, undefined);
+  assert.match(toon(one).error, /^judge: the judge did not answer: no parts and covers lists for relevance/);
+  assert.equal(j.calls().length, 2, 'the answer without the lists is asked once more');
+});
+
 test('check judges text evidence too, and a failed plain check stops with its cause, unjudged', () => {
   const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
   const r = j.dd('run', '--', `node make-shots.mjs \${RUN_ID} && node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.log','saved 3 notes')"`);
@@ -2600,7 +2659,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
-  const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
   const agents = (p) => {
     const s = stubAgents(t.env, verdict(p));
     symlinkSync(process.execPath, join(s.bin, 'node'));
@@ -2742,7 +2801,7 @@ test('verify with no journey: the author agent drives the verify skill feature, 
   t.sh('commit', '-qm', 'verify skill');
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\n${judgeYaml(t.env)}`);
-  const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the note.', personReason: 'The list shows the note.' } });
+  const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the note.', personReason: 'The list shows the note.', parts: [], covers: [] } });
   // claude is the author: it saves a capture into the run's evidence folder and answers; DRIVE=edit also edits a tracked file.
   const agents = (p) => {
     const s = stubAgents(t.env, verdict(p));
@@ -2988,7 +3047,7 @@ test('a rerun refused by the judge preflight exits 2 and creates no run folder',
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
-  const s = stubAgents(t.env, JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } }));
+  const s = stubAgents(t.env, JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } }));
   symlinkSync(process.execPath, join(s.bin, 'node'));
   const first = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   assert.equal(first.status, 0, first.stdout + first.stderr);
@@ -3027,7 +3086,7 @@ test('a pi judge on a claude-bridge model loads only that provider extension: th
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:pi\n  model: claude-bridge/claude-haiku-4-5\n');
-  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
   const s = stubAgents(t.env, verdict);
   stubPiBridge(s.env, verdict);
   symlinkSync(process.execPath, join(s.env.PATH, 'node'));
@@ -3043,7 +3102,7 @@ test('a pi judge on a claude-bridge model loads only that provider extension: th
 test('verify through pi and gemini: each judges tools-off with the capture attached; a right screen passes, a wrong one fails', () => {
   const t = setup();
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
-  const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const verdict = (p) => JSON.stringify({ relevance: { probabilities: p, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
   const agents = (p) => {
     const s = stubPiGemini(t.env, verdict(p));
     symlinkSync(process.execPath, join(s.env.PATH, 'node'));
@@ -3106,7 +3165,7 @@ globalThis.fetch = async (url, init) => {
   if (process.env.STUB_VERDICT === '401') return new Response('{"error":{"message":"Incorrect API key"}}', { status: 401 });
   const probabilities = JSON.parse(process.env.STUB_VERDICT);
   const pick = Object.keys(probabilities).sort((a, b) => probabilities[b] - probabilities[a])[0];
-  const text = JSON.stringify({ relevance: { probabilities, pick, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const text = JSON.stringify({ relevance: { probabilities, pick, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
   return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text }] }] }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 `);
@@ -3160,7 +3219,7 @@ test('with no judge set, verify stops with the ask (exit 2, the choices, the sav
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\n');
-  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
   const s = stubAgents(t.env, verdict);
   symlinkSync(process.execPath, join(s.bin, 'node'));
   const run = (...a) => {
@@ -3271,7 +3330,7 @@ test('with no judge set, verify in a terminal asks from a list, saves the pick a
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\n');
-  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } });
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
   const s = stubAgents(t.env, verdict);
   symlinkSync(process.execPath, join(s.bin, 'node'));
   const cmd = [process.execPath, CLI, 'verify', 'shots', '--outcome', "'home and settings render'", '--foreground'].join(' ');
@@ -3373,6 +3432,11 @@ test('design fails a screen on each defect the judge names, alone or next to its
   const unsure = design(answer({ layout: { defect: 0.5, none: 0.5 } }), 'screen3.png');
   assert.equal(unsure.code, 3, unsure.out);
   assert.match(toon(unsure).screens[0].reason, /^not confident enough about layout$/);
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n  floor: 0.99\n');
+  const strict = design(answer(), 'screen3.png');
+  assert.equal(strict.code, 3, strict.out);
+  assert.match(toon(strict).screens[0].reason, /not confident enough about aspect/);
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   const empty = design(answer(), 'blank.png');
   assert.equal(empty.code, 2, empty.out);
   assert.equal(toon(empty).error, 'design: blank.png: png is a blank frame (luminance spread 0.0000), so it cannot be sent to the judge');
@@ -5943,7 +6007,14 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 });
 
 // A mixed judge result is never fixed: the judge sorts the wrong screen (home.png), then it parks with the unsure one.
-for (const triageFails of [false, true]) test(`verify with auto_fix parks a mixed judge result after sorting its wrong screen${triageFails ? ', and fails with the cause when the triage call fails' : ''}`, () => {
+// One judge.floor for every judge: a triage answer that clears the old 0.8 floor but not judge.floor is unsure, so the wrong
+// screen parks like the unsure one instead of being sorted.
+const TRIAGE_CASES = [
+  ['after sorting its wrong screen', { triageFails: false, floor: '' }],
+  ['after sorting its wrong screen, and fails with the cause when the triage call fails', { triageFails: true, floor: '' }],
+  ['after sorting its wrong screen, and parks it too when judge.floor is above the triage answer', { triageFails: false, floor: '\n  floor: 0.99' }],
+];
+for (const [name, { triageFails, floor }] of TRIAGE_CASES) test(`verify with auto_fix parks a mixed judge result ${name}`, () => {
   const t = setup(JUDGED.replace('journeys:', 'auto_fix:\n  verify: 1\njourneys:'));
   const e = pathEnv(t.env, ['ffprobe']);
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(e.PATH, 'fixer'))}, '');\n`, { mode: 0o755 });
@@ -5956,13 +6027,13 @@ const triage = /a screen the judge called wrong/.test(prompt);
 appendFileSync(${JSON.stringify(join(e.PATH, 'calls'))}, (triage ? 'triage' : 'judge') + '\\n');
 const p = (probabilities) => ({ probabilities, rationale: 'r', personReason: 'the title is missing' });
 const answer = triage && existsSync(${JSON.stringify(join(e.PATH, 'triage-fails'))}) ? 'not json' : triage ? Object.fromEntries(JSON.parse(prompt.trim().split('\\n').filter((l) => l.startsWith('{')).pop()).required.map((id) => [id, p({ fix: 0.97, ask: 0.02, unclear: 0.01 })]))
-  : { relevance: p(image.equals(readFileSync(${JSON.stringify(join(t.dir, 'screen.png'))})) ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : { correct: 0.05, wrong: 0.05, unclear: 0.9 }) };
+  : { relevance: { ...p(image.equals(readFileSync(${JSON.stringify(join(t.dir, 'screen.png'))})) ? { correct: 0.003, wrong: 0.995, unclear: 0.002 } : { correct: 0.003, wrong: 0.002, unclear: 0.995 }), parts: [], covers: [] } };
 console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(answer) }] } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const config = (judge) => writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  ${judge}\n`);
   const verify = () => doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
-  config('route: answerer:pi\n  model: pi/judge');
+  config(`route: answerer:pi\n  model: pi/judge${floor}`);
   const r = verify();
   const m = toon(r);
   if (triageFails) {
@@ -5973,7 +6044,8 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
   } else {
     assert.equal(r.code, 4, r.out);
     assert.deepEqual(m.steps.map((x) => [x.name, x.status]).filter(([n]) => n === 'triage' || n === 'fix' || n === 'gate'), [['triage', 'completed'], ['fix', 'skipped'], ['gate', 'awaiting_approval']]);
-    assert.deepEqual(m.findings.map((f) => /; triage: fix$/.test(f.what)), [true, false], 'the wrong screen carries its class, the unsure one parks as it is');
+    assert.deepEqual(m.findings.map((f) => /; triage: fix$/.test(f.what)), floor ? [false, false] : [true, false], floor ? 'a fix answer below judge.floor does not sort the wrong screen' : 'the wrong screen carries its class, the unsure one parks as it is');
+    if (floor) assert.match(m.findings[0].what, /; judge: the judge was not sure \(confidence 0\.97 below floor 0\.99\); triage: ask$/, 'the park names the shared floor it missed');
   }
   const calls = readFileSync(join(e.PATH, 'calls'), 'utf8').trim().split('\n');
   assert.deepEqual([calls.slice(0, 2), calls.slice(2).every((c) => c === 'triage'), existsSync(join(e.PATH, 'fixer'))], [['judge', 'judge'], true, false], 'no fixer runs; a failed triage may be asked again');
@@ -6358,7 +6430,7 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
   const base = t.head();
   writeFileSync(join(t.repo, 'page.txt'), 'new\n');
   t.sh('commit', '-qam', 'new page');
-  const s = stubAgents(t.env, JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The page is new.', personReason: 'The page is new.' } }));
+  const s = stubAgents(t.env, JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The page is new.', personReason: 'The page is new.', parts: [], covers: [] } }));
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   symlinkSync(process.execPath, join(s.bin, 'node'));
   const verify = () => {
