@@ -21,15 +21,16 @@ const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 7; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 8; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS: Record<string, string> = {
   correct: 'The screenshot shows the screen and state the outcome describes.',
   wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
   unclear: 'The screenshot cannot settle it: it is unreadable, or the outcome names nothing that could be visible on a screen.',
 };
 type ChoiceQuestion = Extract<Question, { kind: 'choice' }>;
-// A question whose answer also carries the coverage lists (parts, covers): only the relevance judge asks it.
-type Coverage = { coverage: true };
+// The coverage lists only the relevance judge asks for: the parts the outcome names, and the ones each capture shows. They
+// are the kit's answer fields, so each one lands on the answer the kit resolves, not on a raw reply ridden along beside it.
+const FIELDS = ['parts', 'covers'];
 const COVERAGE_PROPS = { parts: { type: 'array', items: { type: 'string' } }, covers: { type: 'array', items: { type: 'integer' } } };
 const QUESTION: ChoiceQuestion = {
   kind: 'choice',
@@ -44,8 +45,8 @@ const TEXT_OPTIONS: Record<string, string> = {
   unclear: 'The text cannot settle it: it is unreadable, or the outcome names nothing this output could show.',
 };
 // The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
-// capture, so every capture lists the parts the outcome names, in that order, and the positions of the ones it shows. Each
-// capture is its own model call, so the check compares positions, never the labels those calls write.
+// capture, so every capture lists the parts the outcome names and the positions of the ones it shows. Each capture is its
+// own model call, so the check matches those parts by name, never by position.
 const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, in the order the outcome names them, as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the position in parts (0 for the first, 1 for the next) of each part this capture itself shows.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION: ChoiceQuestion = {
@@ -79,7 +80,7 @@ const PAIR: ChoiceQuestion = {
 // The answer the answerer asks its agent for: the kit's reply shape for each choice question.
 const answerSchema = (questions: Record<string, Question>) => ({
   type: 'object',
-  properties: Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: 'object', properties: { rationale: { type: 'string' }, personReason: { type: 'string' }, probabilities: { type: 'object', properties: Object.fromEntries(Object.keys(q.kind === 'choice' ? q.options : {}).map((o) => [o, { type: 'number' }])) }, ...('coverage' in q && COVERAGE_PROPS) }, required: ['probabilities', ...('coverage' in q ? ['parts', 'covers'] : [])] }])),
+  properties: Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: 'object', properties: { rationale: { type: 'string' }, personReason: { type: 'string' }, probabilities: { type: 'object', properties: Object.fromEntries(Object.keys(q.kind === 'choice' ? q.options : {}).map((o) => [o, { type: 'number' }])) }, ...(q.answerFields?.length ? COVERAGE_PROPS : {}) }, required: ['probabilities', ...(q.answerFields ?? [])] }])),
   required: Object.keys(questions),
 });
 
@@ -147,8 +148,8 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
       const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
       lastError = a.ok ? '' : a.error ?? 'no answer';
       if (!a.ok) throw new Error(lastError);
-      // The kit keeps only each question's probabilities and reason, so the whole answer rides along as raw.
-      return { text: JSON.stringify(a.answer), raw: a.answer };
+      // The kit resolves the reply's probabilities, its reason and the answer fields asked for; the reply is the JSON text.
+      return { text: JSON.stringify(a.answer) };
     },
   }).ask;
   return { ask, resolve, lastError: () => lastError, detail: claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
@@ -159,9 +160,9 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
 const list = (x: unknown): string[] | undefined => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? [...new Set(x.map((s) => s.trim()).filter(Boolean))] : undefined);
 // A covers list as the model gave it: positions in its parts list, none repeated. undefined when the reply gave none.
 const positions = (x: unknown): number[] | undefined => (Array.isArray(x) && x.every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0) ? [...new Set(x as number[])].sort((a, b) => a - b) : undefined);
-// The lists one question's reply carried: the answer object the kit carries along as its `raw`.
+// The coverage lists one question's answer carries: the parts the reply names, and the positions of the ones it shows.
 type Lists = { parts?: unknown; covers?: unknown };
-const lists = (a: unknown, k: string): Lists | undefined => ((a as { raw?: unknown } | undefined)?.raw as Record<string, Lists | undefined> | undefined)?.[k];
+const lists = (a: unknown): Lists => ((a ?? {}) as Lists);
 
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
 export function prepare(c: Capture): { mime: string; bytes: Buffer } | string {
@@ -177,16 +178,18 @@ export function prepare(c: Capture): { mime: string; bytes: Buffer } | string {
 // judge were unsure, so it is asked once more, and one that still cannot be read is an error too.
 export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, state: unknown, questions: Record<string, Question>, images: Record<string, { mime: string; bytes: Buffer }>): Promise<Record<string, ReturnType<Judge['resolve']>>> {
   const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
-  let raw: Record<string, unknown>;
-  const malformed = (r: Record<string, unknown>) => Object.entries(questions).filter(([k, q]) => /^(malformed|no answer)/.test(be.resolve(q, r[k] as Parameters<Judge['resolve']>[1]).reason ?? '')).map(([k]) => k);
-  // The coverage rule reads the lists a reply carries, so a raw route that leaves one out has not answered: without them the
-  // rule would silently require no part. The key route returns no raw answer, so it requires no part (docs/reference.md).
-  const noLists = (r: Record<string, unknown>) => (Object.hasOwn(KEY_ROUTES, choice.route) ? [] : Object.keys(questions).filter((k) => 'coverage' in questions[k] && (list(lists(r[k], k)?.parts) === undefined || positions(lists(r[k], k)?.covers) === undefined)));
-  const unreadable = (r: Record<string, unknown>) => [...malformed(r), ...noLists(r)];
+  type Resolved = Record<string, ReturnType<Judge['resolve']>>;
+  let answers: Resolved;
+  const resolved = (r: Record<string, unknown>): Resolved => Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, r[k] as Parameters<Judge['resolve']>[1])]));
+  const malformed = (a: Resolved) => Object.keys(questions).filter((k) => /^(malformed|no answer)/.test(a[k].reason ?? ''));
+  // The parts rule reads the lists the answer carries, so a reply that leaves one out has not answered: without them the
+  // rule would silently require no part.
+  const noLists = (a: Resolved) => Object.keys(questions).filter((k) => questions[k].answerFields?.length && (list(lists(a[k]).parts) === undefined || positions(lists(a[k]).covers) === undefined));
+  const unreadable = (a: Resolved) => [...malformed(a), ...noLists(a)];
   try {
-    const ask = () => be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)!), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` })));
-    raw = await ask();
-    if (unreadable(raw).length) raw = await ask();
+    const ask = async () => resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)!), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
+    answers = await ask();
+    if (unreadable(answers).length) answers = await ask();
   } catch (e) {
     const why = be.lastError() || (e as Error).message;
     if (choice.route === 'claude-code' && /not logged in/i.test(why))
@@ -195,12 +198,16 @@ export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, stat
     const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
     throw new UsageError(`judge: the judge did not answer: ${why}${hint}`, again);
   }
-  const bad = malformed(raw);
+  const bad = malformed(answers);
   if (bad.length) throw new UsageError(`judge: the judge did not answer: no probabilities for ${bad.join(', ')} that are each 0 to 1 and sum to 1`, again);
-  const noParts = noLists(raw);
+  const noParts = noLists(answers);
   if (noParts.length) throw new UsageError(`judge: the judge did not answer: no parts and covers lists for ${noParts.join(', ')}, so the check cannot see which parts it shows`, again);
-  return Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, raw[k] as Parameters<Judge['resolve']>[1])]));
+  return answers;
 }
+
+// A part's label as the check compares it: case, surrounding and repeated whitespace, and trailing punctuation are the
+// writing, not the part, so "1440 Wide." and " 1440  wide " are one part.
+const norm = (s: string) => s.trim().replace(/\s+/g, ' ').replace(/[\s.,;:!?]+$/, '').toLowerCase();
 
 export const screen = (c: Capture) => c.media.type === 'png' || c.media.type === 'jpeg';
 // The judge reads screens as images and text captures (logs, JSON, CLI output) as text; video and other files are not judged.
@@ -265,7 +272,9 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     call = join(records, `judge-${stamp}-${calls}`);
     // A pair is one request holding both captures: does the after capture show the outcome as a change from before?
     const base = 'text' in input ? (before ? TEXT_PAIR : TEXT_QUESTION) : before ? PAIR : QUESTION;
-    const shape: ChoiceQuestion & Coverage = { ...base, instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, coverage: true };
+    // The parts rule asks the reply for the coverage lists as answer fields on routes that return them. A key route returns
+    // no lists, so it keeps requiring no part (docs/reference.md).
+    const shape: ChoiceQuestion = { ...base, instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, ...(Object.hasOwn(KEY_ROUTES, choice.route) ? {} : { answerFields: FIELDS }) };
     // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
     be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
     const answers = 'text' in input
@@ -275,21 +284,25 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const options: Record<string, string> = shape.options;
     const reason = a.personReason || a.rationale || options[String(a.answer)] || '';
     const seen = a.rationale ? { seen: a.rationale } : {};
-    // The coverage lists come from the reply's raw answer; a route that does not return them requires no part.
-    const reply = lists(a, 'relevance');
-    const parts = list(reply?.parts);
-    const covers = positions(reply?.covers);
+    // The coverage lists ride on the answer as the kit's answer fields; a route that does not return them requires no part.
+    const reply = lists(a);
+    const parts = list(reply.parts);
+    const covers = positions(reply.covers);
     const coverage = parts?.length && covers ? { parts, covers } : {};
     const verdict: Judged = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, ...coverage, cached: false }
       : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, ...coverage, cached: false };
     writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
     judged.push(verdict);
   }
-  const named: string[] = [];
-  const shown = new Set<number>();
+  // The parts rule matches by name, never by position: each capture is its own call, so a call that orders or labels the
+  // parts differently is still talking about the same part. Every distinct part any reply names must be covered by a
+  // capture that passes, and one no passing capture shows is missing, under the name the reply wrote.
+  const named = new Map<string, string>(); // normalised label -> the label to show
+  const shown = new Set<string>();
   for (const r of judged) {
-    (r.parts ?? []).forEach((p, i) => { named[i] ??= p; });
-    if (r.verdict === 'pass') for (const i of r.covers ?? []) shown.add(i);
+    const parts = r.parts ?? [];
+    for (const p of parts) if (norm(p)) named.set(norm(p), named.get(norm(p)) ?? p.trim());
+    if (r.verdict === 'pass') for (const i of r.covers ?? []) shown.add(norm(parts[i] ?? ''));
   }
-  return { judged, notJudged, choice, missing: named.filter((_, i) => !shown.has(i)) };
+  return { judged, notJudged, choice, missing: [...named].filter(([n]) => !shown.has(n)).map(([, p]) => p) };
 }

@@ -2512,9 +2512,11 @@ test('an outcome that names two widths passes only once a passing capture shows 
   assert.match(j.calls()[0].argv.join(' '), /"covers"/, 'the judge asks the agent for the coverage lists');
 });
 
-test('two captures that name the same part differently still cover it, since the check reads positions', () => {
+test('a second capture that orders and writes the parts differently still covers each named part', () => {
   const j = judgeSetup(CORRECT);
-  const shows = { '"width":390': { parts: ['390 wide', '1440 wide'], covers: [0] }, '"width":1440': { parts: ['390 wide', '1440px'], covers: [1] } };
+  // The second call lists the same two widths in the other order and writes the 1440 label with other case and a full
+  // stop. Read by position its covers[0] would credit 390 and leave 1440 missing, which is the phantom part this fixes.
+  const shows = { '"width":390': { parts: ['390 wide', '1440 wide'], covers: [0] }, '"width":1440': { parts: ['1440 WIDE.', '390 wide'], covers: [0] } };
   j.stub(CORRECT, true, [], [], '', { shows });
   const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
   const w390 = join(j.dir, 'widths-390.json');
@@ -2525,7 +2527,7 @@ test('two captures that name the same part differently still cover it, since the
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
-  assert.equal(both.code, 0, 'each capture shows one of the two parts, so no part is missing');
+  assert.equal(both.code, 0, 'each capture covers one of the two parts by name, so no part is missing');
   assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
 });
 
