@@ -2872,6 +2872,15 @@ async function cmdInit(argv: string[]): Promise<number> {
   if (journey === null && parts.length) throw new UsageError('init needs --journey <name> to record a command after --');
   if (journey !== null && !parts.some((p) => p.trim())) throw new UsageError(`init --journey ${journey} needs a command after --`);
   if (journey !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(journey)) throw new UsageError(`invalid journey name ${journey}; use letters, digits, - or _`);
+  // Only the judge named: that is a machine setting, so it changes the global config alone, in any directory.
+  if (values.judge !== undefined && values.agent === undefined && values.hook === undefined && journey === null) {
+    const cfg = loadConfig(process.cwd());
+    const choice = { agent: values.judge, model: values['judge-model'] ?? (cfg.judge.route === routeOf(values.judge) ? cfg.judge.model : '') };
+    checkJudge(cfg, choice.agent, choice.model);
+    const globalConfig = writeGlobal();
+    emit({ command: 'init', result: 'pass', global_config: globalConfig, judge: saveChoice('judge', choice), help: ['Set up a repo: cd <your app> && done-done init'] });
+    return PASS;
+  }
   const repo = repoRoot();
   const file = join(repo, '.done-done.yaml');
   const existed = existsSync(file);

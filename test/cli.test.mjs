@@ -3270,7 +3270,7 @@ globalThis.fetch = async (url, init) => {
   // Doctor names a missing key and a missing model with their fixes, and never calls the model.
   const doctorEnv = { ...env, OPENAI_API_KEY: '' };
   const judgeRow = toon(doctorIn(t.repo, doctorEnv, 'doctor')).checks.find((c) => c.check === 'judge');
-  assert.deepEqual([judgeRow.status, judgeRow.detail, judgeRow.fix], ['missing', 'judge: openai:key needs your own API key in OPENAI_API_KEY, which is not set', 'Export OPENAI_API_KEY with your key, then re-run this command']);
+  assert.deepEqual([judgeRow.status, judgeRow.detail, judgeRow.fix], ['missing', 'judge: openai:key needs your own API key in OPENAI_API_KEY, which is not set', 'Export OPENAI_API_KEY with your key, or list it in the file judge.env_file names, then re-run this command']);
   assert.match(toon(doctorIn(t.repo, { ...env, OPENAI_API_KEY: key }, 'doctor')).checks.find((c) => c.check === 'judge').detail, /^openai:key \(model vision-test-1\): OPENAI_API_KEY is set and the judge kit is present; doctor does not call the model$/);
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: openai:key\n');
   const noModel = toon(doctorIn(t.repo, doctorEnv, 'doctor')).checks.find((c) => c.check === 'judge_choice');
@@ -3357,6 +3357,21 @@ test('init --judge saves the user\'s judge, the author\'s own agent and model to
   assert.equal(toon(t.dd('init')).judge, 'unchanged (answerer:opencode)');
 });
 
+test('init --judge alone changes only the global config, and judge.env_file supplies the key the shell does not export', () => {
+  const t = setup(JUDGED);
+  rmSync(join(t.repo, '.done-done.yaml'), { force: true });
+  const saved = t.dd('init', '--judge', 'claude', '--judge-model', 'claude-haiku-5-5');
+  assert.equal(saved.code, 0, saved.out);
+  assert.equal(existsSync(join(t.repo, '.done-done.yaml')), false, 'no project file');
+  assert.equal(existsSync(join(t.repo, '.agents', 'skills')), false, 'no verify skill');
+  const keyFile = join(t.env.DONE_DONE_HOME, 'judge.env');
+  writeFileSync(keyFile, 'export OPENAI_API_KEY="sk-from-the-file-0000"\n');
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `judge:\n  route: openai:key\n  model: gpt-x\n  env_file: ${keyFile}\n`);
+  const doctor = t.dd('doctor');
+  assert.match(doctor.out, /OPENAI_API_KEY is set/);
+  assert.doesNotMatch(doctor.out, /sk-from-the-file/);
+});
+
 test('re-saving a judge without --judge-model keeps its model on the same route and drops it on another', () => {
   const t = setup(JUDGED);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
@@ -3375,9 +3390,9 @@ test('the judge is the user\'s call, even the author\'s own agent: a claude judg
   const file = join(t.env.DONE_DONE_HOME, 'config.yaml');
   writeFileSync(file, `agent: acp:claude-code\nacpx_path: ${JSON.stringify(join(t.dir, 'no-acpx'))}\n`);
   const r = t.dd('init', '--judge', 'claude', '--judge-model', 'claude-haiku-5-5');
-  // The judge is saved; only the verify skill is not written, since this acp author cannot start.
-  assert.equal(r.code, 1, r.out);
-  assert.match(toon(r).verify_skill, /^not written: acp:claude-code did not answer/);
+  // A judge alone is a machine setting: it is saved, and no verify skill is written, so the acp author never starts.
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).verify_skill, undefined);
   assert.equal(toon(r).judge, `claude-code (model claude-haiku-5-5) saved to ${file}`);
   assert.deepEqual(parse(readFileSync(file, 'utf8')).judge, { route: 'claude-code', model: 'claude-haiku-5-5' });
 });

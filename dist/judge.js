@@ -3,7 +3,7 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, w
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { agentRun, askAgent, notStartable } from './agents.js';
-import { home, KEY_ROUTES, parseDuration, UsageError } from './config.js';
+import { home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
 const MAX_CALLS = 10; // model requests per check; later captures are unsure
@@ -88,6 +88,27 @@ export function onPath(name) {
     return '';
 }
 export const quote = (a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`);
+// The variables in judge.env_file (KEY=value lines, `export ` and quotes allowed) that the shell has not set: a judge works
+// without the provider key exported in every shell. Values are handed to the judge's call only, never printed or stored.
+export function judgeEnv(cfg) {
+    const file = cfg.judge.env_file;
+    if (!file)
+        return {};
+    let text;
+    try {
+        text = readFileSync(tilde(file), 'utf8');
+    }
+    catch (e) {
+        throw new UsageError(`judge.env_file ${file} cannot be read (${e.code ?? 'error'})`, 'Fix judge.env_file in ~/.done-done/config.yaml, or create that file with KEY=value lines');
+    }
+    const env = {};
+    for (const line of text.split(/\r?\n/)) {
+        const m = /^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*?)\s*$/.exec(line);
+        if (m && process.env[m[1]] === undefined)
+            env[m[1]] = m[2].replace(/^(["'])(.*)\1$/, '$2');
+    }
+    return env;
+}
 // The kit loads only when a capture is judged, so a command that judges nothing stays fast.
 async function kit() {
     const [major, minor] = process.versions.node.split('.').map(Number);
@@ -103,9 +124,9 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
     if (Object.hasOwn(KEY_ROUTES, choice.route)) {
         const name = KEY_ROUTES[choice.route];
         // The kit never reads the environment: done-done reads the key here and hands it only to the kit.
-        const key = process.env[name];
+        const key = process.env[name] ?? judgeEnv(cfg)[name];
         if (!key)
-            throw new UsageError(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, then re-run this command`);
+            throw new UsageError(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
         const { openai, resolve } = await kit();
         const ask = openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 }).ask;
         return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
@@ -129,7 +150,7 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
             requests++;
             const attached = images.map((img) => ({ name: `${img.id}.${img.mime.split('/')[1]}`, bytes: Buffer.from(img.dataUrl.slice(img.dataUrl.indexOf(',') + 1), 'base64') }));
             // A tool-less call runs in its own scratch folder, so the CLI sees the attached capture and nothing else.
-            const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
+            const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
             lastError = a.ok ? '' : a.error ?? 'no answer';
             if (!a.ok)
                 throw new Error(lastError);
