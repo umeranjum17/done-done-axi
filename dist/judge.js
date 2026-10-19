@@ -139,12 +139,24 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
     }).ask;
     return { ask, resolve, lastError: () => lastError, detail: claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
 }
-// A coverage list as the model gave it: its labels, trimmed, none repeated. undefined when the reply gave no such list, so a
-// reply that leaves one out is unreadable rather than a capture that needs no part and shows nothing.
-const list = (x) => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? [...new Set(x.map((s) => s.trim()).filter(Boolean))] : undefined);
+// The parts list as the model gave it: labels trimmed and in its own order, so a cover position still names its label.
+const labels = (x) => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? x.map((s) => s.trim()) : undefined);
 // A covers list as the model gave it: positions in its parts list, none repeated. undefined when the reply gave none.
 const positions = (x) => (Array.isArray(x) && x.every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0) ? [...new Set(x)].sort((a, b) => a - b) : undefined);
 const lists = (a) => (a ?? {});
+// A reply's coverage lists resolved onto each other: `covers` gives positions in the parts list as the model wrote it, so each
+// position is read as its label before blank labels are dropped and repeated ones collapsed, and neither can shift a later
+// position onto another part. undefined when the reply gave no usable pair, so a reply that leaves one out is unreadable
+// rather than a capture that needs no part and shows nothing.
+const coverageOf = (a) => {
+    const reply = lists(a);
+    const raw = labels(reply.parts);
+    const at = positions(reply.covers);
+    if (!raw || !at)
+        return undefined;
+    const parts = [...new Set(raw.filter(Boolean))];
+    return { parts, covers: [...new Set(at.map((i) => parts.indexOf(raw[i] ?? '')).filter((i) => i >= 0))] };
+};
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
 export function prepare(c) {
     const mime = `image/${c.media.type}`;
@@ -164,7 +176,7 @@ export async function askJudge(cfg, be, choice, state, questions, images) {
     const malformed = (a) => Object.keys(questions).filter((k) => /^(malformed|no answer)/.test(a[k].reason ?? ''));
     // The parts rule reads the lists the answer carries, so a reply that leaves one out has not answered: without them the
     // rule would silently require no part.
-    const noLists = (a) => Object.keys(questions).filter((k) => questions[k].answerFields?.length && (list(lists(a[k]).parts) === undefined || positions(lists(a[k]).covers) === undefined));
+    const noLists = (a) => Object.keys(questions).filter((k) => questions[k].answerFields?.length && coverageOf(a[k]) === undefined);
     const unreadable = (a) => [...malformed(a), ...noLists(a)];
     try {
         const ask = async () => resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
@@ -267,10 +279,8 @@ export async function judge(cfg, choose, outcome, captures, records) {
         const reason = a.personReason || a.rationale || options[String(a.answer)] || '';
         const seen = a.rationale ? { seen: a.rationale } : {};
         // The coverage lists ride on the answer as the kit's answer fields; a route that does not return them requires no part.
-        const reply = lists(a);
-        const parts = list(reply.parts);
-        const covers = positions(reply.covers);
-        const coverage = parts?.length && covers ? { parts, covers } : {};
+        const cov = coverageOf(a);
+        const coverage = cov?.parts.length ? cov : {};
         const verdict = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, ...coverage, cached: false }
             : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, ...coverage, cached: false };
         writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
@@ -288,7 +298,7 @@ export async function judge(cfg, choose, outcome, captures, records) {
                 named.set(norm(p), named.get(norm(p)) ?? p.trim());
         if (r.verdict === 'pass')
             for (const i of r.covers ?? [])
-                shown.add(norm(parts[i] ?? ''));
+                shown.add(norm(parts[i]));
     }
     return { judged, notJudged, choice, missing: [...named].filter(([n]) => !shown.has(n)).map(([, p]) => p) };
 }

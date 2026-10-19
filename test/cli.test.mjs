@@ -2531,6 +2531,27 @@ test('a second capture that orders and writes the parts differently still covers
   assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
 });
 
+test('a reply that repeats or blanks a part label still covers the part its covers position names', () => {
+  const j = judgeSetup(CORRECT);
+  // The 390 call repeats the 1440 label before the one it shows, and the 1440 call puts a blank label in the middle. Read
+  // by the model's own positions both cover the right part; read by list position, both look covered by nothing.
+  const shows = { '"width":390': { parts: ['1440 wide', '1440 wide', '390 wide'], covers: [2] }, '"width":1440': { parts: ['390 wide', ' ', '1440 wide'], covers: [2] } };
+  j.stub(CORRECT, true, [], [], '', { shows });
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const w390 = join(j.dir, 'widths-390.json');
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(both.code, 0, both.out);
+  const rows = toon(both).judge.judged;
+  assert.deepEqual(rows.map((x) => [x.verdict, x.covers.map((i) => x.parts[i])]), [['pass', ['390 wide']], ['pass', ['1440 wide']]], 'each cached coverage names the part its reply showed');
+  assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
+});
+
 test('a judge reply that leaves out the coverage lists is asked again, then stops the check', () => {
   const j = judgeSetup(CORRECT);
   j.stub(CORRECT, true, [], [], '', { noLists: true });
