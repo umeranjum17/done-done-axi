@@ -431,6 +431,24 @@ test('check reads the same Checks block from a file or from stdin', () => {
   assert.equal(lost.help.some((h) => /not in this checkout/.test(h)), false);
 });
 
+test('check --judge picks the judge for that call over the config, and saves nothing', () => {
+  const t = setup();
+  const config = join(t.env.DONE_DONE_HOME, 'config.yaml');
+  // The config names a judge that cannot start (no pi on this PATH); --judge names the stub gemini one.
+  writeFileSync(config, judgeYaml(t.env).replace('answerer:gemini', 'answerer:pi').replace('model: stub-judge', 'model: pi/cfg-model'));
+  const saved = readFileSync(config, 'utf8');
+  const { files } = t.shots();
+  const claim = ['--outcome', 'home and settings render', ...files];
+  assert.equal(t.dd('check', ...claim).code, 2, 'the configured judge cannot run');
+  const r = t.dd('check', '--judge', 'answerer:gemini', ...claim);
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([toon(r).result, toon(r).judge.route], ['pass', 'answerer:gemini']);
+  assert.equal(readFileSync(config, 'utf8'), saved, '--judge never writes the config');
+  const bad = t.dd('check', '--judge', 'gemini', ...claim);
+  assert.equal(bad.code, 2);
+  assert.match(toon(bad).error, /--judge gemini is not a judge route/);
+});
+
 test('receipt records a passing check for the head, then verifies', () => {
   const { repo, dd, head, shots } = setup();
   const { files } = shots();
@@ -2668,8 +2686,8 @@ test('verify and rerun always judge, and the receipt keeps the judge', () => {
   const again = j.dd('rerun', '--run', toon(on).run_id);
   assert.equal(again.code, 0, again.out);
   assert.equal(judgeStep(again), 'completed');
-  for (const flag of [['verify', 'shots', '--outcome', 'x', '--no-judge'], ['check', '--outcome', 'x', '--judge', 'a.png'], ['rerun', '--no-judge']])
-    assert.match(j.dd(...flag).out, /Unknown option '--(no-)?judge'/, `${flag[0]} has no way to turn the judge off`);
+  for (const flag of [['verify', 'shots', '--outcome', 'x', '--no-judge'], ['check', '--outcome', 'x', '--no-judge', 'a.png'], ['rerun', '--no-judge']])
+    assert.match(j.dd(...flag).out, /Unknown option '--no-judge'/, `${flag[0]} has no way to turn the judge off`);
 });
 
 

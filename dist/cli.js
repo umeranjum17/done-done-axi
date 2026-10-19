@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectJudge, toollessReason } from './agents.js';
-import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, loadConfig, parseDuration, UsageError } from './config.js';
+import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, UsageError } from './config.js';
 import { backend, judge, judgeable, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, inWorktree, maintainSteps, named, pathspec, readerProblem, repoState, triage } from './maintain.js';
@@ -93,6 +93,7 @@ const FLAGS = {
     '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
     '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
     '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (use in CI)',
+    '--judge <route>': 'check with this judge for this call instead of judge.route (same form: claude-code, answerer:opencode, answerer:pi, answerer:gemini or openai:key); its model is that agent\'s default, or judge.model when the route is the configured one',
     '--citation-base <dir>': 'resolve evidence citations against this directory (default: cwd); absolute citations stay unchanged; does not change repo, config or run storage',
     '--claim-id <id>': 'the claim the evidence proves; evidence already used for another claim id is reuse (default: the current branch, or the PR branch with --from <PR URL>; required on a detached HEAD)',
     '--verify <head>': 'read-only: verify the receipt recorded for <head>',
@@ -154,8 +155,9 @@ const COMMANDS = {
         usage: [
             ['done-done check --outcome "<claim>" <files...> [--claim-id <id>] [--trusted-ref <ref>] [--citation-base <dir>]', 'check evidence files against a claim'],
             ['done-done check --from <file | - | PR URL> [--claim-id <id>] [--trusted-ref <ref>] [--citation-base <dir>]', "check a claim's Checks block"],
+            ['done-done check --judge answerer:pi --outcome "<claim>" <files...>', 'judge with this route for this call instead of judge.route'],
         ],
-        flags: ['--outcome "<claim>"', '--from <file | - | PR URL>', '--claim-id <id>', '--trusted-ref <ref>', '--citation-base <dir>'],
+        flags: ['--outcome "<claim>"', '--from <file | - | PR URL>', '--judge <route>', '--claim-id <id>', '--trusted-ref <ref>', '--citation-base <dir>'],
         more: [CHECKS_TEXT],
     },
     receipt: {
@@ -589,9 +591,11 @@ function loadRecords(cfg) {
 async function runCheck(argv, run) {
     const { values, positionals } = parseArgs({
         args: argv,
-        options: { outcome: { type: 'string' }, from: { type: 'string' }, 'claim-id': { type: 'string' }, 'trusted-ref': { type: 'string' }, 'citation-base': { type: 'string' } },
+        options: { outcome: { type: 'string' }, from: { type: 'string' }, judge: { type: 'string' }, 'claim-id': { type: 'string' }, 'trusted-ref': { type: 'string' }, 'citation-base': { type: 'string' } },
         allowPositionals: true,
     });
+    if (values.judge !== undefined && !isJudgeRoute(values.judge))
+        throw new UsageError(`--judge ${values.judge || '""'} is not a judge route; use claude-code, answerer:<agent> or a key route`, 'Same form as judge.route: claude-code, answerer:opencode, answerer:pi, answerer:gemini or openai:key');
     if (values['citation-base']?.trim() === '')
         throw new UsageError('--citation-base needs a non-empty directory');
     if (!!values.outcome === !!values.from)
@@ -614,6 +618,9 @@ async function runCheck(argv, run) {
         }
     }
     const cfg = run?.cfg ?? loadConfig(repo, projectText);
+    // --judge overrides judge.route for this call; a model set for the configured route is not the new route's, so it falls back to that agent's default.
+    if (values.judge !== undefined && values.judge !== cfg.judge.route)
+        cfg.judge = { ...cfg.judge, route: values.judge, model: '' };
     const now = head(repo);
     const findings = [];
     let claim;
