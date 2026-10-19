@@ -188,6 +188,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 ## Learn more
 
 - [Vision](VISION.md): the three-tool family, the rules they share, and where done-done goes next.
+- [Worked example: a CLI project](docs/example-cli.md): set up, one journey, check and receipt on a command-line tool.
 - [Full reference](docs/reference.md): every command and option, the Checks block rules, each file check, and both config files.
 - [Report a problem or ask a question](https://github.com/umeranjum17/done-done-axi/issues)
 
