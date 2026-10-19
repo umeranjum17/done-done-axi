@@ -164,15 +164,15 @@ type Lists = { parts?: unknown; covers?: unknown };
 const lists = (a: unknown): Lists => ((a ?? {}) as Lists);
 // A reply's coverage lists resolved onto each other: `covers` gives positions in the parts list as the model wrote it, so each
 // position is read as its label before blank labels are dropped and repeated ones collapsed, and neither can shift a later
-// position onto another part. undefined when the reply gave no usable pair, so a reply that leaves one out is unreadable
-// rather than a capture that needs no part and shows nothing.
+// position onto another part. undefined when the reply gave no usable pair, so a reply that leaves one out, or names a
+// position its own list has no part at, is unreadable rather than a capture that needs no part and shows nothing.
 const coverageOf = (a: unknown): { parts: string[]; covers: number[] } | undefined => {
   const reply = lists(a);
   const raw = labels(reply.parts);
   const at = positions(reply.covers);
-  if (!raw || !at) return undefined;
+  if (!raw || !at || at.some((i) => !raw[i])) return undefined;
   const parts = [...new Set(raw.filter(Boolean))];
-  return { parts, covers: [...new Set(at.map((i) => parts.indexOf(raw[i] ?? '')).filter((i) => i >= 0))] };
+  return { parts, covers: [...new Set(at.map((i) => parts.indexOf(raw[i])))] };
 };
 
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
@@ -266,8 +266,11 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     // The floor is in the key: it decides pass or inconclusive, so a changed judge.floor asks the model again.
     const key = createHash('sha256').update(JSON.stringify([VERSION, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.sha256] : [])])).digest('hex');
     const hit = readCache(dir, key);
-    if (['pass', 'fail', 'unsure'].includes(hit?.verdict) && typeof hit.reason === 'string') {
-      judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, ...(hit.seen && { seen: hit.seen }), ...(hit.parts && { parts: hit.parts, covers: hit.covers }), cached: true });
+    // A stored coverage pair goes back through the same resolver as a reply's, so an entry whose covers do not index its
+    // parts is unreadable, and asking the model again is the miss readCache promises.
+    const stored = hit && coverageOf(hit);
+    if (['pass', 'fail', 'unsure'].includes(hit?.verdict) && typeof hit.reason === 'string' && (hit.parts === undefined || stored)) {
+      judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, ...(hit.seen && { seen: hit.seen }), ...(stored?.parts.length ? stored : {}), cached: true });
       continue;
     }
     const text = (x: Capture) => (x.bytes.length > MAX_TEXT ? `text is ${x.bytes.length} bytes, over the ${MAX_TEXT} bytes the judge reads, so capture only the output the outcome is about` : { text: x.bytes.toString('utf8') });

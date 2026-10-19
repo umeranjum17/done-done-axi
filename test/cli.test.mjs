@@ -2567,6 +2567,52 @@ test('a judge reply that leaves out the coverage lists is asked again, then stop
   assert.equal(j.calls().length, 2, 'the answer without the lists is asked once more');
 });
 
+test('a reply whose covers names a position its own parts list has no part at is asked again, never a missing part', () => {
+  const j = judgeSetup(CORRECT);
+  // The reply counts its positions from 1, so covers[1] names no part: read as coverage it would credit the 1440 part
+  // alone and call 390 missing after a capture that shows both, so it is an unreadable reply, not a verdict.
+  j.stub(CORRECT, true, [], [], '', { shows: { '"width":1440': { parts: ['390 wide', '1440 wide'], covers: [1, 2] } } });
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `node -e "require('node:fs').copyFileSync('${w1440}', process.env.DONE_DONE_EVIDENCE_ROOT + '/widths-1440.json')"`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const one = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-1440.json`);
+  assert.equal(one.code, 2, one.out);
+  assert.equal(toon(one).result, undefined, 'a position with no part is no verdict either way');
+  assert.match(toon(one).error, /^judge: the judge did not answer: no parts and covers lists for relevance/);
+  assert.equal(j.calls().length, 2, 'the reply is asked once more before the check stops');
+});
+
+test('a cached coverage pair whose covers do not index its own parts is a miss, so the judge is asked again', () => {
+  const j = judgeSetup(CORRECT);
+  const shows = { '"width":390': { covers: [0] }, '"width":1440': { covers: [1] } };
+  j.stub(CORRECT, true, [], [], '', { parts: ['390 wide', '1440 wide'], shows });
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const w390 = join(j.dir, 'widths-390.json');
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const outcome = 'the sent message shows at the bottom of the thread at 390 and 1440 wide';
+  const first = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(first.code, 0, first.out);
+  const cacheDir = join(j.env.DONE_DONE_HOME, 'runs', 'notes', 'judge');
+  const entries = readdirSync(cacheDir);
+  assert.equal(entries.length, 2, 'one cached verdict per capture');
+  for (const name of entries) {
+    const file = join(cacheDir, name);
+    const hit = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...hit, covers: [hit.parts.length] }));
+  }
+  const again = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(again.code, 0, again.out);
+  assert.deepEqual(toon(again).judge.judged.map((x) => x.cached), [false, false], 'an entry whose covers point past its parts is a miss, never a crash');
+  assert.equal(j.calls().length, 4, 'both captures were asked again');
+});
+
 test('check judges text evidence too, and a failed plain check stops with its cause, unjudged', () => {
   const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
   const r = j.dd('run', '--', `node make-shots.mjs \${RUN_ID} && node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.log','saved 3 notes')"`);
