@@ -135,8 +135,10 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
     }).ask;
     return { ask, resolve, lastError: () => lastError, detail: claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
 }
-// A coverage list as the model gave it: its strings, trimmed, none repeated.
-const strings = (x) => [...new Set(Array.isArray(x) ? x.filter((s) => typeof s === 'string').map((s) => s.trim()).filter(Boolean) : [])];
+// A coverage list as the model gave it: its labels, trimmed, none repeated. undefined when the reply gave no such list, so a
+// reply that leaves one out is unreadable rather than a capture that needs no part and shows nothing.
+const list = (x) => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? [...new Set(x.map((s) => s.trim()).filter(Boolean))] : undefined);
+const lists = (a, k) => a?.raw?.[k];
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
 export function prepare(c) {
     const mime = `image/${c.media.type}`;
@@ -152,7 +154,11 @@ export function prepare(c) {
 export async function askJudge(cfg, be, choice, state, questions, images) {
     const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
     let raw;
-    const unreadable = (r) => Object.entries(questions).filter(([k, q]) => /^(malformed|no answer)/.test(be.resolve(q, r[k]).reason ?? '')).map(([k]) => k);
+    const malformed = (r) => Object.entries(questions).filter(([k, q]) => /^(malformed|no answer)/.test(be.resolve(q, r[k]).reason ?? '')).map(([k]) => k);
+    // The coverage rule reads the lists a reply carries, so a raw route that leaves one out has not answered: without them the
+    // rule would silently require no part. The key route returns no raw answer, so it requires no part (docs/reference.md).
+    const noLists = (r) => (Object.hasOwn(KEY_ROUTES, choice.route) ? [] : Object.keys(questions).filter((k) => 'coverage' in questions[k] && (list(lists(r[k], k)?.parts) === undefined || list(lists(r[k], k)?.covers) === undefined)));
+    const unreadable = (r) => [...malformed(r), ...noLists(r)];
     try {
         const ask = () => be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` })));
         raw = await ask();
@@ -167,9 +173,12 @@ export async function askJudge(cfg, be, choice, state, questions, images) {
         const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
         throw new UsageError(`judge: the judge did not answer: ${why}${hint}`, again);
     }
-    const bad = unreadable(raw);
+    const bad = malformed(raw);
     if (bad.length)
         throw new UsageError(`judge: the judge did not answer: no probabilities for ${bad.join(', ')} that are each 0 to 1 and sum to 1`, again);
+    const noParts = noLists(raw);
+    if (noParts.length)
+        throw new UsageError(`judge: the judge did not answer: no parts and covers lists for ${noParts.join(', ')}, so the check cannot see which parts it shows`, again);
     return Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, raw[k])]));
 }
 export const screen = (c) => c.media.type === 'png' || c.media.type === 'jpeg';
@@ -246,9 +255,10 @@ export async function judge(cfg, choose, outcome, captures, records) {
         const reason = a.personReason || a.rationale || options[String(a.answer)] || '';
         const seen = a.rationale ? { seen: a.rationale } : {};
         // The coverage lists come from the reply's raw answer; a route that does not return them requires no part.
-        const reply = a.raw?.relevance;
-        const parts = strings(reply?.parts);
-        const coverage = parts.length ? { parts, covers: strings(reply?.covers) } : {};
+        const reply = lists(a, 'relevance');
+        const parts = list(reply?.parts);
+        const covers = list(reply?.covers);
+        const coverage = parts?.length && covers ? { parts, covers } : {};
         const verdict = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, ...coverage, cached: false }
             : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, ...coverage, cached: false };
         writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
