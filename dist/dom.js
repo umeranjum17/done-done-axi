@@ -12,8 +12,7 @@ import { basename } from 'node:path';
 // The measurement the recipe passes to its browser tool's eval, so no agent invents one: every visible element with its
 // own non-empty text is squashed when its box is under 8 characters wide (box width / the average glyph width of its
 // font) while its text is wider than the box, or when its text sits on more line boxes than it has words.
-// ponytail: glyph width ignores letter-spacing and text-transform, and words split on spaces, so a wide-tracked capital
-// label measures a little narrow and a wrapped paragraph of Chinese or Japanese is one word; count words per script if those show up.
+// ponytail: glyph width ignores text-transform, so an uppercased label measures a little narrow, and words split on spaces, so a wrapped paragraph of Chinese or Japanese is one word; count words per script if those show up.
 export const SQUASHED_TEXT = `() => {
   const ctx = document.createElement('canvas').getContext('2d'); const out = [];
   for (const e of document.querySelectorAll('body *')) {
@@ -22,6 +21,7 @@ export const SQUASHED_TEXT = `() => {
     const s = getComputedStyle(e); const w = e.offsetWidth; const h = e.offsetHeight;
     if (!(e instanceof HTMLElement) || !text || !e.getClientRects().length || ((w <= 1 || h <= 1) && s.overflow !== 'visible') || s.visibility !== 'visible') continue;
     ctx.font = s.fontStyle + ' ' + s.fontWeight + ' ' + s.fontSize + ' ' + s.fontFamily;
+    ctx.letterSpacing = s.letterSpacing === 'normal' ? '0px' : s.letterSpacing;
     const chars = w / (ctx.measureText('abcdefghijklmnopqrstuvwxyz').width / 26); const words = text.split(' ').length; const tops = new Set();
     for (const n of nodes) { const r = document.createRange(); r.selectNodeContents(n); for (const b of r.getClientRects()) if (b.width) tops.add(Math.round(b.top)); }
     if ((chars < 8 && ctx.measureText(text).width > w + 1) || tops.size > words)
