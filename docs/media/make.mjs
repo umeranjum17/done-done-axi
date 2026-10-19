@@ -24,7 +24,7 @@ mkdirSync(join(repo, 'src'), { recursive: true });
 mkdirSync(join(home, 'bin'));
 writeFileSync(join(home, 'bin', 'done-done'), `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`, { mode: 0o755 });
 // The demo judge is a stub: it approves the captured outcome without running a model.
-const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'The screen shows the synced note.', personReason: 'The screen shows the synced note.' } });
+const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'The screen shows the synced note.', personReason: 'The screen shows the synced note.', parts: [], covers: [] } });
 writeFileSync(join(home, 'bin', 'demo-judge'), `#!${process.execPath}\nrequire('node:fs').readFileSync(0, 'utf8');\nprocess.stdout.write(JSON.stringify({ response: ${JSON.stringify(answer)} }));\n`, { mode: 0o755 });
 mkdirSync(env.DONE_DONE_HOME);
 writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `judge:\n  route: answerer:gemini\n  model: demo-judge\nagent_path_override: { gemini: ${JSON.stringify(join(home, 'bin', 'demo-judge'))} }\n`);
