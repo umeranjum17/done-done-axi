@@ -67,7 +67,8 @@ try {
   // The committed recipe names the CLI and the fixture pages through env, so it holds no path of this checkout.
   const look = (page) => `node "\${DONE_DONE_TEST_CLI:?}" look "\${DONE_DONE_LOOK_FIXTURES:?}/${page}.html" --out "$DONE_DONE_EVIDENCE_ROOT/${page}.png"`;
   const stub = (name, body) => (writeFileSync(join(tmp, name), `#!${process.execPath}\n${body}\n`, { mode: 0o755 }), join(tmp, name));
-  const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'It shows the outcome.', personReason: 'It shows the outcome.' } });
+  // The coverage lists every judge reply carries: this one-part outcome names no part, so both are empty.
+  const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'It shows the outcome.', personReason: 'It shows the outcome.', parts: [], covers: [] } });
   const judge = stub('judge-gemini', `require('node:fs').readFileSync(0, 'utf8');\nprocess.stdout.write(JSON.stringify({ response: ${JSON.stringify(answer)} }));`);
   const agent = stub('agent-opencode', 'process.exit(1);');
   mkdirSync(home, { recursive: true });

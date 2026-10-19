@@ -6007,7 +6007,14 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 });
 
 // A mixed judge result is never fixed: the judge sorts the wrong screen (home.png), then it parks with the unsure one.
-for (const triageFails of [false, true]) test(`verify with auto_fix parks a mixed judge result after sorting its wrong screen${triageFails ? ', and fails with the cause when the triage call fails' : ''}`, () => {
+// One judge.floor for every judge: a triage answer that clears the old 0.8 floor but not judge.floor is unsure, so the wrong
+// screen parks like the unsure one instead of being sorted.
+const TRIAGE_CASES = [
+  ['after sorting its wrong screen', { triageFails: false, floor: '' }],
+  ['after sorting its wrong screen, and fails with the cause when the triage call fails', { triageFails: true, floor: '' }],
+  ['after sorting its wrong screen, and parks it too when judge.floor is above the triage answer', { triageFails: false, floor: '\n  floor: 0.99' }],
+];
+for (const [name, { triageFails, floor }] of TRIAGE_CASES) test(`verify with auto_fix parks a mixed judge result ${name}`, () => {
   const t = setup(JUDGED.replace('journeys:', 'auto_fix:\n  verify: 1\njourneys:'));
   const e = pathEnv(t.env, ['ffprobe']);
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(e.PATH, 'fixer'))}, '');\n`, { mode: 0o755 });
@@ -6020,13 +6027,13 @@ const triage = /a screen the judge called wrong/.test(prompt);
 appendFileSync(${JSON.stringify(join(e.PATH, 'calls'))}, (triage ? 'triage' : 'judge') + '\\n');
 const p = (probabilities) => ({ probabilities, rationale: 'r', personReason: 'the title is missing' });
 const answer = triage && existsSync(${JSON.stringify(join(e.PATH, 'triage-fails'))}) ? 'not json' : triage ? Object.fromEntries(JSON.parse(prompt.trim().split('\\n').filter((l) => l.startsWith('{')).pop()).required.map((id) => [id, p({ fix: 0.97, ask: 0.02, unclear: 0.01 })]))
-  : { relevance: { ...p(image.equals(readFileSync(${JSON.stringify(join(t.dir, 'screen.png'))})) ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : { correct: 0.05, wrong: 0.05, unclear: 0.9 }), parts: [], covers: [] } };
+  : { relevance: { ...p(image.equals(readFileSync(${JSON.stringify(join(t.dir, 'screen.png'))})) ? { correct: 0.003, wrong: 0.995, unclear: 0.002 } : { correct: 0.003, wrong: 0.002, unclear: 0.995 }), parts: [], covers: [] } };
 console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(answer) }] } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const config = (judge) => writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  ${judge}\n`);
   const verify = () => doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
-  config('route: answerer:pi\n  model: pi/judge');
+  config(`route: answerer:pi\n  model: pi/judge${floor}`);
   const r = verify();
   const m = toon(r);
   if (triageFails) {
@@ -6037,7 +6044,8 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
   } else {
     assert.equal(r.code, 4, r.out);
     assert.deepEqual(m.steps.map((x) => [x.name, x.status]).filter(([n]) => n === 'triage' || n === 'fix' || n === 'gate'), [['triage', 'completed'], ['fix', 'skipped'], ['gate', 'awaiting_approval']]);
-    assert.deepEqual(m.findings.map((f) => /; triage: fix$/.test(f.what)), [true, false], 'the wrong screen carries its class, the unsure one parks as it is');
+    assert.deepEqual(m.findings.map((f) => /; triage: fix$/.test(f.what)), floor ? [false, false] : [true, false], floor ? 'a fix answer below judge.floor does not sort the wrong screen' : 'the wrong screen carries its class, the unsure one parks as it is');
+    if (floor) assert.match(m.findings[0].what, /; judge: the judge was not sure \(confidence 0\.97 below floor 0\.99\); triage: ask$/, 'the park names the shared floor it missed');
   }
   const calls = readFileSync(join(e.PATH, 'calls'), 'utf8').trim().split('\n');
   assert.deepEqual([calls.slice(0, 2), calls.slice(2).every((c) => c === 'triage'), existsSync(join(e.PATH, 'fixer'))], [['judge', 'judge'], true, false], 'no fixer runs; a failed triage may be asked again');
