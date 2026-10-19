@@ -6515,6 +6515,8 @@ test('squashed text: the measurement flags a title wrapped one letter per line, 
     + '<label class="sr" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Search the release board</label>'
     + '<div style="transform:scale(0.65);width:90px"><p>Revenue</p></div>');
   assert.deepEqual(limits.map((q) => [q.element, q.chars < 8, q.lines, q.words]), [['div.clip', true, 1, 3], ['i.long', false, 2, 1]]);
+  // Letter-spacing is part of the box: a tightly tracked short label fits, and the next word, spaced normally, is not measured with its spacing.
+  assert.deepEqual(measure('<b style="letter-spacing:-0.1em">Decide</b> <b>Friday</b>'), []);
   const { r, d, why } = domVerify('dom:\n', { light: { ...CLEAN, squashed_text: measure(card(120)) }, dark: { ...CLEAN, squashed_text: narrow } });
   assert.equal(r.code, 2, r.out);
   assert.deepEqual([d.status, d.result], ['failed', undefined]);
