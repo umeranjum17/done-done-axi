@@ -777,6 +777,8 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const shots = new Set(captures.filter(screen).map((c) => c.name));
   for (const r of j.judged.filter((r) => r.verdict !== 'pass'))
     findings.push({ level: r.verdict === 'fail' ? 'fail' : 'inconclusive', why: `${r.path}: judge says ${r.verdict !== 'fail' ? 'unsure' : shots.has(r.path) ? 'wrong screen' : 'wrong output'}: ${r.reason}`, file: r.path, ...(r.seen && { seen: r.seen }) });
+  for (const part of j.missing)
+    findings.push({ level: 'inconclusive', why: `the outcome names ${part}, but no passing capture shows it: capture ${part} and cite that capture` });
   const rows = cap<Judged>(j.judged);
   const { choice } = j;
   const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), judged: rows.items.map(({ sha256, ...r }) => r) };

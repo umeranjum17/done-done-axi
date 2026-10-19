@@ -14,20 +14,23 @@ import { downscaleToPng, type Verdict } from './media.js';
 
 // before: the same capture on the base ref (base_ref), judged with it as one pair, never against the outcome alone.
 export type Capture = { name: string; bytes: Buffer; sha256: string; media: Verdict; before?: Capture };
-export type Judged = { path: string; sha256: string; verdict: 'pass' | 'fail' | 'unsure'; reason: string; seen?: string; cached: boolean; before?: string };
+export type Judged = { path: string; sha256: string; verdict: 'pass' | 'fail' | 'unsure'; reason: string; seen?: string; cached: boolean; before?: string; parts?: string[]; covers?: string[] };
 
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
 const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 4; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 5; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS: Record<string, string> = {
   correct: 'The screenshot shows the screen and state the outcome describes.',
   wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
   unclear: 'The screenshot cannot settle it: it is unreadable, or the outcome names nothing that could be visible on a screen.',
 };
 type ChoiceQuestion = Extract<Question, { kind: 'choice' }>;
+// A question whose answer also carries the coverage lists (parts, covers): only the relevance judge asks it.
+type Coverage = { coverage: true };
+const COVERAGE_PROPS = { parts: { type: 'array', items: { type: 'string' } }, covers: { type: 'array', items: { type: 'string' } } };
 const QUESTION: ChoiceQuestion = {
   kind: 'choice',
   instructions: 'The image is a screenshot cited as proof that the outcome in the state was achieved. Judge only what is visible in it. Locate the element the outcome names first (for example the newest message, which sits at the bottom of a thread, or the control or value it says is shown), then quote the text or state you see there, and decide from that quote. Write the rationale first, with the quote.',
@@ -40,6 +43,9 @@ const TEXT_OPTIONS: Record<string, string> = {
   wrong: 'The text shows an error, a failure, a different result, or values that contradict the outcome. Choose it only when the quoted fields show that.',
   unclear: 'The text cannot settle it: it is unreadable, or the outcome names nothing this output could show.',
 };
+// The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
+// capture, so every capture lists the parts the outcome names and the parts it shows. The check reads those lists.
+const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, worded as the outcome words it; list none when it names one part or none. In covers, list the parts this capture itself shows, in the same words.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION: ChoiceQuestion = {
   kind: 'choice',
@@ -72,7 +78,7 @@ const PAIR: ChoiceQuestion = {
 // The answer the answerer asks its agent for: the kit's reply shape for each choice question.
 const answerSchema = (questions: Record<string, Question>) => ({
   type: 'object',
-  properties: Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: 'object', properties: { rationale: { type: 'string' }, personReason: { type: 'string' }, probabilities: { type: 'object', properties: Object.fromEntries(Object.keys(q.kind === 'choice' ? q.options : {}).map((o) => [o, { type: 'number' }])) } }, required: ['probabilities'] }])),
+  properties: Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, { type: 'object', properties: { rationale: { type: 'string' }, personReason: { type: 'string' }, probabilities: { type: 'object', properties: Object.fromEntries(Object.keys(q.kind === 'choice' ? q.options : {}).map((o) => [o, { type: 'number' }])) }, ...('coverage' in q && COVERAGE_PROPS) }, required: ['probabilities', ...('coverage' in q ? ['parts', 'covers'] : [])] }])),
   required: Object.keys(questions),
 });
 
@@ -140,11 +146,15 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
       const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
       lastError = a.ok ? '' : a.error ?? 'no answer';
       if (!a.ok) throw new Error(lastError);
-      return JSON.stringify(a.answer);
+      // The kit keeps only each question's probabilities and reason, so the whole answer rides along as raw.
+      return { text: JSON.stringify(a.answer), raw: a.answer };
     },
   }).ask;
   return { ask, resolve, lastError: () => lastError, detail: claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
 }
+
+// A coverage list as the model gave it: its strings, trimmed, none repeated.
+const strings = (x: unknown): string[] => [...new Set(Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string').map((s) => s.trim()).filter(Boolean) : [])];
 
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
 export function prepare(c: Capture): { mime: string; bytes: Buffer } | string {
@@ -203,7 +213,8 @@ export function writeCache(dir: string, key: string, value: unknown) {
 
 // Verdicts are cached in the run store, per app, so a re-run or a later run of the same capture and claim asks no model.
 // The answerer's agent call leaves a record in `records` (judge-<stamp>-<n>-<request>.agent.json), never the prompt.
-export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string): Promise<{ judged: Judged[]; notJudged: string[]; choice?: JudgeChoice }> {
+// missing: the parts the outcome names that no passing capture shows.
+export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string): Promise<{ judged: Judged[]; notJudged: string[]; choice?: JudgeChoice; missing: string[] }> {
   const dir = join(home(), 'runs', cfg.app, 'judge');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const judged: Judged[] = [];
@@ -225,7 +236,7 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const key = createHash('sha256').update(JSON.stringify([VERSION, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.sha256] : [])])).digest('hex');
     const hit = readCache(dir, key);
     if (['pass', 'fail', 'unsure'].includes(hit?.verdict) && typeof hit.reason === 'string') {
-      judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, ...(hit.seen && { seen: hit.seen }), cached: true });
+      judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, ...(hit.seen && { seen: hit.seen }), ...(hit.parts && { parts: hit.parts, covers: hit.covers }), cached: true });
       continue;
     }
     const text = (x: Capture) => (x.bytes.length > MAX_TEXT ? `text is ${x.bytes.length} bytes, over the ${MAX_TEXT} bytes the judge reads, so capture only the output the outcome is about` : { text: x.bytes.toString('utf8') });
@@ -239,9 +250,11 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
       continue;
     }
     call = join(records, `judge-${stamp}-${calls}`);
-    be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`);
     // A pair is one request holding both captures: does the after capture show the outcome as a change from before?
-    const shape: ChoiceQuestion = { ...('text' in input ? (before ? TEXT_PAIR : TEXT_QUESTION) : before ? PAIR : QUESTION), floor: cfg.judge.floor };
+    const base = 'text' in input ? (before ? TEXT_PAIR : TEXT_QUESTION) : before ? PAIR : QUESTION;
+    const shape: ChoiceQuestion & Coverage = { ...base, instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, coverage: true };
+    // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
+    be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
     const answers = 'text' in input
       ? await askJudge(cfg, be, choice, { outcome, ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
       : await askJudge(cfg, be, choice, { outcome }, { relevance: shape }, before && 'mime' in before ? { before, capture: input } : { capture: input });
@@ -249,10 +262,16 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
     const options: Record<string, string> = shape.options;
     const reason = a.personReason || a.rationale || options[String(a.answer)] || '';
     const seen = a.rationale ? { seen: a.rationale } : {};
-    const verdict: Judged = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, cached: false }
-      : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, cached: false };
-    writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, route, model });
+    // The coverage lists come from the reply's raw answer; a route that does not return them requires no part.
+    const reply = (a.raw as { relevance?: { parts?: unknown; covers?: unknown } } | undefined)?.relevance;
+    const parts = strings(reply?.parts);
+    const coverage = parts.length ? { parts, covers: strings(reply?.covers) } : {};
+    const verdict: Judged = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, ...coverage, cached: false }
+      : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, ...coverage, cached: false };
+    writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
     judged.push(verdict);
   }
-  return { judged, notJudged, choice };
+  const named = new Set(judged.flatMap((r) => r.parts ?? []));
+  const shown = new Set(judged.filter((r) => r.verdict === 'pass').flatMap((r) => r.covers ?? []));
+  return { judged, notJudged, choice, missing: [...named].filter((p) => !shown.has(p)) };
 }

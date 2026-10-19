@@ -25,12 +25,11 @@ export const KINDS = {
     layout: { defect: 'Elements are misaligned, squeezed, badly wrapped or stacked wrongly, a control is far too small or large for its place, or text is hard to read against its background.', look: 'describe how the main elements line up and space out' },
 };
 const NONE = 'Nothing like this is in the image.';
-const FLOOR = 0.7;
 // A cheap model sometimes answers seven questions with the schema itself, so a malformed answer is asked once more.
 const ASK_ATTEMPTS = 2;
 const SCREEN = 'The image "screen" is an app\'s screen exactly as captured, edge to edge: everything in it, its edges included, is the app. Answer what you see and measure, not whether it looks intended. For a defect, name the element and where it is in personReason, for example "header avatar, top left".';
 const MOCK = ' The image "mock" is the approved design for that screen. Answer about the screen, and count a difference from the mock that a user would see as broken under its kind (a moved, missing or resized element is layout). A difference in live data such as names, numbers or times is not a defect, and neither is an element drawn the same shape as in the mock. A dialog, sheet, menu, popover or toast is approved only where the mock draws that same overlay in the same place: then it covers or cuts the app as in the mock and is no defect of its own; one the mock lacks, or draws elsewhere, is judged like any other element.';
-const questions = (mock) => Object.fromEntries(Object.entries(KINDS).map(([kind, k]) => [kind, { kind: 'choice', instructions: `Write the rationale first: ${k.look}. ${SCREEN}${mock ? MOCK : ''}`, options: { defect: k.defect, none: NONE }, floor: FLOOR, personReason: true, images: mock ? ['screen', 'mock'] : ['screen'] }]));
+const questions = (mock, floor) => Object.fromEntries(Object.entries(KINDS).map(([kind, k]) => [kind, { kind: 'choice', instructions: `Write the rationale first: ${k.look}. ${SCREEN}${mock ? MOCK : ''}`, options: { defect: k.defect, none: NONE }, floor, personReason: true, images: mock ? ['screen', 'mock'] : ['screen'] }]));
 // A measured blank strip: a band along a whole edge, at least STRIP.min of that side deep, in one colour (each channel
 // within STRIP.tolerance of the edge line's colour) with nothing in it (at most STRIP.content of its pixels off that
 // colour), and at least STRIP.contrast apart from the screen's main colour on some channel. The band grows inward while
@@ -159,7 +158,7 @@ export async function design(cfg, choice, screens, records) {
         const strips = blankStrips(s);
         const measured = [...strips.defects.map((d) => d.where), ...(strips.unresolved ? ['a plain band along an edge, which the approved mock could not be measured to compare'] : [])].join('; ');
         const withMock = !!mock;
-        const key = createHash('sha256').update(JSON.stringify([VERSION, s.sha256, s.mock?.sha256 ?? null, questions(withMock), measured, choice.route, choice.model])).digest('hex');
+        const key = createHash('sha256').update(JSON.stringify([VERSION, s.sha256, s.mock?.sha256 ?? null, questions(withMock, cfg.judge.floor), measured, choice.route, choice.model])).digest('hex');
         const hit = readCache(dir, key);
         const validDefect = (d) => !!d && typeof d === 'object' && Object.hasOwn(KINDS, d.kind) && typeof d.where === 'string' && !!d.where;
         const cached = hit?.route === choice.route && hit?.model === choice.model && Array.isArray(hit.defects) && hit.defects.every(validDefect) && Array.isArray(hit.unsure) && hit.unsure.every((kind) => typeof kind === 'string' && Object.hasOwn(KINDS, kind));
@@ -167,8 +166,8 @@ export async function design(cfg, choice, screens, records) {
         if (!cached) {
             call = `${records}/design-${stamp}-${n + 1}`;
             if (!backends.has(withMock))
-                backends.set(withMock, await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions(withMock), ASK_ATTEMPTS));
-            const answers = await askJudge(cfg, backends.get(withMock), choice, { screen: withMock ? 'a screenshot next to its approved mock' : 'a screenshot', ...(measured && { measured_from_pixels: measured }) }, questions(withMock), { screen: shot, ...(mock && { mock }) });
+                backends.set(withMock, await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions(withMock, cfg.judge.floor), ASK_ATTEMPTS));
+            const answers = await askJudge(cfg, backends.get(withMock), choice, { screen: withMock ? 'a screenshot next to its approved mock' : 'a screenshot', ...(measured && { measured_from_pixels: measured }) }, questions(withMock, cfg.judge.floor), { screen: shot, ...(mock && { mock }) });
             judge = {
                 defects: Object.entries(answers).filter(([, a]) => a.answer === 'defect').map(([kind, a]) => ({ kind, where: (a.personReason || a.rationale || 'not named').slice(0, 200) })),
                 unsure: Object.entries(answers).filter(([, a]) => a.abstained).map(([kind]) => kind),

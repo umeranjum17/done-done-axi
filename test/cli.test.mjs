@@ -2225,6 +2225,8 @@ const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prom
 appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
+// The coverage lists: every capture names the outcome's parts, and shows the parts whose needle its text holds.
+const covers = Object.entries(stub.shows ?? {}).filter(([needle]) => String(state.capture ?? '').includes(needle)).flatMap(([, parts]) => parts);
 if (p === 'error') process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 0);
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
 // stream-json prints one event per line; the after events come after the result.
@@ -2232,11 +2234,11 @@ const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
 const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
 const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
 if (stub.stderr) process.stderr.write(stub.stderr);
-process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale } } }) + after);
+process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale, parts: stub.parts ?? [], covers } } }) + after);
 `,
     { mode: 0o755 },
   );
-  const stub = (a, li = loggedIn, events = [], after = [], stderr = '') => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', rationale: STUB_RATIONALE, events, after, stderr }));
+  const stub = (a, li = loggedIn, events = [], after = [], stderr = '', coverage = {}) => writeFileSync(join(stubDir, 'stub.json'), JSON.stringify({ loggedIn: li, answer: a, reason: 'The screen shows the notes list.', rationale: STUB_RATIONALE, events, after, stderr, ...coverage }));
   stub(answer);
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const floorLine = floor === undefined ? '' : `  floor: ${floor}\n`;
@@ -2483,6 +2485,28 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
   assert.ok(text, 'the JSON capture is sent as text');
   const sent = JSON.parse(text.state.capture);
   assert.deepEqual(sent, { checks }, 'every width and frame reaches the judge, none cut');
+});
+
+test('an outcome that names two widths passes only once a passing capture shows each one', () => {
+  const j = judgeSetup(CORRECT);
+  const shows = { '"width":390': ['390 wide'], '"width":1440': ['1440 wide'] };
+  j.stub(CORRECT, true, [], [], '', { parts: ['390 wide', '1440 wide'], shows });
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const w390 = join(j.dir, 'widths-390.json');
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const outcome = 'the sent message shows at the bottom of the thread at 390 and 1440 wide';
+  const one = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`);
+  assert.equal(one.code, 3, 'a 390 capture alone leaves 1440 unshown: inconclusive, never a pass');
+  assert.ok(toon(one).findings.some((f) => f.level === 'inconclusive' && /1440 wide/.test(f.why)), one.out);
+  const both = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(both.code, 0, both.out);
+  assert.deepEqual(toon(both).judge.judged.map((x) => [x.verdict, x.cached, x.covers]), [['pass', true, ['390 wide']], ['pass', false, ['1440 wide']]], 'the 390 verdict is cached with its coverage');
+  assert.match(j.calls()[0].argv.join(' '), /"covers"/, 'the judge asks the agent for the coverage lists');
 });
 
 test('check judges text evidence too, and a failed plain check stops with its cause, unjudged', () => {

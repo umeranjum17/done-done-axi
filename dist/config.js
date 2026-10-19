@@ -351,7 +351,7 @@ judge:
   # route: answerer:opencode
   # The judge's model; empty means that agent's agent_config model, or Luna for pi.
   model: ""
-  # The check and receipt judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass. Triage and the design check keep their own floors.
+  # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.
   floor: 0.7
 `;
 }
