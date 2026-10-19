@@ -2225,8 +2225,10 @@ const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prom
 appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
-// The coverage lists: every capture names the outcome's parts, and shows the parts whose needle its text holds.
-const covers = Object.entries(stub.shows ?? {}).filter(([needle]) => String(state.capture ?? '').includes(needle)).flatMap(([, parts]) => parts);
+// The coverage lists: every capture names the outcome's parts, and shows the positions whose needle its text holds.
+const shown = Object.entries(stub.shows ?? {}).filter(([needle]) => String(state.capture ?? '').includes(needle)).map(([, s]) => s);
+const covers = shown.flatMap((s) => s.covers);
+const parts = shown.at(-1)?.parts ?? stub.parts ?? [];
 if (p === 'error') process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 0);
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
 // stream-json prints one event per line; the after events come after the result.
@@ -2234,7 +2236,7 @@ const lines = (es) => es.map((e) => JSON.stringify(e) + '\\n').join('');
 const streamed = process.argv.includes('stream-json') ? lines([{ type: 'system', subtype: 'init' }, ...(stub.events ?? [])]) : '';
 const after = process.argv.includes('stream-json') && stub.after?.length ? '\\n' + lines(stub.after) : '';
 if (stub.stderr) process.stderr.write(stub.stderr);
-const lists = stub.noLists ? {} : { parts: stub.parts ?? [], covers };
+const lists = stub.noLists ? {} : { parts, covers };
 process.stdout.write(streamed + JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '', structured_output: { relevance: { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale, ...lists } } }) + after);
 `,
     { mode: 0o755 },
@@ -2490,7 +2492,7 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
 
 test('an outcome that names two widths passes only once a passing capture shows each one', () => {
   const j = judgeSetup(CORRECT);
-  const shows = { '"width":390': ['390 wide'], '"width":1440': ['1440 wide'] };
+  const shows = { '"width":390': { covers: [0] }, '"width":1440': { covers: [1] } };
   j.stub(CORRECT, true, [], [], '', { parts: ['390 wide', '1440 wide'], shows });
   const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
   const w390 = join(j.dir, 'widths-390.json');
@@ -2506,8 +2508,25 @@ test('an outcome that names two widths passes only once a passing capture shows 
   assert.ok(toon(one).findings.some((f) => f.level === 'inconclusive' && /1440 wide/.test(f.why)), one.out);
   const both = j.dd('check', '--outcome', outcome, `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
   assert.equal(both.code, 0, both.out);
-  assert.deepEqual(toon(both).judge.judged.map((x) => [x.verdict, x.cached, x.covers]), [['pass', true, ['390 wide']], ['pass', false, ['1440 wide']]], 'the 390 verdict is cached with its coverage');
+  assert.deepEqual(toon(both).judge.judged.map((x) => [x.verdict, x.cached, x.covers]), [['pass', true, [0]], ['pass', false, [1]]], 'the 390 verdict is cached with its coverage');
   assert.match(j.calls()[0].argv.join(' '), /"covers"/, 'the judge asks the agent for the coverage lists');
+});
+
+test('two captures that name the same part differently still cover it, since the check reads positions', () => {
+  const j = judgeSetup(CORRECT);
+  const shows = { '"width":390': { parts: ['390 wide', '1440 wide'], covers: [0] }, '"width":1440': { parts: ['390 wide', '1440px'], covers: [1] } };
+  j.stub(CORRECT, true, [], [], '', { shows });
+  const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
+  const w390 = join(j.dir, 'widths-390.json');
+  const w1440 = join(j.dir, 'widths-1440.json');
+  writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  assert.equal(r.code, 0, r.out);
+  const mixed = `.proof/${toon(r).run_id}`;
+  const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
+  assert.equal(both.code, 0, 'each capture shows one of the two parts, so no part is missing');
+  assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
 });
 
 test('a judge reply that leaves out the coverage lists is asked again, then stops the check', () => {

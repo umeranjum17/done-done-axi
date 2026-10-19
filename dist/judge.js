@@ -10,13 +10,13 @@ const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 6; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 7; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
     unclear: 'The screenshot cannot settle it: it is unreadable, or the outcome names nothing that could be visible on a screen.',
 };
-const COVERAGE_PROPS = { parts: { type: 'array', items: { type: 'string' } }, covers: { type: 'array', items: { type: 'string' } } };
+const COVERAGE_PROPS = { parts: { type: 'array', items: { type: 'string' } }, covers: { type: 'array', items: { type: 'integer' } } };
 const QUESTION = {
     kind: 'choice',
     instructions: 'The image is a screenshot cited as proof that the outcome in the state was achieved. Judge only what is visible in it. Locate the element the outcome names first (for example the newest message, which sits at the bottom of a thread, or the control or value it says is shown), then quote the text or state you see there, and decide from that quote. Write the rationale first, with the quote.',
@@ -30,8 +30,9 @@ const TEXT_OPTIONS = {
     unclear: 'The text cannot settle it: it is unreadable, or the outcome names nothing this output could show.',
 };
 // The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
-// capture, so every capture lists the parts the outcome names and the parts it shows. The check reads those lists.
-const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the parts this capture itself shows, with the same labels.';
+// capture, so every capture lists the parts the outcome names, in that order, and the positions of the ones it shows. Each
+// capture is its own model call, so the check compares positions, never the labels those calls write.
+const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, in the order the outcome names them, as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the position in parts (0 for the first, 1 for the next) of each part this capture itself shows.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION = {
     kind: 'choice',
@@ -138,6 +139,8 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
 // A coverage list as the model gave it: its labels, trimmed, none repeated. undefined when the reply gave no such list, so a
 // reply that leaves one out is unreadable rather than a capture that needs no part and shows nothing.
 const list = (x) => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? [...new Set(x.map((s) => s.trim()).filter(Boolean))] : undefined);
+// A covers list as the model gave it: positions in its parts list, none repeated. undefined when the reply gave none.
+const positions = (x) => (Array.isArray(x) && x.every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0) ? [...new Set(x)].sort((a, b) => a - b) : undefined);
 const lists = (a, k) => a?.raw?.[k];
 // The image to send: the original when it already fits, else a downscaled PNG; a reason when neither works.
 export function prepare(c) {
@@ -157,7 +160,7 @@ export async function askJudge(cfg, be, choice, state, questions, images) {
     const malformed = (r) => Object.entries(questions).filter(([k, q]) => /^(malformed|no answer)/.test(be.resolve(q, r[k]).reason ?? '')).map(([k]) => k);
     // The coverage rule reads the lists a reply carries, so a raw route that leaves one out has not answered: without them the
     // rule would silently require no part. The key route returns no raw answer, so it requires no part (docs/reference.md).
-    const noLists = (r) => (Object.hasOwn(KEY_ROUTES, choice.route) ? [] : Object.keys(questions).filter((k) => 'coverage' in questions[k] && (list(lists(r[k], k)?.parts) === undefined || list(lists(r[k], k)?.covers) === undefined)));
+    const noLists = (r) => (Object.hasOwn(KEY_ROUTES, choice.route) ? [] : Object.keys(questions).filter((k) => 'coverage' in questions[k] && (list(lists(r[k], k)?.parts) === undefined || positions(lists(r[k], k)?.covers) === undefined)));
     const unreadable = (r) => [...malformed(r), ...noLists(r)];
     try {
         const ask = () => be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` })));
@@ -257,14 +260,20 @@ export async function judge(cfg, choose, outcome, captures, records) {
         // The coverage lists come from the reply's raw answer; a route that does not return them requires no part.
         const reply = lists(a, 'relevance');
         const parts = list(reply?.parts);
-        const covers = list(reply?.covers);
+        const covers = positions(reply?.covers);
         const coverage = parts?.length && covers ? { parts, covers } : {};
         const verdict = a.abstained ? { ...row, verdict: 'unsure', reason: `not confident enough (${a.reason})`, ...seen, ...coverage, cached: false }
             : { ...row, verdict: a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason, ...seen, ...coverage, cached: false };
         writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
         judged.push(verdict);
     }
-    const named = new Set(judged.flatMap((r) => r.parts ?? []));
-    const shown = new Set(judged.filter((r) => r.verdict === 'pass').flatMap((r) => r.covers ?? []));
-    return { judged, notJudged, choice, missing: [...named].filter((p) => !shown.has(p)) };
+    const named = [];
+    const shown = new Set();
+    for (const r of judged) {
+        (r.parts ?? []).forEach((p, i) => { named[i] ??= p; });
+        if (r.verdict === 'pass')
+            for (const i of r.covers ?? [])
+                shown.add(i);
+    }
+    return { judged, notJudged, choice, missing: named.filter((_, i) => !shown.has(i)) };
 }
