@@ -315,7 +315,7 @@ test('init --journey refuses an absolute path inside the repo and names the rela
 
 test('two repos never see each other\'s reuse ledger', () => {
   const capture = (t) => {
-    const r = t.dd('run', '--', 'cp ../screen.png "$DONE_DONE_EVIDENCE_ROOT/home.png"');
+    const r = t.dd('run', '--', `node -e "require('fs').copyFileSync('../screen.png', process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png')"`);
     assert.equal(r.code, 0, r.out);
     return toon(r).evidence[0];
   };
@@ -378,7 +378,7 @@ test('an absolute evidence.root is used as-is, not joined under the repo', () =>
   const root = join(dir, 'proof-outside');
   writeFileSync(join(repo, '.done-done.yaml'), `app: notes\nevidence:\n  root: ${JSON.stringify(root)}\n`);
   sh('commit', '-qam', 'absolute root');
-  const r = dd('run', '--', 'echo added: milk > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log');
+  const r = dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/' + process.env.DONE_DONE_RUN_ID + '.log', 'added: milk\\n')"`);
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
   assert.deepEqual(d.evidence, [join(root, d.run_id, `${d.run_id}.log`)], 'evidence is written and shown at the absolute root');
@@ -993,16 +993,14 @@ test('init --journey records the command a run executes, shell syntax included',
   assert.equal(run.code, 0, run.out);
   const [file] = toon(run).evidence;
   assert.equal(readFileSync(file, 'utf8'), 'added\n');
-  const adhoc = dd('run', '--', recipe);
-  assert.equal(adhoc.code, 0, adhoc.out);
-  assert.ok(!toon(adhoc).help.join('\n').includes('not in the repo'), 'the same command run ad hoc matches the recorded recipe');
+  assert.equal(dd('run', '--', recipe).code, 2, 'the recipe holds the literal variable, so run -- refuses it; only the recorded journey expands it');
 });
 
 test('a command after -- keeps each word as it was given, in a run and in a recorded journey', () => {
   const { repo, sh, dd } = bareRepo();
   // The argument holds a space and shell metacharacters: joining the words bare and letting the shell split the
-  // string again drops its quoting, and cp then stops with "missing file operand".
-  const words = ['sh', '-c', 'cp "a b.png" "$DONE_DONE_EVIDENCE_ROOT/a b.png"'];
+  // string again drops its quoting, and node then stops with a syntax error.
+  const words = ['node', '-e', 'const fs = require("fs"), d = process.env.DONE_DONE_EVIDENCE_ROOT; fs.mkdirSync(d, { recursive: true }); fs.copyFileSync("a b.png", d + "/a b.png")'];
   writeFileSync(join(repo, 'a b.png'), 'captured\n');
   sh('add', '-A');
   sh('commit', '-qm', 'fixture');
@@ -1013,7 +1011,7 @@ test('a command after -- keeps each word as it was given, in a run and in a reco
   assert.equal(readFileSync(copied, 'utf8'), 'captured\n');
   // Recorded as a journey, the same words re-run from the repo exactly as they were given.
   assert.equal(dd('init', '--journey', 'copy', '--', ...words).code, 2);
-  assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).journeys.copy.command, `sh -c 'cp "a b.png" "$DONE_DONE_EVIDENCE_ROOT/a b.png"'`);
+  assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).journeys.copy.command, `node -e 'const fs = require("fs"), d = process.env.DONE_DONE_EVIDENCE_ROOT; fs.mkdirSync(d, { recursive: true }); fs.copyFileSync("a b.png", d + "/a b.png")'`);
   sh('add', '-A');
   sh('commit', '-qm', 'recipe');
   const run = dd('run', 'copy');
@@ -1057,7 +1055,7 @@ test('init --journey rejects a blank command instead of recording an empty recip
 
 test('a run command outside the repo hints that its recipe is not recorded', () => {
   const { dd, shots } = setup();
-  const adhoc = dd('run', '--', 'echo added: milk > $DONE_DONE_EVIDENCE_ROOT/adhoc.log');
+  const adhoc = dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/adhoc.log', 'added: milk')"`);
   assert.equal(adhoc.code, 0, adhoc.out);
   assert.match(toon(adhoc).help.join('\n'), /not in the repo.*done-done init --journey <name> --/);
   const recorded = dd('run', 'shots');
@@ -1786,9 +1784,9 @@ test('overlapping runs from two checkouts sharing the evidence root never claim 
   };
   // Lane 1 holds a run open while lane 2 runs a failing capture and a passing one into the same root.
   const open = toon(dd('run', '--open'));
-  const failed = in2('run', '--', 'echo broken > $DONE_DONE_EVIDENCE_ROOT/b.log; exit 1');
+  const failed = in2('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/b.log', 'broken'); process.exit(1)"`);
   assert.equal(failed.code, 1, failed.out);
-  const passed = in2('run', '--', 'echo added: milk > $DONE_DONE_EVIDENCE_ROOT/c.log');
+  const passed = in2('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/c.log', 'added: milk')"`);
   assert.equal(passed.code, 0, passed.out);
   writeFileSync(join(open.evidence_root, 'a.log'), 'added: milk\n');
   const closed = dd('run', '--close', open.run_id);

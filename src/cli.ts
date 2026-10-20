@@ -480,9 +480,8 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
 }
 
 async function cmdRun(argv: string[]): Promise<number> {
-  const words = argv.indexOf('--') < 0 ? [] : argv.slice(argv.indexOf('--') + 1);
-  const literal = words.length < 2 ? undefined : words.find((a, i) => words[i - 1] !== '-c' && /\$\{?DONE_DONE_EVIDENCE_ROOT\b/.test(a));
-  if (literal) throw new UsageError(`the argument ${JSON.stringify(literal)} holds the literal text $DONE_DONE_EVIDENCE_ROOT: several words after -- are each quoted for the shell, so it would name a folder with that name. Use the env var inside the script, or double quotes`);
+  const literal = argv.find((a) => /\$\{?DONE_DONE_EVIDENCE_ROOT\b/.test(a));
+  if (literal) throw new UsageError(`the argument ${JSON.stringify(literal)} holds the literal text $DONE_DONE_EVIDENCE_ROOT: the shell did not expand it (single quotes?), so it would name a folder with that name. Use the env var inside the script, or double quotes`);
   const dash = argv.indexOf('--');
   const { values, positionals } = parseArgs({
     args: dash < 0 ? argv : argv.slice(0, dash),
