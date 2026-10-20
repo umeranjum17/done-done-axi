@@ -38,7 +38,7 @@ export type Config = {
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
-  checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean }; // the last two switch on lint's optional size rules
+  checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or openai:key, set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
@@ -107,6 +107,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'checks.fix_title': { scope: 'repo', type: 'string' },
   'checks.upstream_catch_up': { scope: 'repo', type: 'boolean' },
   'checks.moved_from': { scope: 'repo', type: 'boolean' },
+  'checks.generated_paths': { scope: 'repo', type: 'string[]' },
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
   'judge.floor': { scope: 'global', type: 'number' },
@@ -287,7 +288,7 @@ function defaultConfig(repo: string): Config {
     base_ref: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
-    checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false },
+    checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     judge: { route: '', model: '', floor: 0.7, env_file: '' },
     trusted: false,
     from: {},

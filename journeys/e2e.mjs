@@ -181,10 +181,13 @@ esac
 `, { mode: 0o755 });
   env.PATH = `${ghDir}:${env.PATH}`;
   const config = readFileSync(join(repo, '.done-done.yaml'), 'utf8').replace(/\n*$/, '\n');
-  const bigPr = (checks) => { writeFileSync(join(repo, '.done-done.yaml'), config + checks); return drive(checks ? 0 : 1, 'lint', 'https://github.com/acme/tool/pull/7', lintDir); };
+  const bigPr = (checks, code = checks ? 0 : 1) => { writeFileSync(join(repo, '.done-done.yaml'), config + checks); return drive(code, 'lint', 'https://github.com/acme/tool/pull/7', lintDir); };
   assert.match(bigPr(''), /^FAIL: 1100 added non-generated lines/);
   assert.equal(bigPr('checks:\n  upstream_catch_up: true\n').trim(), 'PASS');
   assert.equal(bigPr('checks:\n  moved_from: true\n').trim(), 'PASS');
+  // checks.generated_paths: the PR's one file, lib/big.js, is the repo's own generated file. Unset it counts (FAIL above); a glob that covers it passes, one that misses it still fails.
+  assert.equal(bigPr('checks:\n  generated_paths: ["lib/**"]\n').trim(), 'PASS');
+  assert.match(bigPr('checks:\n  generated_paths: ["gen/**"]\n', 1), /^FAIL: 1100 added non-generated lines/);
   writeFileSync(join(repo, '.done-done.yaml'), config);
 
   // Proof for the outer run: transcript plus the fixture's own captures.
