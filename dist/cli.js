@@ -209,7 +209,7 @@ const COMMANDS = {
   on the machine that holds it. Needs the history back to the receipt head (fetch-depth: 0). Exit 0 PASS, 1 FAIL, 2 usage error`],
     },
     lint: {
-        usage: [['done-done lint <PR URL | report file> <evidence folder>', 'merge gate on a worker\'s claim: prints PASS or FAIL: <reason>; the rules need no judge or model, and two optional size rules are config keys']],
+        usage: [['done-done lint <PR URL | report file> <evidence folder>', 'merge gate on a worker\'s claim: prints PASS, WARN: <reason> or FAIL: <reason>; the rules need no judge or model, and two optional size rules are config keys']],
         flags: [],
         more: [`lint: a deterministic gate that is on whenever you call it. The newest "## Checks" block of the PR body (gh pr view) or report file needs
   outcome:, repro:, proof: and evidence: lines. proof names a command or path, and the repo's done-done-verify-<app> skill, or says "no verify skill"
@@ -217,10 +217,11 @@ const COMMANDS = {
   each exists, is non-empty and is newer than the folder itself; no two are byte-identical; at least one has a hash no other PR used
   (hash store lint.hashes in ~/.done-done, or $DONE_DONE_HOME). "evidence: not proven: <cause>" passes. A PR with 1,000 or more added
   non-generated lines fails (lockfiles, vendor/, dist/, LICENSE-type files, deletions and moved lines do not count); a bot PR passes.
+  A PR URL whose diff changes a src/ file and no journeys/ file prints WARN instead of PASS (still exit 0): run the journey and commit it before the PR opens.
   In .done-done.yaml, checks.upstream_catch_up: true also drops a fork's upstream catch-up lines, and checks.moved_from: true drops lines
   a "moved-from: <owner>/<repo>@<ref> <dst>=<src>" body line says came from a repo of the same owner; both are off by default.
   checks.generated_paths: ["gen/**", "*.snap"] adds your own globs to the generated files above; the default is none.
-  Every run is appended to lint.log next to the store. Exit 0 PASS, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
+  Every run is appended to lint.log next to the store. Exit 0 PASS or WARN, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
     },
     status: {
         usage: [['done-done status [--run <run-id>]', "show a run's steps, result, findings and next step"]],
@@ -3583,7 +3584,7 @@ function cmdLint(argv) {
         throw new UsageError('lint needs a PR URL or report file, then the evidence folder', 'Re-run as: done-done lint <PR URL | report file> <evidence folder>');
     const { checks } = loadConfig(process.cwd());
     const v = lint(positionals[0], positionals[1], home(), checks);
-    console.log(v.ok ? 'PASS' : `FAIL: ${v.why}`);
+    console.log(!v.ok ? `FAIL: ${v.why}` : v.warn ? `WARN: ${v.warn}` : 'PASS');
     return v.ok ? PASS : FAIL;
 }
 async function cmdDesign(argv) {

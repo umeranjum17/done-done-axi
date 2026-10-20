@@ -57,7 +57,8 @@ A journey that \`spends\` runs only after the user approves spending: \`done-don
 
 For a web page, \`done-done look <url>\` is the look step a journey calls: it captures the page at a 390x844 phone viewport
 with its page-check record and exits 1 on squashed, clipped or cut-off UI, naming each element. A hit fails the journey;
-never wrap it in \`|| true\` or log the exit and go on. A journey in \`.done-done.yaml\` that calls it:
+never wrap it in \`|| true\` or log the exit and go on. A claim that a phone UI works needs a 390 px capture of the real
+page and the page's scroll-container count as proof: a mock, a different width or a claim with no count is not proof. A journey in \`.done-done.yaml\` that calls it:
 
 \`\`\`yaml
 journeys:
@@ -68,7 +69,8 @@ journeys:
 To gate a worker's claim cheaply, \`done-done lint <PR URL | report file> <evidence folder>\` reads the newest \`## Checks\` block
 with no judge or model and prints \`PASS\` or \`FAIL: <reason>\` (exit 1 on a fail): missing lines, evidence that is absent,
 empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
-\`evidence: not proven: <cause>\` passes. Fix the cause it names and re-run; never edit the evidence to get past it.
+\`evidence: not proven: <cause>\` passes. A PR URL whose diff changes \`src/\` and no \`journeys/\` file prints \`WARN: <reason>\` (exit 0):
+run the journey, commit it, then open the PR, in that order. Fix the cause it names and re-run; never edit the evidence to get past it.
 
 A CI job gets no model and no key, so it never runs \`check\`, \`run\` or \`verify\`. Proof runs on the desktop, then commit the
 receipt it wrote (\`<evidence root>/.done-done/receipts/<head>.json\`) into \`.done-done-receipts/\` in a follow-up commit. CI runs only

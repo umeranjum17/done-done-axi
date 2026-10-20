@@ -6652,6 +6652,25 @@ test('lint passes a real claim, fails an empty, copied or reused one, and logs e
   assert.equal(dd('lint', 'only-one-arg').code, 2);
 });
 
+test('lint warns on a PR that changes src/ and no journeys/ file, and only then', () => {
+  const { dir, dd, env } = setup();
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncat ${JSON.stringify(join(dir, 'pr.json'))}\n`, { mode: 0o755 });
+  env.PATH = `${bin}:${env.PATH}`;
+  const lintFiles = (...paths) => {
+    writeFileSync(join(dir, 'pr.json'), JSON.stringify({
+      author: { login: 'umer' }, title: 'feat: x', headRefOid: 'h', headRefName: 'fm/warn', baseRefOid: 'b', files: paths.map((path) => ({ path, additions: 5 })),
+      body: '## Checks\noutcome: a user can lint\nrepro: n/a: no bug\nproof: no verify skill - ran node dist/cli.js lint\nevidence: not proven: no device in reach\n',
+    }));
+    return dd('lint', 'https://github.com/acme/tool/pull/9', dir);
+  };
+  assert.match(lintFiles('src/a.ts', 'README.md').out, /^WARN: .*journeys\//);
+  assert.equal(lintFiles('src/a.ts').code, 0, 'a warning does not block');
+  assert.deepEqual(lintFiles('src/a.ts', 'journeys/a.mjs'), { code: 0, out: 'PASS\n' });
+  assert.deepEqual(lintFiles('docs/a.md'), { code: 0, out: 'PASS\n' });
+});
+
 test('lint counts a big PR whole by default, and drops upstream catch-up, moved-from or repo-generated lines only when the repo says so', () => {
   const { dir, repo, env, dd } = setup();
   const lines = (from, to) => Array.from({ length: to - from }, (_, i) => `const v${from + i} = ${from + i};`);

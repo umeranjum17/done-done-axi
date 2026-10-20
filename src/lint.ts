@@ -14,7 +14,7 @@ export const SIZE_LIMIT = 1000;
 const FIX_TITLE = /^(fix|bugfix|hotfix)\b/i;
 const NOT_APPLICABLE = /^n\/?a\b/i;
 
-type Verdict = { ok: boolean; why: string; head: string };
+type Verdict = { ok: boolean; why: string; head: string; warn?: string };
 type Gh = (...args: string[]) => { status: number | null; stdout: string; stderr: string };
 
 const gh: Gh = (...args) => {
@@ -73,9 +73,11 @@ const sha256 = (p: string) => createHash('sha256').update(readFileSync(p)).diges
 // src: a PR URL or a report file; ev: the folder the evidence names are relative to; dir: where the hash store and log live.
 export function lint(src: string, ev: string, dir: string, rules: Rules = {}, run: Gh = gh): Verdict {
   const isGenerated = generatedBy(rules.generated_paths);
+  let warn = ''; // set for a PR that touches src/ with no journeys/ file; it only softens a PASS
   const log = (v: Verdict) => {
+    if (v.ok && warn) v = { ...v, warn };
     mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, 'lint.log'), `${new Date().toISOString()}\t${src}\t${v.head}\t${v.ok ? 'pass' : 'fail'}\t${v.why}\n`);
+    appendFileSync(join(dir, 'lint.log'), `${new Date().toISOString()}\t${src}\t${v.head}\t${v.ok ? (v.warn ? 'warn' : 'pass') : 'fail'}\t${v.why}\n`);
     return v;
   };
   let body = '', title = '', head = '-', task = '';
@@ -91,6 +93,8 @@ export function lint(src: string, ev: string, dir: string, rules: Rules = {}, ru
     task = String(pr.headRefName ?? '').split('/').pop()!;
     const author: string = pr.author?.login ?? '';
     if (/^(app\/)?(dependabot|renovate)(\[bot\])?$/.test(author)) return log({ ok: true, why: 'bot', head });
+    const paths: string[] = (pr.files ?? []).map((f: { path?: string }) => f.path ?? '');
+    if (paths.some((p) => p.startsWith('src/')) && !paths.some((p) => p.startsWith('journeys/'))) warn = 'the diff changes src/ and no journeys/ file: run the journey, commit it, then open the PR';
     let size = (pr.files ?? []).reduce((n: number, f: { path?: string; additions?: number }) => n + (isGenerated(f.path ?? '') ? 0 : f.additions ?? 0), 0);
     if (size >= SIZE_LIMIT) {
       const d = run('pr', 'diff', src);
