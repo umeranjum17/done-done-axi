@@ -474,6 +474,19 @@ test('receipt records a passing check for the head, then verifies', () => {
   assert.equal(toon(v).result, 'pass');
 });
 
+test('a receipt from a Checks block records the verify skill it names, and --verify shows it', () => {
+  const { repo, dd, head, shots } = setup();
+  const { files } = shots();
+  const body = join(repo, '..', 'pr.md');
+  writeFileSync(body, `## Checks\noutcome: home and settings render\nrepro: n/a: no bug\nproof: done-done-verify-notes: \`done-done run shots\`\nevidence: ${files.join(', ')}\n`);
+  const r = dd('receipt', '--from', body);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(toon(r).skill, 'done-done-verify-notes');
+  assert.equal(JSON.parse(readFileSync(join(repo, toon(r).receipt), 'utf8')).skill, 'done-done-verify-notes');
+  const v = dd('receipt', '--verify', head());
+  assert.equal(toon(v).skill, 'done-done-verify-notes');
+});
+
 test('receipt is not written when the check fails', () => {
   const { dd, head } = setup();
   const r = dd('receipt', '--outcome', 'nothing here', '.proof/nope/session.log');

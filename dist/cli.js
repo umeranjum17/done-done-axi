@@ -568,21 +568,25 @@ function claimFromChecks(body, title, repo, cfg, out) {
     if (!/[/`]|\.\w+\b|\b(npm|pnpm|yarn|npx|node|bash|sh|python3?|cargo|go|gradle|make|adb|xcrun|done-done)\b/.test(f.proof))
         out.push({ level: 'fail', why: 'proof names no command or path' });
     const skill = cfg.skill.split('/').pop();
+    let ran;
     if (existsSync(join(repo, cfg.skill))) {
         if (!f.proof.includes(skill))
             out.push({ level: 'fail', why: `proof does not name the project's verify skill ${skill}` });
+        else
+            ran = skill;
     }
     else if (!/verify-|no verify skill/i.test(f.proof))
         out.push({ level: 'fail', why: 'proof names no verify skill and does not say "no verify skill"' });
     if (/^n\/?a\b/i.test(f.repro) && new RegExp(cfg.checks.fix_title, 'i').test(title))
         out.push({ level: 'fail', why: 'a fix needs a repro, not n/a' });
     const np = f.evidence.match(/^not proven\s*:?\s*(.*)$/i);
+    ran ??= f.proof.match(/[\w.-]*verify-[\w-]+/i)?.[0];
     if (np)
         return { outcome: f.outcome, files: [], title, notProven: np[1] || 'no cause given' };
     const files = f.evidence.split(/[\s,]+/).map((t) => t.replace(/^[`'"(]+|[`'"),.;]+$/g, '')).filter((t) => /\.\w{1,10}$/.test(t));
     if (!files.length)
         out.push({ level: 'fail', why: 'evidence names no files' });
-    return { outcome: f.outcome, files, title };
+    return { outcome: f.outcome, files, title, ...(ran && { skill: ran }) };
 }
 // A PR body also names its head branch, which is the claim a detached-HEAD checkout is checking.
 function readSource(from) {
@@ -826,7 +830,7 @@ async function runCheck(argv, run) {
         mkdirSync(dirname(ledger), { recursive: true });
         appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
     }
-    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, files, cited, head: now, findings };
+    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, head: now, findings };
 }
 async function cmdCheck(argv) {
     const r = await runCheck(argv);
@@ -913,7 +917,7 @@ function verifyReceipt(repo, cfg, headArg) {
     }
     if (bad.length)
         return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, help: ['This receipt is valid for this head.'] } };
+    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, help: ['This receipt is valid for this head.'] } };
 }
 async function cmdReceipt(argv) {
     const vi = argv.indexOf('--verify');
@@ -949,9 +953,9 @@ function recordReceipt(repo, cfg, r) {
     // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
     if (!r.cited.length)
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', result: 'pass', at: new Date().toISOString(), files: r.cited, judge: r.judgeBlock };
+    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, judge: r.judgeBlock };
     const path = writeReceipt(cfg, rec);
-    const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, files: rec.files.length, receipt: shown(repo, path) };
+    const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, receipt: shown(repo, path) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
@@ -1646,7 +1650,7 @@ async function runSteps(dir) {
         if (p.end)
             return finish(p.end.result, p.end.reason);
         begin('receipt');
-        const receipt = recordReceipt(run.repo, cfg, p.checked);
+        const receipt = recordReceipt(run.repo, cfg, { ...p.checked, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }) });
         log('receipt', receipt.result);
         run.receipt = receipt.result.receipt;
         set(step, receipt.code === PASS ? 'completed' : 'failed', { exit: receipt.code });
