@@ -18,6 +18,7 @@ import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix }
 import { design, KINDS } from './design.js';
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
+import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 
@@ -201,6 +202,17 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   overflow, squashed text, text clipped by its container and elements cut off by the left, right or top edge, writes the
   screenshot and its .dom.json record, and exits 1 naming each element, kind and text, 0 when there is none. A hit always
   fails: never wrap it in || true. Needs Chrome or Chromium (DONE_DONE_CHROME names the binary)`],
+  },
+  lint: {
+    usage: [['done-done lint <PR URL | report file> <evidence folder>', 'merge gate on a worker\'s claim: prints PASS or FAIL: <reason>; the rules need no judge, model or config']],
+    flags: [],
+    more: [`lint: a deterministic gate that is on whenever you call it. The newest "## Checks" block of the PR body (gh pr view) or report file needs
+  outcome:, repro:, proof: and evidence: lines. proof names a command or path, and the repo's verify-<app> skill, or says "no verify skill"
+  when the repo (the current folder) has none; repro is not n/a on a fix PR. evidence names files in the evidence folder (or absolute):
+  each exists, is non-empty and is newer than the folder itself; no two are byte-identical; at least one has a hash no other PR used
+  (hash store lint.hashes in ~/.done-done, or $DONE_DONE_HOME). "evidence: not proven: <cause>" passes. A PR with 1,000 or more added
+  non-generated lines fails (lockfiles, vendor/, dist/, LICENSE-type files, deletions and moved lines do not count); a bot PR passes.
+  Every run is appended to lint.log next to the store. Exit 0 PASS, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
   },
   status: {
     usage: [['done-done status [--run <run-id>]', "show a run's steps, result, findings and next step"]],
@@ -3275,6 +3287,14 @@ async function cmdLook(argv: string[]): Promise<number> {
   return hits.length ? FAIL : PASS;
 }
 
+function cmdLint(argv: string[]): number {
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  if (positionals.length !== 2) throw new UsageError('lint needs a PR URL or report file, then the evidence folder', 'Re-run as: done-done lint <PR URL | report file> <evidence folder>');
+  const v = lint(positionals[0], positionals[1], home());
+  console.log(v.ok ? 'PASS' : `FAIL: ${v.why}`);
+  return v.ok ? PASS : FAIL;
+}
+
 async function cmdDesign(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, options: { mock: { type: 'string', multiple: true } }, allowPositionals: true });
   const mocks = new Map<string, string>();
@@ -3382,6 +3402,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'maintain') return await cmdMaintain(rest);
     if (cmd === 'design') return await cmdDesign(rest);
     if (cmd === 'look') return await cmdLook(rest);
+    if (cmd === 'lint') return cmdLint(rest);
     if (cmd === 'status') return cmdStatus(rest);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);
