@@ -182,7 +182,7 @@ With your browser tool, for example chrome-devtools-axi: `overflow` and `overflo
 
 ### Look check
 
-`done-done look` is the look step a journey calls on a web page. It opens the page in headless Chrome at a 390x844 phone viewport (a mobile device at 1x scale), measures the look defects in the DOM, writes the screenshot with its page-check record next to it, and exits 1 on any hit, naming the element, the kind and its text. It is a measurement step, not a verdict: with no hit it ends `result: clean` (exit 0), never `pass`, and its capture is judged when a `check` or `verify` cites it. No model runs here, so the same page gives the same answer.
+`done-done look` is the look step a journey calls on a web page. It opens the page in headless Chrome at a 390x844 phone viewport (a mobile device at 1x scale), measures the look defects in the DOM, writes the screenshot with its page-check record next to it, and exits 1 on any hit, naming the element, the kind and its text. It is a measurement step, not a verdict: with no hit it ends `result: clean` (exit 0), never `pass`, and its capture is judged when a `check` or `verify` cites it. No model runs here, so the same page gives the same answer. A worker's claim that a phone UI works needs this 390 px capture of the real page, plus the page's scroll-container count, as proof; a mock or another width is not proof.
 
 ```sh
 done-done look http://127.0.0.1:3000/inbox --out "$DONE_DONE_EVIDENCE_ROOT/inbox.png"
@@ -223,12 +223,13 @@ journeys:
 
 ### Lint check
 
-`done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS` or `FAIL: <reason>` and exits 0, 1, or 2 on a usage error. A PR URL is read with `gh pr view`; a file is read as the report.
+`done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS`, `WARN: <reason>` or `FAIL: <reason>` and exits 0 (PASS or WARN), 1, or 2 on a usage error. A PR URL is read with `gh pr view`; a file is read as the report.
 
 - The newest `## Checks` block needs `outcome:`, `repro:`, `proof:` and `evidence:`.
 - `proof:` names a command or path, and the repo's `done-done-verify-<app>` skill (a legacy `verify-<app>` skill is read too); it may say `no verify skill` only when `.agents/skills/` in the current folder holds none.
 - `repro:` is not `n/a` when the PR title starts with `fix`, `bugfix` or `hotfix`.
 - `evidence: not proven: <cause>` passes.
+- A PR URL whose changed files include one under `src/` and none under `journeys/` prints `WARN` instead of `PASS` (exit 0; a `FAIL` still wins). It needs no config and never applies to a report file. The worker rule it backs: run the journey, commit it, then open the PR.
 - Otherwise each named file (relative to the evidence folder, or absolute) exists, is non-empty and is newer than the evidence folder itself; no two are byte-identical; and at least one has a hash no other PR used. Hashes are kept in `lint.hashes` and each run is appended to `lint.log`, both in `~/.done-done` (`$DONE_DONE_HOME`). A later lint of the same PR is not reuse.
 - A PR with 1,000 or more added non-generated lines fails. Lockfiles, `vendor/`, `dist/` and `LICENSE`-type files do not count, and neither do deletions or lines moved between files. A dependabot or renovate PR passes.
 - Two optional size rules, both off by default and switched on per repo in `.done-done.yaml` (read from the current folder; they apply to a PR URL, never a report file). With both off a big PR is counted exactly as above. Each runs only when the PR is still at 1,000 lines, and an API failure keeps the full count.
