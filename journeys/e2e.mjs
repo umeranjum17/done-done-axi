@@ -139,6 +139,14 @@ try {
   const fixed = lookRun('fixed', 0);
   assert.deepEqual([fixed.record.clipped_text, fixed.record.cut_off, fixed.record.squashed_text, fixed.record.overflow], [[], [], [], false]);
 
+  // The lint gate: a real claim passes; a claim naming a file that is not there fails with exit 1.
+  const lintDir = join(tmp, 'lint');
+  mkdirSync(lintDir);
+  writeFileSync(join(lintDir, 'run.log'), 'lint evidence\n');
+  const claim = (name, evidence) => { const f = join(lintDir, name); writeFileSync(f, `## Checks\noutcome: a user can lint a claim\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: ${evidence}\n`); return f; };
+  assert.equal(drive(0, 'lint', claim('pass.md', 'run.log'), lintDir).trim(), 'PASS');
+  assert.match(drive(1, 'lint', claim('fail.md', 'gone.log'), lintDir), /^FAIL: evidence file missing or empty/);
+
   // Proof for the outer run: transcript plus the fixture's own captures.
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, `${RUN_ID}.log`), log.join('\n') + '\n');

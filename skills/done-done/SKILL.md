@@ -46,6 +46,11 @@ journeys:
     command: done-done look http://127.0.0.1:3000/inbox --out "$DONE_DONE_EVIDENCE_ROOT/inbox.png"
 ```
 
+To gate a worker's claim cheaply, `done-done lint <PR URL | report file> <evidence folder>` reads the newest `## Checks` block
+with no judge or model and prints `PASS` or `FAIL: <reason>` (exit 1 on a fail): missing lines, evidence that is absent,
+empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
+`evidence: not proven: <cause>` passes. Fix the cause it names and re-run; never edit the evidence to get past it.
+
 done-done starts a coding agent the user chose. When it says no agent is set, ask the user which agent
 (and model) to use and save their answer with the command it prints; never choose one for them.
 

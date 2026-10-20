@@ -6599,3 +6599,41 @@ test('base_ref judges a text capture against its base text: identical text fails
   assert.equal(changed.code, 0, changed.out);
   assert.deepEqual(judgedOf(changed).map((x) => x.verdict), ['pass']);
 });
+
+test('lint passes a real claim, fails an empty, copied or reused one, and logs every run', () => {
+  const { dir, dd, env } = setup();
+  const claim = (name, evidence, repro = 'n/a: no bug') => {
+    const folder = join(dir, name);
+    mkdirSync(folder, { recursive: true });
+    const report = join(folder, 'report.md');
+    writeFileSync(report, `done\n\n## Checks\noutcome: a user can lint a claim\nrepro: ${repro}\nproof: no verify skill - ran node dist/cli.js lint\nevidence: ${evidence}\n`);
+    return { folder, report, lint: () => dd('lint', report, folder) };
+  };
+  const a = claim('task-a', 'one.log two.log');
+  writeFileSync(join(a.folder, 'one.log'), 'first state\n');
+  writeFileSync(join(a.folder, 'two.log'), 'second state\n');
+  assert.deepEqual(a.lint(), { code: 0, out: 'PASS\n' });
+  assert.equal(a.lint().code, 0, 'the same task linted again is not reuse');
+
+  const b = claim('task-b', 'one.log');
+  writeFileSync(join(b.folder, 'one.log'), 'first state\n');
+  assert.match(b.lint().out, /^FAIL: every evidence file was already used by another PR/);
+  assert.equal(b.lint().code, 1);
+
+  const c = claim('task-c', 'same.log copy.log');
+  writeFileSync(join(c.folder, 'same.log'), 'x\n');
+  writeFileSync(join(c.folder, 'copy.log'), 'x\n');
+  assert.match(c.lint().out, /byte-identical/);
+
+  const d = claim('task-d', 'empty.log');
+  writeFileSync(join(d.folder, 'empty.log'), '');
+  assert.match(d.lint().out, /^FAIL: evidence file missing or empty/);
+
+  assert.equal(claim('task-e', 'not proven: no device in reach').lint().out, 'PASS\n');
+  assert.match(claim('task-f', 'one.log', 'node x.js').lint().out, /^FAIL: evidence file missing/);
+
+  const log = readFileSync(join(env.DONE_DONE_HOME, 'lint.log'), 'utf8').trim().split('\n');
+  assert.equal(log.length, 8);
+  assert.deepEqual(log.map((l) => l.split('\t')[3]), ['pass', 'pass', 'fail', 'fail', 'fail', 'fail', 'pass', 'fail']);
+  assert.equal(dd('lint', 'only-one-arg').code, 2);
+});

@@ -221,6 +221,17 @@ journeys:
 | a hit of any kind | 1 |
 | bad flags, no Chrome, or the page did not load | 2 |
 
+### Lint check
+
+`done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, no config. It prints `PASS` or `FAIL: <reason>` and exits 0, 1, or 2 on a usage error. A PR URL is read with `gh pr view`; a file is read as the report.
+
+- The newest `## Checks` block needs `outcome:`, `repro:`, `proof:` and `evidence:`.
+- `proof:` names a command or path, and the repo's `verify-<app>` skill; it may say `no verify skill` only when `.agents/skills/` in the current folder holds none.
+- `repro:` is not `n/a` when the PR title starts with `fix`, `bugfix` or `hotfix`.
+- `evidence: not proven: <cause>` passes.
+- Otherwise each named file (relative to the evidence folder, or absolute) exists, is non-empty and is newer than the evidence folder itself; no two are byte-identical; and at least one has a hash no other PR used. Hashes are kept in `lint.hashes` and each run is appended to `lint.log`, both in `~/.done-done` (`$DONE_DONE_HOME`). A later lint of the same PR is not reuse.
+- A PR with 1,000 or more added non-generated lines fails. Lockfiles, `vendor/`, `dist/` and `LICENSE`-type files do not count, and neither do deletions or lines moved between files. A dependabot or renovate PR passes.
+
 ### Base-ref before
 
 A before/after change is judged as a pair. With `base_ref` set to a branch, tag or commit (for example `base_ref: origin/main`), `verify` drives the base ref too, after the head's drive and only when it passed:
