@@ -223,6 +223,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   non-generated lines fails (lockfiles, vendor/, dist/, LICENSE-type files, deletions and moved lines do not count); a bot PR passes.
   In .done-done.yaml, checks.upstream_catch_up: true also drops a fork's upstream catch-up lines, and checks.moved_from: true drops lines
   a "moved-from: <owner>/<repo>@<ref> <dst>=<src>" body line says came from a repo of the same owner; both are off by default.
+  checks.generated_paths: ["gen/**", "*.snap"] adds your own globs to the generated files above; the default is none.
   Every run is appended to lint.log next to the store. Exit 0 PASS, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
   },
   status: {

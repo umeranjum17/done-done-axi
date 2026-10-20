@@ -234,6 +234,7 @@ journeys:
 - Two optional size rules, both off by default and switched on per repo in `.done-done.yaml` (read from the current folder; they apply to a PR URL, never a report file). With both off a big PR is counted exactly as above. Each runs only when the PR is still at 1,000 lines, and an API failure keeps the full count.
   - `checks.upstream_catch_up: true`: in a fork, lines the parent repo already shipped are not authored here, so lint subtracts the changes between the PR's base and the merge base with the parent's default branch. A PR that merges in no new upstream commit loses nothing.
   - `checks.moved_from: true`: a line in the PR body `moved-from: <owner>/<repo>@<ref> <dst-prefix>=<src-prefix>` (more `dst=src` pairs may follow) cancels added lines that match, byte for byte after trimming, the file at the same path under `<src-prefix>` in that repo at `<ref>`. The source repo must have the PR's owner; authored lines still count.
+  - `checks.generated_paths: ["gen/**", "*.snap"]`: globs for the repo's own generated files, counted as generated beside the built-in ones above, so they stay out of the size count. Default none, so results do not change. Like the two rules above it applies to a PR URL, never a report file.
 
 ### Base-ref before
 
@@ -576,6 +577,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `evidence.ignore_paths` | `[]` |
 | `checks.fix_title` | `^(fix\|bugfix\|hotfix)\b`: titles that need a repro |
 | `checks.upstream_catch_up` | `false`; `true` lets `lint` subtract a fork's upstream catch-up lines from the size count, see [Lint check](#lint-check) |
+| `checks.generated_paths` | `[]`; globs `lint` counts as generated beside lockfiles, `vendor/`, `dist/` and `LICENSE`-type files, see [Lint check](#lint-check) |
 | `checks.moved_from` | `false`; `true` lets `lint` subtract lines a PR moves from another repo of the same owner, see [Lint check](#lint-check) |
 | `agent` | as in the global file; set here, it wins |
 | `auto_fix.maintain` | as in the global file (`0`, report only); set here, it wins |

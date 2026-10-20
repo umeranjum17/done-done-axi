@@ -6652,7 +6652,7 @@ test('lint passes a real claim, fails an empty, copied or reused one, and logs e
   assert.equal(dd('lint', 'only-one-arg').code, 2);
 });
 
-test('lint counts a big PR whole by default, and drops upstream catch-up or moved-from lines only when the repo switches the rule on', () => {
+test('lint counts a big PR whole by default, and drops upstream catch-up, moved-from or repo-generated lines only when the repo says so', () => {
   const { dir, repo, env, dd } = setup();
   const lines = (from, to) => Array.from({ length: to - from }, (_, i) => `const v${from + i} = ${from + i};`);
   const added = lines(0, 1100);
@@ -6693,6 +6693,8 @@ esac
   assert.deepEqual(lintWith('checks:\n  moved_from: true\n'), { code: 0, out: 'PASS\n' }, '1100 less the 300 lines that byte-match the source');
   assert.match(lintWith('checks:\n  moved_from: true\n', 'moved-from: other/lib@main lib/=src/').out, over, 'a source in another owner is not trusted');
   assert.match(lintWith('checks:\n  moved_from: true\n', '').out, over, 'no moved-from line cancels nothing');
+  assert.deepEqual(lintWith('checks:\n  generated_paths: ["lib/**"]\n'), { code: 0, out: 'PASS\n' }, 'a repo glob makes its own generated files not count');
+  assert.match(lintWith('checks:\n  generated_paths: ["gen/**"]\n').out, over, 'a glob that misses changes nothing');
   assert.equal(lintWith('checks:\n  moved_from: yes please\n').code, 2, 'a key that is not a boolean is a config error');
 });
 
