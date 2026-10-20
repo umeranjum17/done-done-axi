@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>done-done: no proof, no "done"</title>
+<meta name="description" content="done-done won't accept &quot;done&quot; without real, fresh proof from your product, captured at the exact commit being called done.">
+<meta property="og:title" content="done-done">
+<meta property="og:description" content="No proof, no &quot;done&quot;.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<meta name="theme-color" content="#F5F5F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<style>
+  /* The same Spacious tokens as sign-off's page: grey grouped page and white tiles by day, black and #161617 by night. */
+  :root { color-scheme: light dark; --page: #F5F5F7; --tile: #FFFFFF; --sunk: #E8E8ED; --line: #D2D2D7; --text: #1D1D1F; --muted: #6E6E73; --accent: #0066CC; --action: #0071E3; --code: #1D1D1F; --code-text: #F5F5F7; }
+  @media (prefers-color-scheme: dark) { :root { --page: #000000; --tile: #161617; --sunk: #2C2C2E; --line: #424245; --text: #F5F5F7; --muted: #86868B; --accent: #2997FF; --code: #161617; --code-text: #F5F5F7; } }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; }
+  body { margin: 0; background: var(--page); color: var(--text); overflow-wrap: anywhere; -webkit-font-smoothing: antialiased;
+    font: 1.0625rem/1.4706 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif; letter-spacing: -0.022em; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  :focus-visible { outline: 3px solid var(--action); outline-offset: 2px; border-radius: 0.5rem; }
+  img, picture { display: block; max-width: 100%; height: auto; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; }
+  .wrap { max-width: 68rem; margin: 0 auto; padding: 0 max(1.25rem, env(safe-area-inset-left)) 0 max(1.25rem, env(safe-area-inset-right)); }
+  nav { display: flex; align-items: center; gap: 1rem; padding: 1.25rem 0; }
+  nav .brand { display: flex; align-items: center; gap: 0.625rem; font-weight: 600; color: var(--text); }
+  nav .brand img { width: 2rem; height: 2rem; border-radius: 0.5rem; }
+  nav .links { margin-left: auto; display: flex; gap: 1.25rem; font-size: 0.9375rem; }
+  nav .links a.gh { display: none; }
+  h1 { font-size: clamp(2.25rem, 7vw, 4rem); line-height: 1.05; letter-spacing: -0.03em; margin: 0 0 1rem; font-weight: 700; }
+  h2 { font-size: clamp(1.625rem, 4.5vw, 2.5rem); line-height: 1.1; letter-spacing: -0.028em; margin: 0 0 0.75rem; font-weight: 700; }
+  h3 { font-size: 1.25rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+  p { margin: 0 0 1rem; } .lead { font-size: 1.25rem; line-height: 1.4; color: var(--muted); max-width: 38rem; }
+  section { padding: 3rem 0; }
+  .hero { padding: 2rem 0 1rem; text-align: center; } .hero .lead { margin: 0 auto 1.5rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-bottom: 2.5rem; }
+  .btn { display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 1.375rem; border-radius: 999px; background: var(--action); color: #fff; font-weight: 600; }
+  .btn:hover { text-decoration: none; filter: brightness(1.08); }
+  .btn.quiet { background: var(--sunk); color: var(--text); }
+  .shot { border-radius: 1rem; border: 1px solid var(--line); overflow: hidden; background: var(--tile); }
+  .hero .shot { max-width: 44rem; margin: 0 auto; }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  .tile { background: var(--tile); border-radius: 1.25rem; padding: 1.5rem; }
+  .step { counter-increment: step; } .step::before { content: counter(step); display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: var(--action); color: #fff; font-weight: 600; font-size: 0.9375rem; margin-bottom: 0.75rem; }
+  .steps { counter-reset: step; }
+  pre { margin: 0.5rem 0 0; padding: 0.75rem 1rem; border-radius: 0.75rem; background: var(--code); color: var(--code-text); overflow-x: auto; font: 0.875rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; white-space: pre; }
+  .tile p.note { margin: 0.75rem 0 0; color: var(--muted); }
+  .figs { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  .figs figure { margin: 0; } .figs figcaption { margin-top: 0.5rem; font-size: 0.9375rem; color: var(--muted); } .figs b { color: var(--text); display: block; }
+  .figs .shot { background: transparent; }
+  ul.plain { padding-left: 1.25rem; margin: 0 0 1rem; } ul.plain li { margin-bottom: 0.5rem; }
+  .sibs { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  .tile p.what { margin: 0; color: var(--muted); }
+  footer { padding: 2.5rem 0 3rem; color: var(--muted); font-size: 0.9375rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
+  @media (min-width: 48rem) {
+    nav .links a.gh { display: inline; }
+    .grid.three { grid-template-columns: repeat(3, 1fr); } .figs { grid-template-columns: repeat(2, 1fr); }
+    .sibs { grid-template-columns: repeat(2, 1fr); } section { padding: 4.5rem 0; }
+  }
+  @media (min-width: 64rem) { .sibs { grid-template-columns: repeat(4, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav aria-label="Main">
+    <a class="brand" href="./"><img src="logo.svg" alt="" width="32" height="32">done-done</a>
+    <div class="links"><a href="#install">Install</a><a href="#see">See it work</a><a class="gh" href="https://github.com/umeranjum17/done-done-axi">GitHub</a><a href="https://www.npmjs.com/package/done-done-axi">npm</a></div>
+  </nav>
+
+  <header class="hero">
+    <h1>No proof, no &ldquo;done&rdquo;.</h1>
+    <p class="lead">done-done won't accept &ldquo;done&rdquo; without real, fresh proof from your product, captured at the exact commit being called done.</p>
+    <div class="actions"><a class="btn" href="#install">Install in 3 steps</a><a class="btn quiet" href="#see">See it work</a></div>
+    <div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/flow-dark.svg"><img src="media/flow-light.svg" width="710" height="270" alt="How it works: capture your real app, tie every file to the exact commit, then check: pass with exit 0 or fail with exit 1."></picture></div>
+  </header>
+
+  <section id="install">
+    <h2>Install in 3 steps</h2>
+    <p class="lead">From npm, with Node 22.18 or newer and git.</p>
+    <div class="grid three steps">
+      <div class="tile step"><h3>Install</h3><pre>npm install -g done-done-axi</pre><p class="note">Puts <code>done-done</code> on your PATH.</p></div>
+      <div class="tile step"><h3>Set up your repo</h3><pre>cd your-app &amp;&amp; done-done init</pre><p class="note">Writes a minimal <code>.done-done.yaml</code> and asks which coding agent and which judge to use. It never picks either for you.</p></div>
+      <div class="tile step"><h3>Check the setup</h3><pre>done-done doctor</pre><p class="note">Changes nothing and names each missing piece with the command that fixes it.</p></div>
+    </div>
+    <p style="margin-top:1rem;color:var(--muted)">Then prove something: <code>done-done verify --outcome "&lt;what a user can now do&gt;"</code>. Or give your agent the skill with <code>npx skills add umeranjum17/done-done-axi --skill done-done -a &lt;agent&gt; -y</code> and ask &ldquo;is this really done?&rdquo;</p>
+  </section>
+
+  <section>
+    <h2>Why</h2>
+    <p class="lead">&ldquo;Done&rdquo; is easy to say. Screenshots get reused, recordings go stale, and a green test run is not the app.</p>
+    <p class="lead" style="margin-top:-0.25rem">done-done runs your capture and ties every screenshot, recording and log it saves to the exact commit. When someone says &ldquo;done&rdquo;, it checks the proof they point to: is it really there, is it a real picture or video, is it from this commit, and is it new? If not, the check fails. If it can't tell, it says so instead of passing.</p>
+  </section>
+
+  <section id="see">
+    <h2>See it work</h2>
+    <p class="lead">Four moments from a demo notes app. Every picture is real output from the current build; the demo's judge is a stub, so no model runs.</p>
+    <div class="figs">
+      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/run-dark.svg"><img src="media/run-light.svg" width="505" height="478" loading="lazy" alt="done-done run sync records one screenshot for the current commit."></picture></div><figcaption><b>Record a run</b>One screenshot, tied to the current commit.</figcaption></figure>
+      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/pass-dark.svg"><img src="media/pass-light.svg" width="505" height="838" loading="lazy" alt="A Checks block cites the new screenshot, the judge passes it, and done-done check passes."></picture></div><figcaption><b>Fresh proof passes</b>The judge sees the right screen; the check exits 0.</figcaption></figure>
+      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/reasons-dark.svg"><img src="media/reasons-light.svg" width="505" height="406" loading="lazy" alt="done-done check fails: one screenshot is from an older commit, one file is empty, one is a blank frame."></picture></div><figcaption><b>Weak proof is blocked</b>Older commit, empty file, blank frame: each named.</figcaption></figure>
+      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/config-dark.svg"><img src="media/config-light.svg" width="505" height="166" loading="lazy" alt="done-done run stops with exit 2 because the config has an unknown key."></picture></div><figcaption><b>Mistakes stop early</b>A config typo exits 2 before anything runs.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>What it checks</h2>
+    <ul class="plain">
+      <li><b>Tied to a commit.</b> Every run records the commit, and whether there were uncommitted changes.</li>
+      <li><b>Real media.</b> Empty, cut-off, blank or tiny screenshots fail. Videos must hold real frames.</li>
+      <li><b>Fresh, and not reused.</b> Proof from an older commit fails, and so does proof reused for a different claim.</li>
+      <li><b>Shows the outcome.</b> A fresh, tools-off judge on your own plan or key says whether each capture is the right screen for the claim. There is no way to turn it off.</li>
+      <li><b>Honest claims.</b> A pull request's <code>## Checks</code> block must have every line filled in, and <code>lint</code> gates it with no model.</li>
+      <li><b>Verifiable later.</b> <code>receipt</code> records a passing check against the commit and the sha256 of every file it cited.</li>
+      <li><b>Looks right.</b> <code>design</code> and <code>look</code> catch squashed or clipped text, overlap and pages wider than the screen.</li>
+    </ul>
+    <p style="color:var(--muted)">Every answer is an exit code: <b>0</b> pass, <b>1</b> fail, <b>2</b> usage or config error, <b>3</b> can't tell, <b>4</b> a run is still running or waits at its gate.</p>
+  </section>
+
+  <section>
+    <h2>Alone, and with the other tools</h2>
+    <p class="lead">done-done works on its own: the CLI and the skill need nothing else. It is one of four tools that each do one job and connect through small written contracts. Neither needs the others.</p>
+    <div class="sibs">
+      <div class="tile"><h3>done-done</h3><p class="what">Verification. This page.</p></div>
+      <div class="tile"><h3><a href="https://www.npmjs.com/package/sign-off-axi">sign-off</a></h3><p class="what">The board where agents ask you questions. <code>done-done signoff</code> writes a run's gate or evidence in its format; it never posts.</p></div>
+      <div class="tile"><h3><a href="https://www.npmjs.com/package/learn-from-mistakes-axi">learn-from-mistakes</a></h3><p class="what">Retros that find mistakes your agents keep repeating, with evidence.</p></div>
+      <div class="tile"><h3><a href="https://www.npmjs.com/package/first-draft-axi">first-draft</a></h3><p class="what">Turns a prompt into design mocks. Pass one to <code>done-done design --mock</code> to judge a screen next to it.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Inside Firstmate, or outside</h2>
+    <p class="lead">done-done behaves the same with or without <a href="https://github.com/kunchenguid/firstmate">Firstmate</a>. Nothing here is needed to use it.</p>
+    <p class="lead">Inside a Firstmate home, <code>integrations/firstmate/</code> ships a brief include that tells each worker to run a journey, write a <code>## Checks</code> block, pass <code>check</code> and record a <code>receipt</code>, and an optional merge gate that refuses a merge without it. A lone agent in a terminal skips all of that.</p>
+  </section>
+
+  <footer><span>done-done · Apache-2.0</span><a href="https://github.com/umeranjum17/done-done-axi">GitHub</a><a href="https://www.npmjs.com/package/done-done-axi">npm</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/reference.md">Reference</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/VISION.md">Vision</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/example-cli.md">Worked example</a></footer>
+</div>
+</body>
+</html>

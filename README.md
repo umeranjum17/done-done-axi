@@ -6,6 +6,8 @@
 
 ### No proof, no "done".
 
+**[Landing page](https://umeranjum17.github.io/done-done-axi/)**
+
 done-done won't accept "done" without real, fresh proof from your product, captured at the exact commit being called done.
 
 [![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-3fb950?logo=nodedotjs&logoColor=white)](https://nodejs.org) [![Status: early preview](https://img.shields.io/badge/status-early%20preview-d29922)](#whats-next) [![npm: done-done-axi](https://img.shields.io/npm/v/done-done-axi?logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/done-done-axi)
@@ -246,3 +248,5 @@ npx -y --allow-git=all github:umeranjum17/done-done-axi --help
 `dist/` is committed, so installing from GitHub needs no build step. `npm test` rebuilds it and fails while the rebuilt `dist/` differs from the commit or has files git does not track, so `git add` the new `dist/` files with your change.
 
 The terminal pictures (hero, run, pass, reasons, config) are real output from the current build, with a stub judge (no model); redraw them with `npx tsc && node docs/media/make.mjs`. The logo (`docs/logo.svg`) and the flow picture are hand-made SVGs.
+
+The landing page ([`docs/index.html`](docs/index.html), served by GitHub Pages from `main` `/docs`) is static: change it in the same PR as any README change it repeats (install steps, what it checks, the other tools).
