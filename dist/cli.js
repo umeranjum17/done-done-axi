@@ -71,7 +71,7 @@ const DOCTOR_TEXT = `doctor changes nothing except the --probe call record (the 
   required: git (inside a repository), config (a valid .done-done.yaml), evidence_root (writable), agent (the agent the user
   set and its model; missing when none is set, with the command that saves the user's choice), judge (the judge route is ready:
   for claude-code an executable claude binary and the judge kit, for answerer:<agent> that agent's CLI and the
-  kit, for openai:key OPENAI_API_KEY and the kit; doctor does not call the model; missing when none is set, with the command
+  kit, for a key route (openai:key, minimax:key) its API key and the kit; doctor does not call the model; missing when none is set, with the command
   that saves the user's choice).
   also listed: verify_skill (.agents/skills/done-done-verify-<app>/), agent_settings (agent, model, effort,
   args, path and agent_timeout, each with the file it came from: the global config, .done-done.yaml or default),
@@ -94,7 +94,7 @@ const FLAGS = {
     '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
     '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
     '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (for scripts)',
-    '--judge <route>': 'check with this judge for this call instead of judge.route (same form: claude-code, answerer:opencode, answerer:pi, answerer:gemini or openai:key); its model is that agent\'s default, or judge.model when the route is the configured one',
+    '--judge <route>': 'check with this judge for this call instead of judge.route (same form: claude-code, answerer:opencode, answerer:pi, answerer:gemini, openai:key or minimax:key); its model is that agent\'s default, or judge.model when the route is the configured one',
     '--citation-base <dir>': 'resolve evidence citations against this directory (default: cwd); absolute citations stay unchanged; does not change repo, config or run storage',
     '--claim-id <id>': 'the claim the evidence proves; evidence already used for another claim id is reuse (default: the current branch, or the PR branch with --from <PR URL>; required on a detached HEAD)',
     '--verify <head>': 'read-only: verify the receipt recorded for <head>',
@@ -276,8 +276,8 @@ ${GLOBAL_TEXT}
 judge: done-done's own agent, a fresh one on your own plan through BYOKit, says whether each PNG/JPEG capture shows
   the outcome; a wrong screen fails, an unsure answer is inconclusive. check, receipt, verify, rerun and design always start
   it, and there is no way to turn it off: a pass needs a judge pass on at least one capture. The judge is the one the user set
-  (judge.route: claude-code; answerer:<agent> through the CLI of opencode, pi or gemini with every tool off; or openai:key with
-  judge.model on your own OPENAI_API_KEY), whichever agent and model the user picks; with none set, done-done asks in a
+  (judge.route: claude-code; answerer:<agent> through the CLI of opencode, pi or gemini with every tool off; or a key route on your own API key: openai:key with
+  judge.model, or minimax:key, which falls back to claude-code when its call fails), whichever agent and model the user picks; with none set, done-done asks in a
   terminal or stops (exit 2) with the command that saves it. A judge that fails or does not answer stops the command with its
   cause (exit 2), never a result.
 
