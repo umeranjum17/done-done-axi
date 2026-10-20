@@ -6652,6 +6652,50 @@ test('lint passes a real claim, fails an empty, copied or reused one, and logs e
   assert.equal(dd('lint', 'only-one-arg').code, 2);
 });
 
+test('lint counts a big PR whole by default, and drops upstream catch-up or moved-from lines only when the repo switches the rule on', () => {
+  const { dir, repo, env, dd } = setup();
+  const lines = (from, to) => Array.from({ length: to - from }, (_, i) => `const v${from + i} = ${from + i};`);
+  const added = lines(0, 1100);
+  writeFileSync(join(dir, 'pr.diff'), `diff --git a/lib/big.js b/lib/big.js\n--- /dev/null\n+++ b/lib/big.js\n${added.map((l) => `+${l}`).join('\n')}\n`);
+  writeFileSync(join(dir, 'up.diff'), `diff --git a/lib/big.js b/lib/big.js\n--- /dev/null\n+++ b/lib/big.js\n${lines(0, 200).map((l) => `+${l}`).join('\n')}\n`);
+  writeFileSync(join(dir, 'src.js'), `${lines(500, 800).join('\n')}\n`);
+  const pr = (movedFrom) => JSON.stringify({
+    author: { login: 'umer' }, title: 'feat: big', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/big', files: [{ path: 'lib/big.js', additions: 1100 }],
+    body: `## Checks\noutcome: a user can lint a big PR\nrepro: n/a: no bug\nproof: no verify skill - ran node dist/cli.js lint\nevidence: not proven: no device in reach\n\n${movedFrom}\n`,
+  });
+  // A stand-in `gh`: the PR, its diff, the fork's parent and the upstream delta, and the moved-from source file.
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  const q = (f) => JSON.stringify(join(dir, f));
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh
+case "$*" in
+  "pr view"*) cat ${q('pr.json')} ;;
+  "pr diff"*) cat ${q('pr.diff')} ;;
+  *"vnd.github.diff"*) cat ${q('up.diff')} ;;
+  *"vnd.github.raw"*"contents/src/big.js?ref=main") cat ${q('src.js')} ;;
+  *"compare/up:main...head1"*) echo mergebase ;;
+  "api repos/acme/tool --jq"*) echo up:main ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+`, { mode: 0o755 });
+  env.PATH = `${bin}:${env.PATH}`;
+  const url = 'https://github.com/acme/tool/pull/7';
+  const base = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
+  const lintWith = (checks, movedFrom = 'moved-from: acme/lib@main lib/=src/') => {
+    writeFileSync(join(repo, '.done-done.yaml'), base + checks);
+    writeFileSync(join(dir, 'pr.json'), pr(movedFrom));
+    return dd('lint', url, dir);
+  };
+  const over = /^FAIL: 1100 added non-generated lines/;
+  assert.match(lintWith('').out, over, 'both rules are off by default, so the whole PR counts');
+  assert.match(lintWith('checks:\n  fix_title: "^fix"\n').out, over, 'other checks keys do not switch them on');
+  assert.deepEqual(lintWith('checks:\n  upstream_catch_up: true\n'), { code: 0, out: 'PASS\n' }, '1100 less the 200 lines upstream already shipped');
+  assert.deepEqual(lintWith('checks:\n  moved_from: true\n'), { code: 0, out: 'PASS\n' }, '1100 less the 300 lines that byte-match the source');
+  assert.match(lintWith('checks:\n  moved_from: true\n', 'moved-from: other/lib@main lib/=src/').out, over, 'a source in another owner is not trusted');
+  assert.match(lintWith('checks:\n  moved_from: true\n', '').out, over, 'no moved-from line cancels nothing');
+  assert.equal(lintWith('checks:\n  moved_from: yes please\n').code, 2, 'a key that is not a boolean is a config error');
+});
+
 test('gate vouches for a committed receipt with no judge, config or evidence, and refuses a missing, moved-on, wrong-head or late one', () => {
   const { dir, repo, env, sh, dd, head, shots } = setup();
   const { files } = shots();

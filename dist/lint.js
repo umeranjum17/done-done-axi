@@ -1,5 +1,6 @@
 // `done-done lint`: the deterministic merge gate on a worker's claim. It reads the newest "## Checks" block of a PR body
-// or report file and fails an unproven, reused or oversized claim. No judge, no model, no repo config.
+// or report file and fails an unproven, reused or oversized claim. No judge, no model; the repo config only switches on
+// the two optional size rules (checks.upstream_catch_up, checks.moved_from).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -13,7 +14,6 @@ const gh = (...args) => {
     const r = spawnSync('gh', args, { encoding: 'utf8', timeout: 60_000, maxBuffer: 1 << 28 });
     return { status: r.error ? 1 : r.status, stdout: r.stdout ?? '', stderr: r.error?.message ?? r.stderr ?? '' };
 };
-// Added minus deleted non-generated lines of a unified diff: a line moved between files cancels out.
 function netLines(diff) {
     const net = new Map();
     let generated = false;
@@ -27,15 +27,48 @@ function netLines(diff) {
         if (l[0] === '+' || l[0] === '-')
             net.set(l.slice(1).trim(), (net.get(l.slice(1).trim()) ?? 0) + (l[0] === '+' ? 1 : -1));
     }
-    let total = 0;
-    for (const n of net.values())
-        if (n > 0)
-            total += n;
-    return total;
+    return without(net, new Map());
+}
+// `a` less the lines `b` holds, keeping only what is still added.
+function without(a, b) {
+    const out = new Map();
+    for (const [l, n] of a)
+        if (n - (b.get(l) ?? 0) > 0)
+            out.set(l, n - (b.get(l) ?? 0));
+    return out;
+}
+const total = (n) => [...n.values()].reduce((sum, c) => sum + c, 0);
+const stdout = (r) => (r.status === 0 ? r.stdout.trim() : '');
+// checks.upstream_catch_up: lines the fork's parent repo already shipped are not authored here, so subtract the upstream delta the PR
+// merges in (PR base ... the merge base with the parent's default branch). A plain fork PR merges no new upstream commit, so its delta
+// is empty. Any API failure keeps the full count.
+function upstreamDelta(run, nwo, head, base) {
+    const parent = stdout(run('api', `repos/${nwo}`, '--jq', '.parent | select(.) | .owner.login + ":" + .default_branch'));
+    const tip = parent && stdout(run('api', `repos/${nwo}/compare/${parent}...${head}`, '--jq', '.merge_base_commit.sha'));
+    const diff = tip && run('api', '-H', 'Accept: application/vnd.github.diff', `repos/${nwo}/compare/${base}...${tip}`);
+    return diff && diff.status === 0 ? netLines(diff.stdout) : new Map();
+}
+// checks.moved_from: a body line "moved-from: <owner>/<repo>@<ref> <dst-prefix>=<src-prefix>..." cancels added lines that byte-match
+// the mapped source files in a repo of the PR's own owner; authored lines still count.
+function movedLines(run, nwo, body, paths) {
+    const mv = /^\s*moved-from\s*:\s*([\w.-]+)\/([\w.-]+)@(\S+)\s+(.+)$/m.exec(body);
+    const rules = mv && mv[1] === nwo.split('/')[0] ? mv[4].split(/\s+/).filter((r) => r.includes('=')).map((r) => [r.slice(0, r.indexOf('=')), r.slice(r.indexOf('=') + 1)]) : [];
+    const moved = new Map();
+    for (const p of paths) {
+        const rule = rules.find(([dst]) => p.startsWith(dst));
+        if (!mv || !rule || GENERATED.test(p))
+            continue;
+        const src = run('api', '-H', 'Accept: application/vnd.github.raw', `repos/${mv[1]}/${mv[2]}/contents/${rule[1]}${p.slice(rule[0].length)}?ref=${mv[3]}`);
+        if (src.status === 0)
+            for (const l of src.stdout.split('\n'))
+                if (l.trim())
+                    moved.set(l.trim(), (moved.get(l.trim()) ?? 0) + 1);
+    }
+    return moved;
 }
 const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 // src: a PR URL or a report file; ev: the folder the evidence names are relative to; dir: where the hash store and log live.
-export function lint(src, ev, dir, run = gh) {
+export function lint(src, ev, dir, rules = {}, run = gh) {
     const log = (v) => {
         mkdirSync(dir, { recursive: true });
         appendFileSync(join(dir, 'lint.log'), `${new Date().toISOString()}\t${src}\t${v.head}\t${v.ok ? 'pass' : 'fail'}\t${v.why}\n`);
@@ -47,7 +80,7 @@ export function lint(src, ev, dir, run = gh) {
         task = basename(dirname(resolve(src)));
     }
     else {
-        const r = run('pr', 'view', src, '--json', 'author,body,title,files,headRefOid,headRefName');
+        const r = run('pr', 'view', src, '--json', 'author,body,title,files,headRefOid,headRefName,baseRefOid');
         if (r.status)
             return log({ ok: false, why: `gh pr view failed: ${r.stderr.trim().split('\n').pop()?.slice(0, 160) || '?'}`, head });
         const pr = JSON.parse(r.stdout);
@@ -60,8 +93,15 @@ export function lint(src, ev, dir, run = gh) {
         let size = (pr.files ?? []).reduce((n, f) => n + (GENERATED.test(f.path ?? '') ? 0 : f.additions ?? 0), 0);
         if (size >= SIZE_LIMIT) {
             const d = run('pr', 'diff', src);
-            if (!d.status)
-                size = netLines(d.stdout);
+            if (!d.status) {
+                let net = netLines(d.stdout);
+                const nwo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//.exec(src)?.[1];
+                if (nwo && rules.upstream_catch_up && total(net) >= SIZE_LIMIT)
+                    net = without(net, upstreamDelta(run, nwo, head, pr.baseRefOid ?? ''));
+                if (nwo && rules.moved_from && total(net) >= SIZE_LIMIT)
+                    net = without(net, movedLines(run, nwo, body, (pr.files ?? []).map((f) => f.path ?? '')));
+                size = total(net);
+            }
         }
         if (size >= SIZE_LIMIT)
             return log({ ok: false, why: `${size} added non-generated lines (moved lines excluded): split it (limit ${SIZE_LIMIT})`, head });

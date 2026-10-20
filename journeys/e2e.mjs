@@ -159,6 +159,34 @@ try {
   assert.equal(drive(0, 'lint', claim('pass.md', 'run.log'), lintDir).trim(), 'PASS');
   assert.match(drive(1, 'lint', claim('fail.md', 'gone.log'), lintDir), /^FAIL: evidence file missing or empty/);
 
+  // The optional lint size rules: a 1,100-line PR (200 lines already shipped upstream, 300 moved from a sibling repo) read through a stand-in gh
+  // fails with both rules off (the default) and passes with either one on.
+  const lines = (a, b) => Array.from({ length: b - a }, (_, i) => `const v${a + i} = ${a + i};`);
+  const diff = (ls) => `diff --git a/lib/big.js b/lib/big.js\n--- /dev/null\n+++ b/lib/big.js\n${ls.map((l) => `+${l}`).join('\n')}\n`;
+  const ghDir = join(tmp, 'gh');
+  mkdirSync(ghDir);
+  const stash = (name, text) => { writeFileSync(join(ghDir, name), text); return JSON.stringify(join(ghDir, name)); };
+  const prBody = '## Checks\noutcome: a repo can switch on the lint size rules\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: not proven: fixture\n\nmoved-from: acme/lib@main lib/=src/\n';
+  const pr = stash('pr.json', JSON.stringify({ author: { login: 'umer' }, title: 'feat: big', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/big', files: [{ path: 'lib/big.js', additions: 1100 }], body: prBody }));
+  writeFileSync(join(ghDir, 'gh'), `#!/bin/sh
+case "$*" in
+  "pr view"*) cat ${pr} ;;
+  "pr diff"*) cat ${stash('pr.diff', diff(lines(0, 1100)))} ;;
+  *"vnd.github.diff"*) cat ${stash('up.diff', diff(lines(0, 200)))} ;;
+  *"vnd.github.raw"*"contents/src/big.js?ref=main") cat ${stash('src.js', lines(500, 800).join('\n') + '\n')} ;;
+  *"compare/up:main...head1"*) echo mergebase ;;
+  "api repos/acme/tool --jq"*) echo up:main ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+`, { mode: 0o755 });
+  env.PATH = `${ghDir}:${env.PATH}`;
+  const config = readFileSync(join(repo, '.done-done.yaml'), 'utf8').replace(/\n*$/, '\n');
+  const bigPr = (checks) => { writeFileSync(join(repo, '.done-done.yaml'), config + checks); return drive(checks ? 0 : 1, 'lint', 'https://github.com/acme/tool/pull/7', lintDir); };
+  assert.match(bigPr(''), /^FAIL: 1100 added non-generated lines/);
+  assert.equal(bigPr('checks:\n  upstream_catch_up: true\n').trim(), 'PASS');
+  assert.equal(bigPr('checks:\n  moved_from: true\n').trim(), 'PASS');
+  writeFileSync(join(repo, '.done-done.yaml'), config);
+
   // Proof for the outer run: transcript plus the fixture's own captures.
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, `${RUN_ID}.log`), log.join('\n') + '\n');
