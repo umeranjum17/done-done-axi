@@ -166,8 +166,8 @@ try {
   const ghDir = join(tmp, 'gh');
   mkdirSync(ghDir);
   const stash = (name, text) => { writeFileSync(join(ghDir, name), text); return JSON.stringify(join(ghDir, name)); };
-  const body = '## Checks\noutcome: a repo can switch on the lint size rules\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: not proven: fixture\n\nmoved-from: acme/lib@main lib/=src/\n';
-  const pr = stash('pr.json', JSON.stringify({ author: { login: 'umer' }, title: 'feat: big', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/big', files: [{ path: 'lib/big.js', additions: 1100 }], body }));
+  const prBody = '## Checks\noutcome: a repo can switch on the lint size rules\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: not proven: fixture\n\nmoved-from: acme/lib@main lib/=src/\n';
+  const pr = stash('pr.json', JSON.stringify({ author: { login: 'umer' }, title: 'feat: big', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/big', files: [{ path: 'lib/big.js', additions: 1100 }], body: prBody }));
   writeFileSync(join(ghDir, 'gh'), `#!/bin/sh
 case "$*" in
   "pr view"*) cat ${pr} ;;
