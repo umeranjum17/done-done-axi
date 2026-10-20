@@ -212,7 +212,7 @@ journeys:
 
   Something entirely outside its container or the viewport is hidden on purpose (a closed drawer, a visually hidden label) and is not a hit; a cut element's children are not listed again. Content in a scrolling container (`overflow: auto` or `scroll`, such as a carousel) scrolls into view and is not clipped.
 - **What it writes.** `--out <file.png>` (default `look.png` in `$DONE_DONE_EVIDENCE_ROOT` inside a journey, else in the current folder) gets the viewport screenshot, exactly the viewport size in pixels, and `<file>.dom.json` next to it the page-check record of [DOM assertions](#dom-assertions), with the page's console errors and failed requests too. look itself fails only on the four kinds above; with a `dom` block, verify's check also reads the record and applies its allow lists to console errors and failed requests.
-- **Chrome.** look starts its own headless Chrome or Chromium (`google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on PATH, or `DONE_DONE_CHROME` naming the binary) with a throwaway profile, and removes both when it ends. It runs Chrome without its sandbox so it starts in containers and CI, so point it at your own app, not untrusted sites. No Chrome is a usage error (exit 2) that says how to install or point to one; a page that does not load (its network error, or no load event within 30 seconds) is exit 2 with the cause.
+- **Chrome.** look starts its own headless Chrome or Chromium (`google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on PATH, or `DONE_DONE_CHROME` naming the binary) with a throwaway profile, and removes both when it ends. It runs Chrome without its sandbox so it starts in containers, so point it at your own app, not untrusted sites. No Chrome is a usage error (exit 2) that says how to install or point to one; a page that does not load (its network error, or no load event within 30 seconds) is exit 2 with the cause.
 - **Limits.** Only the main frame is measured, not an embedded frame; a transform or `clip-path` that hides part of a box is not seen; nothing is clicked or scrolled first, so drive the page to the state to check (a URL per state) before you call look. Look at the capture too: a defect the DOM cannot see (a stretched image, a colour) is the [design check](#design-check)'s.
 
 | Result | Exit |
@@ -251,7 +251,7 @@ done-done check --from pr-body.md                 # a file, `-` for stdin, or a 
 
 `check` looks only at the files the claim names. It never scans the whole folder.
 
-`check` and `receipt` accept `--citation-base <dir>` for evidence paths supplied as arguments or in a Checks block, for example `done-done check --citation-base /path/to/captures --from pr-body.md`. Relative citations resolve against that directory; a relative base itself resolves against cwd. Absolute citations are unchanged. With the flag, the existing result `evidence` list contains resolved absolute paths. Without it, a relative citation resolves against the repo root first (so a check from a subdirectory finds the same evidence), then against the caller's cwd (so a shell-relative path typed for that shell still works). The flag does not relocate `--from`, change the caller repository/HEAD or config (`--trusted-ref` still selects trusted config), or change `evidence.root`: that remains the run-record, receipt and reuse-ledger store. All provenance, freshness and judge rules still apply. Passing checks preserve an explicit `--citation-base` in their suggested receipt or remote CI gate command; run the follow-up from the same cwd when the base is relative.
+`check` and `receipt` accept `--citation-base <dir>` for evidence paths supplied as arguments or in a Checks block, for example `done-done check --citation-base /path/to/captures --from pr-body.md`. Relative citations resolve against that directory; a relative base itself resolves against cwd. Absolute citations are unchanged. With the flag, the existing result `evidence` list contains resolved absolute paths. Without it, a relative citation resolves against the repo root first (so a check from a subdirectory finds the same evidence), then against the caller's cwd (so a shell-relative path typed for that shell still works). The flag does not relocate `--from`, change the caller repository/HEAD or config (`--trusted-ref` still selects trusted config), or change `evidence.root`: that remains the run-record, receipt and reuse-ledger store. All provenance, freshness and judge rules still apply. Passing checks preserve an explicit `--citation-base` in their suggested receipt or merge gate command; run the follow-up from the same cwd when the base is relative.
 
 With `--from`, it reads the newest `## Checks` block:
 
@@ -354,7 +354,7 @@ done-done design shots/home.png --mock shots/home.png=design/home.png
 - **Measured strips.** A blank strip is also measured from the pixels of each PNG or JPEG screen: a band along a whole edge, at least 2% of that side deep, in one plain colour with nothing in it, and clearly apart from the screen's main colour. The measurement goes to the judge with the screen, as `measured_from_pixels` with its edge, colour and depth (`left edge: a plain #151815 band 132 px deep (12% of the width), full height, with nothing in it`); the verdict is the judge's, and the measurement never fails a screen on its own. A nav rail or bar that holds icons or a title is content, not a strip, and a screen that is all one colour is the blank-frame check's. A band its `--mock` has too (same edge, about as deep as a share of that side, and in about the same colour) is approved design and is not sent; a band the mock lacks is. If the mock cannot be measured, a band on the screen goes to the judge as one the mock could not be measured to compare. A fully transparent pixel is never measured as part of a band, so a transparent margin is not a strip on a light or dark screen. The measure misses a strip close to the screen's main colour (a black bar on a near-black screen); the judge's question still covers it.
 - **Mocks.** `--mock <screen>=<mock>` sends the screen and its approved mock in the same request, and the judge reports a difference from the mock as a defect of its kind (a moved, missing or resized element is `layout`); live data such as names, numbers and times is not a defect, and an element shaped as in the mock is not stretched. A dialog, sheet, menu, popover or toast is not a defect only where the mock draws that same overlay in the same place; one the mock lacks, or draws elsewhere, is judged like any other element. Repeat `--mock` per screen; a screen named only in `--mock` is still checked. Without a mock, the screen is judged alone.
 - **Variants.** `design` judges the screens it is given and captures nothing. Capture each variant your change touches (dark theme, small width, large font) as its own screen and pass them all; a name such as `home.dark.png` or `home.large-font.png` keeps them apart, and each variant takes its own `--mock`. Pass the raw capture: the judge reads everything in the image as the app, so a device frame or letterbox band fails as a `blank-strip`.
-- **From a verify flow.** Run it on the screens a journey writes, after the capture, so a failing screen fails the journey and the `verify` run with it: `journeys: { shots: { command: "node capture.mjs && done-done design $DONE_DONE_EVIDENCE_ROOT/*.png" } }`. Or run it as its own CI step on the captured screens.
+- **From a verify flow.** Run it on the screens a journey writes, after the capture, so a failing screen fails the journey and the `verify` run with it: `journeys: { shots: { command: "node capture.mjs && done-done design $DONE_DONE_EVIDENCE_ROOT/*.png" } }`.
 
 | Verdict | Result | Exit |
 |---|---|---|
@@ -367,7 +367,7 @@ The result lists each screen (failing first, then unsure, then passing; `--full`
 
 ### Record a receipt
 
-A receipt ties one passing check to one commit and to the exact bytes it cited, so a merge step or CI can re-verify the same proof later.
+A receipt ties one passing check to one commit and to the exact bytes it cited, so a merge gate (or `gate` in CI) can re-verify the same proof later.
 
 ```sh
 done-done receipt --from pr-body.md       # or --outcome "<claim>" <files...>, or --from -
@@ -381,7 +381,7 @@ done-done receipt --verify <head>         # read-only: check a recorded receipt
 ### Verify a change in one run
 
 ```sh
-done-done verify [<journey>] --outcome "<what a user can now do>"   # --no-wait, --wait (the default), or --foreground (CI)
+done-done verify [<journey>] --outcome "<what a user can now do>"   # --no-wait, --wait (the default), or --foreground (for scripts)
 done-done verify --outcome "<claim>" [--feature <name>]             # no journey: the author agent drives a verify skill feature
 done-done respond [--run <run-id>] --action fix | --action approve|skip --reason "<why>"   # answer a run at its gate (approve and skip: a spend gate only)
 done-done status [--run <run-id>]                                   # the newest run of this checkout by default
@@ -445,7 +445,7 @@ npx -y sign-off-axi post --kind <gate|evidence> --from <file>   # the command si
 ### Keep the verify skill true
 
 ```sh
-done-done maintain        # --no-wait, --wait (the default), or --foreground (CI)
+done-done maintain        # --no-wait, --wait (the default), or --foreground (for scripts)
 ```
 
 `maintain` checks the repo's verify skill against the source in a run of kind `maintain`, in the same store as `verify`, so `status`, `attach`, `logs`, `abort` and `history` work on it. Its pass reads only: it never edits the skill, the product code or git, and it records HEAD, `git status --porcelain --untracked-files=all` and the content of each changed or untracked path (regular files are hashed with sha256 as they are read; symlinks are compared by target text and never read through) before and after; if they differ, the run is `blocked` with a `repo-changed` finding. Its steps:
@@ -482,7 +482,7 @@ Running `done-done` with no subcommand prints the repo's config state (`config: 
 
 `doctor` exits 2 when a required item (`git`, `config`, `evidence_root`, `agent`, `judge`, and `probe` with `--probe`) is missing.
 
-### In CI or a merge gate
+### Merge gate on the desktop
 
 ```sh
 PR_BRANCH="$(gh pr view "$PR_URL" --json headRefName --jq .headRefName)"
@@ -491,14 +491,35 @@ done-done receipt --from - --trusted-ref origin/main --claim-id "$PR_BRANCH" < p
 done-done receipt --verify "$HEAD"                                   # re-verify later
 ```
 
-Run `receipt --verify` with that head checked out and the evidence root in place (see below). `--trusted-ref` reads `.done-done.yaml` from that ref instead of the PR branch. This matters because repo keys can loosen the bar and journeys run commands. `check --from -` and `receipt --from -` read the `## Checks` block from stdin, so a CI job can pipe the pull request body straight in.
+Run `receipt --verify` with that head checked out and the evidence root in place (see below). `--trusted-ref` reads `.done-done.yaml` from that ref instead of the PR branch. This matters because repo keys can loosen the bar and journeys run commands. `check --from -` and `receipt --from -` read the `## Checks` block from stdin, so a script can pipe the pull request body straight in.
+
+### CI gate
+
+A hosted runner has no model and never gets a model key, so CI never runs `check`, `run` or `verify`. Proof runs on the desktop. CI runs one no-model command, `done-done gate`, which reads git objects only: no config, no judge, no key and no evidence files.
+
+```sh
+# on the desktop, after the proof passes for <head>
+done-done receipt --from checks.md --claim-id "$BRANCH"        # writes <evidence root>/.done-done/receipts/<head>.json
+mkdir -p .done-done-receipts && cp <that receipt> .done-done-receipts/
+git add .done-done-receipts && git commit -m "chore: receipt for <head>" && git push
+
+# in CI (checkout with fetch-depth: 0, so the receipt head is in history)
+npx -y done-done-axi gate "$PR_HEAD_SHA"
+```
+
+The receipt is committed in a follow-up commit, because a receipt cannot sit inside the commit it proves (its hash would change). `gate [<head>] [--dir <folder>] [--pushed <time>]` prints `PASS` or `FAIL: <reason>` and exits 0, 1, or 2 on a usage error. It passes when a receipt in `.done-done-receipts/` (or `--dir`):
+
+- is a well-formed pass from a judged run (the same shape `receipt --verify` requires) and is filed as `<its head>.json`;
+- has a head that is `<head>` (default `HEAD`) or an ancestor of it, with every file changed since that head inside the receipts folder, so the proof still covers the code;
+- was made no later than the push (`--pushed`, an ISO time; default the commit time of `<head>`), compared to the second.
+
+`gate` trusts the committed JSON: it does not re-hash the evidence, which only `receipt --verify` can do, on the machine that holds it. It says so by name and does not claim more.
 
 ### Where proof lives
 
 Evidence, run records (`<root>/.done-done/runs/`), receipts (`<root>/.done-done/receipts/<head>.json`) and the reuse ledger (`<root>/.done-done/ledger`) all live in the evidence root. By default that is `~/.done-done/evidence/<app>`, outside the repo, so they outlive the checkout that captured them: any checkout of the same repo on the same machine (a fresh clone, a merge gate's checkout) with `<head>` checked out runs `done-done receipt --verify <head>` and finds the same receipt and files. A checkout of a later commit, such as the merge or squash commit on main, does not verify: the receipt is for `<head>` only.
 
 - **Same machine** (a merge gate, a fresh clone): check out `<head>`, nothing else. Every checkout reads the same `app` from the committed `.done-done.yaml`, so it resolves the same evidence root. Keep `app` pinned (`init` writes it); without it the app is the directory name, which differs between clones. Receipts are named by the full head sha, which is the same in every clone, shallow or not, so no repo commit is needed in the key, and a receipt verifies only where that commit is checked out.
-- **CI on another machine**: the evidence is not there. Copy the evidence root to the job (for example upload `~/.done-done/evidence/<app>` as a build artifact from the job that captured the proof), restore it as `$DONE_DONE_HOME/evidence/<app>`, check out the head, and run `done-done receipt --verify <head>`.
 - **`evidence.root` inside the repo** (an older `root: .proof`): still works, but the evidence is gitignored and goes away with that checkout, so only that checkout can re-verify.
 
 ## Config

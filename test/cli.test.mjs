@@ -117,7 +117,7 @@ test('a fresh run of the real journey passes the check', () => {
   assert.deepEqual(d.evidence, files);
 });
 
-test('a pass with no origin remote points at a receipt; with one, at the CI gate', () => {
+test('a pass with no origin remote points at a receipt; with one, at the merge gate', () => {
   const { sh, dd, shots, repo, env } = setup();
   const { files } = shots();
   const claim = 'home and settings render, costs $5';
@@ -128,7 +128,7 @@ test('a pass with no origin remote points at a receipt; with one, at the CI gate
   const receipt = JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'receipts', `${sh('rev-parse', 'HEAD').toString().trim()}.json`), 'utf8'));
   assert.equal(receipt.claim, claim);
   sh('remote', 'add', 'origin', 'https://example.com/notes.git');
-  assert.match(toon(dd('check', '--outcome', claim, ...files)).help[0], /^Gate CI on this proof: done-done check --from <PR URL> --trusted-ref origin\/main$/);
+  assert.match(toon(dd('check', '--outcome', claim, ...files)).help[0], /^Gate the merge on this proof: done-done check --from <PR URL> --trusted-ref origin\/main$/);
 });
 
 test('empty, truncated, blank, tiny and mislabelled images fail with the reason', () => {
@@ -1724,7 +1724,7 @@ test('a repo set up by init captures, checks and receipts real evidence that out
   };
   const v = inClone(env, 'receipt', '--verify', h);
   assert.equal(v.code, 0, v.out);
-  // CI on another machine: the evidence root restored under a different DONE_DONE_HOME verifies too.
+  // A restored evidence root under a different DONE_DONE_HOME verifies too.
   const ciHome = join(dir, 'ci-home');
   cpSync(join(dir, 'home', 'evidence'), join(ciHome, 'evidence'), { recursive: true });
   assert.equal(inClone({ ...env, DONE_DONE_HOME: ciHome }, 'receipt', '--verify', h).code, 0, 'a restored evidence root verifies');
@@ -6636,4 +6636,51 @@ test('lint passes a real claim, fails an empty, copied or reused one, and logs e
   assert.equal(log.length, 8);
   assert.deepEqual(log.map((l) => l.split('\t')[3]), ['pass', 'pass', 'fail', 'fail', 'fail', 'fail', 'pass', 'fail']);
   assert.equal(dd('lint', 'only-one-arg').code, 2);
+});
+
+test('gate vouches for a committed receipt with no judge, config or evidence, and refuses a missing, moved-on, wrong-head or late one', () => {
+  const { dir, repo, env, sh, dd, head, shots } = setup();
+  const { files } = shots();
+  assert.equal(dd('receipt', '--outcome', 'home and settings render', ...files).code, 0);
+  const proven = head();
+  // A hosted runner: a fresh clone with no judge, no config, no key and none of the evidence.
+  const runner = join(dir, 'runner');
+  const bare = { ...env, DONE_DONE_HOME: join(dir, 'empty-home') };
+  delete bare.DD_STUB_JUDGE;
+  const gate = (...args) => {
+    const r = spawnSync(process.execPath, [CLI, 'gate', ...args], { cwd: runner, env: bare, encoding: 'utf8' });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  const clone = () => {
+    rmSync(runner, { recursive: true, force: true });
+    execFileSync('git', ['clone', '-q', repo, runner], { env });
+  };
+  clone();
+  assert.match(gate().out, /^FAIL: no receipt in \.done-done-receipts\/ at /, 'no receipt committed yet');
+  assert.equal(gate().code, 1);
+
+  const folder = join(repo, '.done-done-receipts');
+  mkdirSync(folder);
+  cpSync(join(repo, '.proof', '.done-done', 'receipts', `${proven}.json`), join(folder, `${proven}.json`));
+  sh('add', '-A');
+  sh('commit', '-qm', 'receipt');
+  clone();
+  assert.deepEqual(gate(), { code: 0, out: 'PASS\n' });
+  assert.equal(gate(head()).code, 0, 'the head can be named');
+
+  assert.match(gate('--pushed', '2000-01-01T00:00:00Z').out, /^FAIL: receipt time .* is not before the push/, 'a receipt made after the push');
+  assert.equal(gate('--pushed', 'tomorrow-ish').code, 2);
+
+  writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
+  sh('commit', '-qam', 'code after the proof');
+  clone();
+  assert.match(gate().out, /^FAIL: src\/app\.js changed after receipt head/, 'the proof no longer covers the head');
+
+  const other = join(folder, `${'0'.repeat(40)}.json`);
+  cpSync(join(folder, `${proven}.json`), other);
+  sh('rm', '-q', '-f', '--', `.done-done-receipts/${proven}.json`);
+  sh('add', '-A');
+  sh('commit', '-qm', 'receipt moved to the wrong name');
+  clone();
+  assert.match(gate().out, /does not name its own head/, 'a receipt filed under another head');
 });

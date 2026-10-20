@@ -97,7 +97,7 @@ const FLAGS: Record<string, string> = {
   '--close <run-id>': 'seal an open run and record the files in its folder',
   '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
   '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
-  '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (use in CI)',
+  '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (for scripts)',
   '--judge <route>': 'check with this judge for this call instead of judge.route (same form: claude-code, answerer:opencode, answerer:pi, answerer:gemini or openai:key); its model is that agent\'s default, or judge.model when the route is the configured one',
   '--citation-base <dir>': 'resolve evidence citations against this directory (default: cwd); absolute citations stay unchanged; does not change repo, config or run storage',
   '--claim-id <id>': 'the claim the evidence proves; evidence already used for another claim id is reuse (default: the current branch, or the PR branch with --from <PR URL>; required on a detached HEAD)',
@@ -105,7 +105,7 @@ const FLAGS: Record<string, string> = {
   '--outcome "<what a user can now do>"': 'the outcome the run must prove',
   '--wait': 'wait until the run ends (the default)',
   '--no-wait': 'start the run and return at once (exit 4); read it later with done-done status',
-  '--foreground': 'run every step in this process instead of a detached runner (use in CI)',
+  '--foreground': 'run every step in this process instead of a detached runner (for scripts)',
   '--run <run-id>': 'the run to show (default: the newest run of this checkout)',
   '--probe': 'ask the configured agent one JSON-schema question and require a valid answer (one call at the agent\'s model: its cheap default where it has one, else its own; set agent_config.<agent>.model to choose)',
   '--mock <screen>=<mock>': 'judge this screen next to its approved mock (repeat per screen; the screen is judged even when not listed)',
@@ -178,7 +178,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
     usage: [
       ['done-done verify [<journey>] --outcome "<what a user can now do>" [--claim-id <id>]', 'drive the journey in a run that outlives this command, check its evidence, judge each capture and record a receipt'],
       ['done-done verify --outcome "<claim>" [--feature <name>]', 'with no journey, the author agent drives a verify skill feature and the judge the user set judges its captures'],
-      ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process (CI)'],
+      ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process'],
     ],
     flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--claim-id <id>', '--wait', '--no-wait', '--foreground'],
     more: [RUNS_TEXT],
@@ -202,6 +202,15 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   overflow, squashed text, text clipped by its container and elements cut off by the left, right or top edge, writes the
   screenshot and its .dom.json record, and exits 1 naming each element, kind and text, 0 when there is none. A hit always
   fails: never wrap it in || true. Needs Chrome or Chromium (DONE_DONE_CHROME names the binary)`],
+  },
+  gate: {
+    usage: [['done-done gate [<head>] [--dir <folder>] [--pushed <time>]', 'no-model check for a hosted runner: PASS or FAIL: <reason> for a receipt committed under .done-done-receipts/']],
+    flags: ['--dir <folder>', '--pushed <time>'],
+    more: [`gate: reads git objects only, so it needs no config, judge, model key or evidence files, and a hosted runner never runs check, run or verify.
+  Copy the receipt that receipt wrote (<evidence root>/.done-done/receipts/<head>.json) into .done-done-receipts/ and commit it in a follow-up commit.
+  PASS when a receipt there is a well-formed judged pass, its head is <head> (default HEAD) or an ancestor of it, every file changed since that head is
+  inside the folder, and its time is not after the push (--pushed, default the commit time of <head>). It does not re-hash evidence: that is receipt --verify
+  on the machine that holds it. Needs the history back to the receipt head (fetch-depth: 0). Exit 0 PASS, 1 FAIL, 2 usage error`],
   },
   lint: {
     usage: [['done-done lint <PR URL | report file> <evidence folder>', 'merge gate on a worker\'s claim: prints PASS or FAIL: <reason>; the rules need no judge, model or config']],
@@ -588,7 +597,7 @@ function claimFromChecks(body: string, title: string, repo: string, cfg: Config,
   return { outcome: f.outcome, files, title };
 }
 
-// A PR body also names its head branch, which is the claim a CI checkout (a detached HEAD) is checking.
+// A PR body also names its head branch, which is the claim a detached-HEAD checkout is checking.
 function readSource(from: string): { body: string; title?: string; branch?: string } {
   if (from === '-') return { body: readFileSync(0, 'utf8') };
   if (/^https?:\/\//.test(from)) {
@@ -837,7 +846,7 @@ type Receipt = {
 const receiptsDir = (cfg: Config) => join(cfg.evidence.root, '.done-done', 'receipts');
 
 // A receipt names a cited file relative to the repo, or to an evidence root outside it under this prefix,
-// so any checkout of the repo (or a CI job that restored the evidence root) finds the same file.
+// so any checkout of the repo finds the same file.
 const IN_EVIDENCE = '<evidence root>/';
 
 function receiptPath(repo: string, cfg: Config, p: string): string {
@@ -853,6 +862,16 @@ function writeReceipt(cfg: Config, rec: Receipt): string {
   writeFileSync(`${path}.tmp`, `${JSON.stringify(rec, null, 2)}\n`, { mode: 0o600 });
   renameSync(`${path}.tmp`, path);
   return path;
+}
+
+// Why a parsed receipt is not a well-formed passing one (a judge block that names its judge and passes only captures the receipt cites), or null.
+function receiptFault(rec: Receipt, short: string): string | null {
+  if (!rec || typeof rec !== 'object' || rec.schema !== 2 || rec.result !== 'pass' || !Array.isArray(rec.files) || !rec.files.length) return `receipt for ${short} is malformed`;
+  if (!rec.files.every((f) => f && typeof f === 'object' && typeof f.path === 'string' && typeof f.sha256 === 'string')) return `receipt for ${short} is malformed`;
+  const j = rec.judge;
+  const badJudge = !j || typeof j !== 'object' || typeof j.route !== 'string' || typeof j.model !== 'string' || !['agent', 'model', 'session-only'].includes(j.independence) || !Array.isArray(j.verdicts) || !j.verdicts.length
+    || !j.verdicts.every((v) => v && v.verdict === 'pass' && rec.files.some((f) => f.path === v.path && f.sha256 === v.sha256));
+  return badJudge ? `receipt for ${short} has a malformed judge block` : null;
 }
 
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
@@ -874,13 +893,9 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
   } catch (e) {
     return fail(`receipt for ${short} is malformed (${(e as Error).message})`);
   }
-  if (!rec || typeof rec !== 'object' || rec.schema !== 2 || rec.result !== 'pass' || !Array.isArray(rec.files) || !rec.files.length) return fail(`receipt for ${short} is malformed`);
-  if (!rec.files.every((f) => f && typeof f === 'object' && typeof f.path === 'string' && typeof f.sha256 === 'string')) return fail(`receipt for ${short} is malformed`);
-  // The judge block must name its judge, and pass only captures this receipt cites.
+  const fault = receiptFault(rec, short);
+  if (fault) return fail(fault);
   const j = rec.judge;
-  const badJudge = !j || typeof j !== 'object' || typeof j.route !== 'string' || typeof j.model !== 'string' || !['agent', 'model', 'session-only'].includes(j.independence) || !Array.isArray(j.verdicts) || !j.verdicts.length
-    || !j.verdicts.every((v) => v && v.verdict === 'pass' && rec.files.some((f) => f.path === v.path && f.sha256 === v.sha256));
-  if (badJudge) return fail(`receipt for ${short} has a malformed judge block`);
   if (rec.head !== commit) return fail(`receipt records head ${String(rec.head).slice(0, 12)}, not ${short}`);
   const now = head(repo);
   if (now.commit !== commit) return fail(`HEAD is ${now.commit.slice(0, 12)}, not ${short}`);
@@ -938,7 +953,7 @@ function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: numb
   const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', result: 'pass', at: new Date().toISOString(), files: r.cited, judge: r.judgeBlock };
   const path = writeReceipt(cfg, rec);
   const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, files: rec.files.length, receipt: shown(repo, path) };
-  return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (CI or merge): done-done receipt --verify ${r.head.commit}`] } };
+  return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
@@ -964,9 +979,9 @@ function checkHelp(code: number, findings: Finding[], files: string[], { cfg, re
   if (judgeLevel === 'fail' && code === FAIL) return [`Capture the screen the outcome describes, then re-run this check: ${captureHint(cfg)}`];
   if (judgeLevel && code === INCONCLUSIVE) return ['Look at the capture yourself, or capture a clearer screen of the outcome and re-run this check'];
   if (code === PASS) {
-    // The CI gate needs a PR on a remote; without one, a receipt records the pass locally.
+    // The merge gate needs a PR on a remote; without one, a receipt records the pass locally.
     const citationArgs = citationBase === undefined ? '' : ` --citation-base ${arg(citationBase)}`;
-    if (spawnSync('git', ['remote', 'get-url', 'origin'], { cwd: repo }).status === 0) return [`Gate CI on this proof: done-done check --from <PR URL> --trusted-ref origin/main${citationArgs}`];
+    if (spawnSync('git', ['remote', 'get-url', 'origin'], { cwd: repo }).status === 0) return [`Gate the merge on this proof: done-done check --from <PR URL> --trusted-ref origin/main${citationArgs}`];
     const claimArgs = source ? ['--from', source] : ['--outcome', claim ?? '', ...files];
     return [`Record this pass for HEAD: done-done receipt ${claimArgs.map(arg).join(' ')}${citationArgs}`];
   }
@@ -1829,7 +1844,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
       : /^locate: no verify skill/.test(run.reason ?? '') ? ['Create the verify skill: done-done init']
       : /^locate:/.test(run.reason ?? '') ? [`Make ${cfg.skill} a real folder inside the repository (not a link), commit, then run again: ${again}`]
       : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, `Fix the cause, then run again: ${again}`])
-    : code === PASS ? [`Verify this receipt (CI or merge): done-done receipt --verify ${rec!.commit}`]
+    : code === PASS ? [`Verify this receipt (merge gate): done-done receipt --verify ${rec!.commit}`]
     : status === 'cancelled' ? [...(run.kind === 'maintain' ? [] : [`Start again from the failed step: done-done rerun --run ${run.run_id}`]), `List past runs: done-done history`]
     : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, ...(run.kind === 'maintain' ? [] : [`Fix the cause, commit, then run again from the failed step: done-done rerun --run ${run.run_id}`]), `Or start a new run: ${again}`];
   emit(result);
@@ -3287,6 +3302,61 @@ async function cmdLook(argv: string[]): Promise<number> {
   return hits.length ? FAIL : PASS;
 }
 
+// The folder of a branch where a receipt copied from the evidence root is committed, for `gate`.
+const GATE_DIR = '.done-done-receipts';
+
+// The reason no committed receipt vouches for `tip`, or null when one does. Reads git objects only: no config, no judge, no evidence files.
+function gateFault(repo: string, tip: string, dir: string, pushed: number): string | null {
+  const short = tip.slice(0, 12);
+  const names = git(repo, '-c', 'core.quotepath=off', 'ls-tree', '-r', '--name-only', tip, '--', dir).split('\n').filter((n) => n.endsWith('.json'));
+  if (!names.length) return `no receipt in ${dir}/ at ${short}`;
+  const reasons: string[] = [];
+  for (const name of names) {
+    const why = (() => {
+      let rec: Receipt;
+      try {
+        rec = JSON.parse(git(repo, 'show', `${tip}:${name}`));
+      } catch (e) {
+        return `${name} is malformed (${(e as Error).message})`;
+      }
+      const fault = receiptFault(rec, basename(name));
+      if (fault) return fault;
+      if (name !== `${dir}/${rec.head}.json`) return `${name} does not name its own head ${String(rec.head).slice(0, 12)}`;
+      try {
+        git(repo, 'merge-base', '--is-ancestor', rec.head, tip);
+      } catch {
+        return `receipt head ${rec.head.slice(0, 12)} is not ${short} or an ancestor of it (a shallow checkout needs full history)`;
+      }
+      const outside = git(repo, '-c', 'core.quotepath=off', 'diff', '--name-only', rec.head, tip).split('\n').filter((n) => n && !n.startsWith(`${dir}/`));
+      if (outside.length) return `${named(outside)} changed after receipt head ${rec.head.slice(0, 12)}, so its proof no longer covers ${short}`;
+      const at = Date.parse(rec.at);
+      if (!(Math.floor(at / 1000) <= Math.floor(pushed / 1000))) return `receipt time ${rec.at} is not before the push (${new Date(pushed).toISOString()})`;
+      return null;
+    })();
+    if (!why) return null;
+    reasons.push(why);
+  }
+  return reasons.join('; ');
+}
+
+// `done-done gate`: the no-model check a hosted runner can run. A receipt committed under GATE_DIR vouches for the head.
+function cmdGate(argv: string[]): number {
+  const { values, positionals } = parseArgs({ args: argv, options: { dir: { type: 'string' }, pushed: { type: 'string' } }, allowPositionals: true });
+  if (positionals.length > 1) throw new UsageError('gate takes at most one head', 'Re-run as: done-done gate [<head>] [--dir <folder>] [--pushed <time>]');
+  const repo = repoRoot();
+  let tip: string;
+  try {
+    tip = git(repo, 'rev-parse', '--verify', `${positionals[0] ?? 'HEAD'}^{commit}`);
+  } catch {
+    throw new UsageError(`gate: ${positionals[0]} is not a commit in this checkout`, 'Pass the pull request head sha, or run it in a checkout of that head');
+  }
+  const pushed = values.pushed === undefined ? Number(git(repo, 'log', '-1', '--format=%ct', tip)) * 1000 : Date.parse(values.pushed);
+  if (Number.isNaN(pushed)) throw new UsageError(`gate: --pushed ${values.pushed} is not a time`, 'Pass an ISO time such as 2026-10-20T09:05:56Z');
+  const why = gateFault(repo, tip, (values.dir ?? GATE_DIR).replace(/\/+$/, ''), pushed);
+  console.log(why === null ? 'PASS' : `FAIL: ${why}`);
+  return why === null ? PASS : FAIL;
+}
+
 function cmdLint(argv: string[]): number {
   const { positionals } = parseArgs({ args: argv, allowPositionals: true });
   if (positionals.length !== 2) throw new UsageError('lint needs a PR URL or report file, then the evidence folder', 'Re-run as: done-done lint <PR URL | report file> <evidence folder>');
@@ -3403,6 +3473,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'design') return await cmdDesign(rest);
     if (cmd === 'look') return await cmdLook(rest);
     if (cmd === 'lint') return cmdLint(rest);
+    if (cmd === 'gate') return cmdGate(rest);
     if (cmd === 'status') return cmdStatus(rest);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);

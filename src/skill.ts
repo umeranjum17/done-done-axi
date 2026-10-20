@@ -70,6 +70,10 @@ with no judge or model and prints \`PASS\` or \`FAIL: <reason>\` (exit 1 on a fa
 empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
 \`evidence: not proven: <cause>\` passes. Fix the cause it names and re-run; never edit the evidence to get past it.
 
+A CI job gets no model and no key, so it never runs \`check\`, \`run\` or \`verify\`. Proof runs on the desktop, then commit the
+receipt it wrote (\`<evidence root>/.done-done/receipts/<head>.json\`) into \`.done-done-receipts/\` in a follow-up commit. CI runs only
+\`done-done gate <head>\` (full history): \`PASS\` or \`FAIL: <reason>\` for a missing, late, other-head or moved-on receipt.
+
 \`init\` also has that agent write the repo's \`.agents/skills/verify-<app>/SKILL.md\` (never overwriting one): read it before
 you drive the app, and fix it when it is wrong.
 
