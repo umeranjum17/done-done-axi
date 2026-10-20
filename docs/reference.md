@@ -223,7 +223,7 @@ journeys:
 
 ### Lint check
 
-`done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, no config. It prints `PASS` or `FAIL: <reason>` and exits 0, 1, or 2 on a usage error. A PR URL is read with `gh pr view`; a file is read as the report.
+`done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS` or `FAIL: <reason>` and exits 0, 1, or 2 on a usage error. A PR URL is read with `gh pr view`; a file is read as the report.
 
 - The newest `## Checks` block needs `outcome:`, `repro:`, `proof:` and `evidence:`.
 - `proof:` names a command or path, and the repo's `done-done-verify-<app>` skill (a legacy `verify-<app>` skill is read too); it may say `no verify skill` only when `.agents/skills/` in the current folder holds none.
@@ -231,6 +231,9 @@ journeys:
 - `evidence: not proven: <cause>` passes.
 - Otherwise each named file (relative to the evidence folder, or absolute) exists, is non-empty and is newer than the evidence folder itself; no two are byte-identical; and at least one has a hash no other PR used. Hashes are kept in `lint.hashes` and each run is appended to `lint.log`, both in `~/.done-done` (`$DONE_DONE_HOME`). A later lint of the same PR is not reuse.
 - A PR with 1,000 or more added non-generated lines fails. Lockfiles, `vendor/`, `dist/` and `LICENSE`-type files do not count, and neither do deletions or lines moved between files. A dependabot or renovate PR passes.
+- Two optional size rules, both off by default and switched on per repo in `.done-done.yaml` (read from the current folder; they apply to a PR URL, never a report file). With both off a big PR is counted exactly as above. Each runs only when the PR is still at 1,000 lines, and an API failure keeps the full count.
+  - `checks.upstream_catch_up: true`: in a fork, lines the parent repo already shipped are not authored here, so lint subtracts the changes between the PR's base and the merge base with the parent's default branch. A PR that merges in no new upstream commit loses nothing.
+  - `checks.moved_from: true`: a line in the PR body `moved-from: <owner>/<repo>@<ref> <dst-prefix>=<src-prefix>` (more `dst=src` pairs may follow) cancels added lines that match, byte for byte after trimming, the file at the same path under `<src-prefix>` in that repo at `<ref>`. The source repo must have the PR's owner; authored lines still count.
 
 ### Base-ref before
 
@@ -572,6 +575,8 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `evidence.allow_dirty` | `false` |
 | `evidence.ignore_paths` | `[]` |
 | `checks.fix_title` | `^(fix\|bugfix\|hotfix)\b`: titles that need a repro |
+| `checks.upstream_catch_up` | `false`; `true` lets `lint` subtract a fork's upstream catch-up lines from the size count, see [Lint check](#lint-check) |
+| `checks.moved_from` | `false`; `true` lets `lint` subtract lines a PR moves from another repo of the same owner, see [Lint check](#lint-check) |
 | `agent` | as in the global file; set here, it wins |
 | `auto_fix.maintain` | as in the global file (`0`, report only); set here, it wins |
 | `auto_fix.verify` | as in the global file (`0`, report only); set here, it wins |
