@@ -40,7 +40,7 @@ export type Config = {
   secrets: Secrets;
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The judge always runs; there is no key that turns it off.
-  // route: claude-code, answerer:<agent> or openai:key, set by the user ('' until they do); model: '' for that agent's agent_config model.
+  // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
   judge: { route: string; model: string; floor: number; env_file: string };
   trusted: boolean; // project file came from --trusted-ref
@@ -53,7 +53,11 @@ export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // claude judges through claude-code. An acp:<target> agent cannot be sent an image. codex cannot run tools-off, so it does not judge.
 export const ANSWERER_JUDGES = ['opencode', 'pi', 'gemini'];
 // BYOKit key routes: a judge on the user's own API key, read from this environment variable, with no agent CLI.
-export const KEY_ROUTES: Record<string, string> = { 'openai:key': 'OPENAI_API_KEY' };
+// openai:key needs judge.model; a route with a model here runs it when judge.model is empty (the free MiniMax route).
+export const KEY_ROUTES: Record<string, string> = { 'openai:key': 'OPENAI_API_KEY', 'minimax:key': 'MINIMAX_API_KEY' };
+export const KEY_ROUTE_MODELS: Record<string, string> = { 'minimax:key': 'MiniMax-M3.1-Flash-Preview' };
+// The route that judges again when a route's own call fails, so a down or rate-limited free route never leaves a check with no verdict.
+export const FALLBACK_ROUTES: Record<string, string> = { 'minimax:key': 'claude-code' };
 // Or acp:<target>, any agent the user's acpx bridge can start; the target is one argv word, so it never reads as a flag.
 const ROUTE_FORM = `claude-code (for claude), answerer:<agent> for one of ${ANSWERER_JUDGES.join(', ')}, or a key route (${Object.keys(KEY_ROUTES).join(', ')}); an acp:<target> agent cannot judge, since done-done cannot send it an image`;
 export const isJudgeRoute = (v: unknown) => typeof v === 'string' && (v === 'claude-code' || Object.hasOwn(KEY_ROUTES, v) || ANSWERER_JUDGES.some((a) => v === `answerer:${a}`));

@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
-import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectJudge, toollessReason } from './agents.js';
+import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason } from './agents.js';
 import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, UsageError } from './config.js';
 import { backend, judge, judgeable, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
@@ -798,7 +798,8 @@ async function runCheck(argv, run) {
     // No result without the judge: once the plain checks pass, with none set it asks the user, or stops with the command that saves one.
     await withChoice('judge', cfg);
     run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
-    const j = await judge(cfg, () => selectJudge(cfg, run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg)), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+    const author = () => (run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg));
+    const j = await judge(cfg, () => selectJudge(cfg, author()), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author()));
     // The judge's next step leads the help when its verdict decides the result.
     if (j.judged.some((r) => r.verdict === 'fail'))
         judgeLevel = 'fail';

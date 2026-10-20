@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import { AGENTS, ANSWERER_JUDGES, CHEAP, JUDGE_DEFAULT, type Config, EFFORT_FLAGS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
+import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, type Config, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
 
 // How done-done starts a coding agent for one step: a fresh, single-shot session that
@@ -360,15 +360,21 @@ export function selectJudge(cfg: Config, found: { agent: string; model: string }
   if (!route) throw noJudge();
   // A key route judges on the user's own key at judge.model; an agent route judges through that agent at its model.
   const keyed = Object.hasOwn(KEY_ROUTES, route);
-  if (keyed && !cfg.judge.model) throw new UsageError(`judge: judge.route ${route} needs judge.model, a model your key can use that reads images`, 'Set judge.model in ~/.done-done/config.yaml');
+  if (keyed && !cfg.judge.model && !KEY_ROUTE_MODELS[route]) throw new UsageError(`judge: judge.route ${route} needs judge.model, a model your key can use that reads images`, 'Set judge.model in ~/.done-done/config.yaml');
   const agent = keyed ? route : route === 'claude-code' ? 'claude' : route.slice('answerer:'.length);
-  const model = cfg.judge.model || (agent === 'pi' ? cfg.agent_config.pi?.model || JUDGE_DEFAULT : modelFor(cfg, agent));
+  const model = cfg.judge.model || KEY_ROUTE_MODELS[route] || (agent === 'pi' ? cfg.agent_config.pi?.model || JUDGE_DEFAULT : modelFor(cfg, agent));
   if (!model) throw new UsageError(`judge: no model for ${route}`, `Set judge.model in ~/.done-done/config.yaml`);
   // acp:claude-code is claude for independence; an author with no known model is never apart by model.
   const independence = keyed
     ? found.model && model === found.model ? 'session-only' : 'agent'
     : agent !== knownAgentOf(found.agent) ? 'agent' : found.model && model !== found.model ? 'model' : 'session-only';
   return { route, agent, model, independence, author: { agent: found.agent, model: found.model } };
+}
+
+// The judge that answers when the set route's call fails (FALLBACK_ROUTES), at that agent's own default model; none for a route with no fallback.
+export function selectFallback(cfg: Config, found: { agent: string; model: string }): JudgeChoice | undefined {
+  const route = FALLBACK_ROUTES[cfg.judge.route];
+  return route ? selectJudge({ ...cfg, judge: { ...cfg.judge, route, model: '' } }, found) : undefined;
 }
 
 type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
