@@ -37,7 +37,7 @@ const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DO
 const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then these four keys, each at the start of a line:
   outcome: <what a user can now do>
   repro: <command that failed before and passes now, or n/a; a fix PR needs one>
-  proof: <the command or path that drove the real product; name the repo's verify-<app> skill, or say "no verify skill">
+  proof: <the command or path that drove the real product; name the repo's done-done-verify-<app> skill, or say "no verify skill">
   evidence: <the evidence file paths, or "not proven: <cause>">`;
 const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/runs/<app>/<run-id> (run.json, events.jsonl, logs/<step>.log,
   agents/<n>-<name>.json for each agent call) and goes on when the command that started it ends;
@@ -56,7 +56,7 @@ const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/ru
   ignored files copied in, and verify runs again there, up to n times. Result: changed (the fix on a done-done/verify-<run-id>
   branch, your HEAD still fails; exit 1) or blocked (dirty checkout, a guard, or every attempt used; exit 1)`;
 const MAINTAIN_TEXT = `maintain reads the verify skill and the source; HEAD, git status and the content of changed files must be the same before and after.
-  locate: the verify skill (.agents/skills/verify-<app>/SKILL.md); none: blocked, create it with done-done init
+  locate: the verify skill (.agents/skills/done-done-verify-<app>/SKILL.md); none: blocked, create it with done-done init
   hygiene: every local link in the skill resolves; features/README.md lists each features/*.md file once
   source-wave: one fresh read-only reader per feature file at the configured agent (agent, agent_config) explains it from source
   reconcile: each file:line the skill or a reader cites must exist (a bare file name matches a tracked file); one tool-less call
@@ -76,7 +76,7 @@ const DOCTOR_TEXT = `doctor changes nothing except the --probe call record (the 
   for claude-code an executable claude binary and the judge kit, for answerer:<agent> that agent's CLI and the
   kit, for openai:key OPENAI_API_KEY and the kit; doctor does not call the model; missing when none is set, with the command
   that saves the user's choice).
-  also listed: verify_skill (.agents/skills/verify-<app>/), agent_settings (agent, model, effort,
+  also listed: verify_skill (.agents/skills/done-done-verify-<app>/), agent_settings (agent, model, effort,
   args, path and agent_timeout, each with the file it came from: the global config, .done-done.yaml or default),
   judge_choice (the judge, and how far it is from the author: another agent, another model, or session-only), ffprobe (video evidence only).
   --probe also asks the agent one JSON-schema question (one call at the agent's model: its cheap default where it has one, else its own; set agent_config.<agent>.model to choose; its record goes to
@@ -126,7 +126,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   init: {
     usage: [
       ['done-done init', 'write a minimal .done-done.yaml (evidence lives outside the repo) and, when absent, a commented ~/.done-done/config.yaml'],
-      ['done-done init', 'have the agent write .agents/skills/verify-<app> from this repo\'s own proof paths (never overwrites; no agent, no skill)'],
+      ['done-done init', 'have the agent write .agents/skills/done-done-verify-<app> from this repo\'s own proof paths (never overwrites; no agent, no skill)'],
       ['done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor', 'set the coding agent done-done starts and its model (in a terminal, init asks when none is set)'],
       ['done-done init --judge pi --judge-model openai-codex/gpt-6-luna', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
       ['done-done init --hook claude', 'also show this repo\'s done-done state at each Claude Code session start'],
@@ -216,7 +216,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
     usage: [['done-done lint <PR URL | report file> <evidence folder>', 'merge gate on a worker\'s claim: prints PASS or FAIL: <reason>; the rules need no judge, model or config']],
     flags: [],
     more: [`lint: a deterministic gate that is on whenever you call it. The newest "## Checks" block of the PR body (gh pr view) or report file needs
-  outcome:, repro:, proof: and evidence: lines. proof names a command or path, and the repo's verify-<app> skill, or says "no verify skill"
+  outcome:, repro:, proof: and evidence: lines. proof names a command or path, and the repo's done-done-verify-<app> skill, or says "no verify skill"
   when the repo (the current folder) has none; repro is not n/a on a fix PR. evidence names files in the evidence folder (or absolute):
   each exists, is non-empty and is newer than the folder itself; no two are byte-identical; at least one has a hash no other PR used
   (hash store lint.hashes in ~/.done-done, or $DONE_DONE_HOME). "evidence: not proven: <cause>" passes. A PR with 1,000 or more added
@@ -2452,7 +2452,7 @@ function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown
 }
 
 function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolean, features: Feature[], omitted: number): string {
-  const name = `verify-${app}`;
+  const name = `done-done-verify-${app}`;
   const source = cited(s.launch.source);
   const launch = isolated
     ? `${s.launch.steps.trim()}\n\nSafe: ${clause(s.launch.why)} (from \`${source}\`).`
@@ -2519,6 +2519,20 @@ function symlinkOnPath(repo: string, p: string): string | undefined {
     }
   }
   return undefined;
+}
+
+// An older init wrote verify-<app>; with no `skill:` set, init moves that folder to the prefixed name once, and says so.
+// A prefixed folder that already exists wins, and the old one is left alone.
+function renameLegacySkill(repo: string, cfg: Config): string | undefined {
+  const old = `.agents/skills/verify-${cfg.app}`;
+  if (cfg.from.skill || cfg.skill !== old) return undefined;
+  const next = `.agents/skills/done-done-verify-${cfg.app}`;
+  if (existsSync(join(repo, next)) || symlinkOnPath(repo, join(repo, old)) !== undefined) return undefined;
+  renameSync(join(repo, old), join(repo, next));
+  const md = join(repo, next, 'SKILL.md');
+  if (existsSync(md)) writeFileSync(md, readFileSync(md, 'utf8').replace(`name: verify-${cfg.app}`, `name: done-done-verify-${cfg.app}`).replace(`name: "verify-${cfg.app}"`, `name: "done-done-verify-${cfg.app}"`));
+  cfg.skill = next;
+  return `${old} -> ${next}`;
 }
 
 const SCAFFOLD_HELP = 'The verify skill was not written: fix the cause verify_skill names, then re-run: done-done init';
@@ -2931,6 +2945,7 @@ async function cmdInit(argv: string[]): Promise<number> {
   const existed = existsSync(file);
   const cfg = loadConfig(repo); // validates the existing project config; malformed -> exit 2, no writes
   if (cfg.skill.split(/[\\/]/).includes('..')) throw new UsageError(`verify skill ${cfg.skill} has a .. segment; use a path inside the repo`, 'Set skill to a repo-relative path in .done-done.yaml');
+  const renamed = renameLegacySkill(repo, cfg);
   const spec = values.hook === undefined ? undefined : HOOKS[values.hook];
   const hook = spec?.make(repo); // likewise validated before any write
   // The agent: --agent, else with none set the user's pick in a terminal (asked before any write); never done-done's.
@@ -3000,6 +3015,7 @@ async function cmdInit(argv: string[]): Promise<number> {
       app: fresh.app,
       evidence_root: root,
       gitignore: added ? `added ${rel!.replace(/\/+$/, '')}/` : 'unchanged',
+      ...(renamed && { skill_renamed: renamed }),
       verify_skill: verify.status,
       ...agentHook.out,
       help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...agentHook.help, ...ag.help, ...jg.help, ...(verify.failed ? [SCAFFOLD_HELP] : []), `Commit ${commitFirst(fresh.skill)}`],
@@ -3039,6 +3055,7 @@ app: ${JSON.stringify(cfg.app)}
     app: cfg.app,
     evidence_root: root,
     gitignore: added ? `added ${rel!.replace(/\/+$/, '')}/` : 'unchanged',
+    ...(renamed && { skill_renamed: renamed }),
     verify_skill: verify.status,
     ...agentHook.out,
     help: [

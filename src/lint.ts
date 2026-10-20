@@ -72,9 +72,9 @@ export function lint(src: string, ev: string, dir: string, run: Gh = gh): Verdic
   if (missing.length) return fail(`missing or empty Checks line: ${missing.join(', ')}`);
   if (!/[/`]|\.\w{2,4}\b|\b(npm|pnpm|yarn|npx|bash|sh|python3?|node|cargo|go|gradle|make|adb|xcrun|done-done)\b/.test(f.proof)) return fail('proof: names no command or path');
   const skills = join(process.cwd(), '.agents', 'skills');
-  const hasVerify = existsSync(skills) && readdirSync(skills).some((d) => d.startsWith('verify-'));
+  const hasVerify = existsSync(skills) && readdirSync(skills).some((d) => /^(done-done-)?verify-/.test(d));
   if (!f.proof.includes('verify-') && (hasVerify || !/no verify skill/i.test(f.proof)))
-    return fail(`proof: does not name the verify-<app> skill run${hasVerify ? '' : ' (or "no verify skill")'}`);
+    return fail(`proof: does not name the done-done-verify-<app> skill run${hasVerify ? '' : ' (or "no verify skill")'}`);
   if (NOT_APPLICABLE.test(f.repro) && FIX_TITLE.test(title)) return fail('repro: is n/a on a fix PR');
   if (/^not proven\s*:\s*\S/i.test(f.evidence)) return log({ ok: true, why: `not-proven: ${f.evidence.slice(0, 120)}`, head });
 

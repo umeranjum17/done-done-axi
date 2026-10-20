@@ -296,7 +296,7 @@ test('a run id from run resolves in status, and a capture from an uncommitted tr
 
 test('init says to commit the config and verify skill before the first capture', () => {
   const { dd } = setup();
-  assert.match(dd('init').out, /Commit \.done-done\.yaml and \.agents\/skills\/verify-notes before your first capture/);
+  assert.match(dd('init').out, /Commit \.done-done\.yaml and \.agents\/skills\/done-done-verify-notes before your first capture/);
 });
 
 test('init --journey refuses an absolute path inside the repo and names the relative form', () => {
@@ -344,9 +344,9 @@ test('Checks block: form rules, not-proven and trusted config', () => {
   assert.match(toon(gone).error, /checks\.not_proven is gone: done-done never gives a result without its judge/);
   writeFileSync(join(repo, '.done-done.yaml'), JUDGED);
   sh('commit', '-qam', 'drop the allowance');
-  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
+  mkdirSync(join(repo, '.agents', 'skills', 'done-done-verify-notes'), { recursive: true });
   write(`## Checks\noutcome: x\nrepro: n/a\nproof: \`done-done run shots\`\nevidence: ${files[0]}\n`);
-  assert.match(dd('check', '--from', '../pr.md').out, /does not name the project's verify skill verify-notes/);
+  assert.match(dd('check', '--from', '../pr.md').out, /does not name the project's verify skill done-done-verify-notes/);
   // A local file has no PR title, so the HEAD commit subject is its title, and a fix still needs a repro.
   sh('commit', '-q', '--allow-empty', '-m', 'fix: home crash'); assert.match(dd('check', '--from', '../pr.md').out, /a fix needs a repro, not n\/a/);
   sh('commit', '-q', '--allow-empty', '-m', 'docs: home'); assert.doesNotMatch(dd('check', '--from', '../pr.md').out, /a fix needs a repro/);
@@ -1238,8 +1238,8 @@ const scaffoldAnswer = (over = {}) => JSON.stringify({
 const featureFiles = (skillDir) => readdirSync(join(skillDir, 'features')).sort();
 // A hand-written verify skill, so an init test about config never asks the agent to write one.
 const keepSkill = (repo, app) => {
-  mkdirSync(join(repo, '.agents', 'skills', `verify-${app}`), { recursive: true });
-  writeFileSync(join(repo, '.agents', 'skills', `verify-${app}`, 'SKILL.md'), `# verify-${app}\n`);
+  mkdirSync(join(repo, '.agents', 'skills', `done-done-verify-${app}`), { recursive: true });
+  writeFileSync(join(repo, '.agents', 'skills', `done-done-verify-${app}`, 'SKILL.md'), `# done-done-verify-${app}\n`);
 };
 
 test("init has the agent write the verify skill from the repo's own proof path, not the start script", () => {
@@ -1252,7 +1252,7 @@ test("init has the agent write the verify skill from the repo's own proof path, 
   assert.equal(call.cwd, repo, 'claude reads the repo with its read tools');
   assert.match(call.stdin, /File scripts\/verify\/drive\.sh:\n#!\/bin\/sh\n# The proof drive/, "the agent is given the repo's own proof script");
   assert.match(call.stdin, /File \.done-done\.yaml:\n.*\n {2}add:\n {4}command: scripts\/verify\/drive\.sh add milk/s, 'and its journeys');
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
+  const dir = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   const body = readFileSync(join(dir, 'SKILL.md'), 'utf8');
   assert.match(body, /^## Launch\n\nENGINE=stub ENGINE_HOME="\$\(mktemp -d\)" scripts\/verify\/drive\.sh up\n\nSafe: the stub engine .* runs it \(from `scripts\/verify\/drive\.sh`\)\.$/m, 'Launch is the stub engine with its own state');
   assert.doesNotMatch(body, /npm start/, 'never the start script that runs the real engine');
@@ -1260,7 +1260,7 @@ test("init has the agent write the verify skill from the repo's own proof path, 
   assert.deepEqual(featureFiles(dir), ['README.md', 'add-a-note.md']);
   assert.match(readFileSync(join(dir, 'features', 'add-a-note.md'), 'utf8'), /^2\. Run scripts\/verify\/drive\.sh add milk\.\n3\. Capture: save the output and exit status to \$DONE_DONE_EVIDENCE_ROOT\/add-a-note\.txt,/m);
   const before = body;
-  assert.match(toon(doctorIn(repo, s.env, 'init')).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/SKILL\.md already exist; delete the skill folder to regenerate$/, 'a finished skill is named, never overwritten');
+  assert.match(toon(doctorIn(repo, s.env, 'init')).verify_skill, /^skipped: \.agents\/skills\/done-done-verify-notes\/SKILL\.md already exist; delete the skill folder to regenerate$/, 'a finished skill is named, never overwritten');
   assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), before, 're-run is idempotent');
   assert.equal(s.calls().length, 1, 're-run asks the agent nothing');
   sh('add', '-A');
@@ -1278,7 +1278,7 @@ test('init says the launch is not isolated when the repo shows no safe proof pat
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
   assert.equal(toon(r).verify_skill, 'written by claude; its launch is not isolated, so read Launch before a drive');
-  const body = readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8');
+  const body = readFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md'), 'utf8');
   assert.match(body, /^## Launch\n\nNot isolated: bin\/cli\.js keeps its notes in your own HOME\. .*may use real accounts or the owner's own state\. The drive changes no repo file/m);
 });
 
@@ -1295,7 +1295,7 @@ test('init with a tool-less agent writes no verify skill that cites a file its p
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 1, r.out);
   assert.match(toon(r).verify_skill, /^not written: opencode's answer is unusable: the launch cites scripts\/verify\/drive\.sh, whose text is not in the prompt/);
-  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill that cites a file the agent never read');
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes')), false, 'no skill that cites a file the agent never read');
   assert.equal(s.calls().filter((c) => c.agent === 'opencode').length, 1, 'a bad answer is not asked again');
 });
 
@@ -1308,7 +1308,7 @@ test('init labels a launch not isolated when its source is a manifest, whatever 
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
   assert.equal(toon(r).verify_skill, 'written by claude; its launch is not isolated, so read Launch before a drive');
-  assert.doesNotMatch(readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8'), /^Safe:/m, 'a manifest is never a safe launch');
+  assert.doesNotMatch(readFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md'), 'utf8'), /^Safe:/m, 'a manifest is never a safe launch');
 });
 
 test('init lets a tool-less agent cite an app file type it was shown, such as a Vue component', () => {
@@ -1377,7 +1377,7 @@ test('init refuses a launch that cites a secret-looking file, even when claude r
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 1, r.out);
   assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: the launch cites \.env, a secret-looking file, which can not be a source; record /);
-  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill from a secret launch source');
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes')), false, 'no skill from a secret launch source');
 });
 
 test('init lets a tool-less agent cite a nested bin file it was shown', () => {
@@ -1420,7 +1420,7 @@ test('init writes the Safe label from the model flag for a tracked non-manifest 
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
   assert.equal(toon(r).verify_skill, 'written by claude');
-  assert.match(readFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), 'utf8'), /^Safe: the stub engine \(from `scripts\/verify\/drive\.sh`\)\.$/m);
+  assert.match(readFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md'), 'utf8'), /^Safe: the stub engine \(from `scripts\/verify\/drive\.sh`\)\.$/m);
 });
 
 test('init with a tool-less agent cites an extensionless bin file or a Java source it was shown', () => {
@@ -1491,7 +1491,7 @@ test('init with no agent set writes no verify skill and asks for the agent', () 
 
 test('init writes no verify skill when the agent fails or cites a file the repo does not track', () => {
   const { repo, env } = shapeRepo('proof', 'notes');
-  const dir = join(repo, '.agents', 'skills', 'verify-notes');
+  const dir = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   const failed = stubAgents(env, 'error');
   const r = doctorIn(repo, failed.env, 'init');
   assert.equal(r.code, 1, r.out);
@@ -1511,26 +1511,40 @@ test('init writes no verify skill when the agent fails or cites a file the repo 
   assert.equal(existsSync(dir), false);
 });
 
+test('init moves an older verify-<app> skill to the done-done- name once, and says so', () => {
+  const { repo, dd, sh } = shapeRepo('cli', 'notes');
+  const old = join(repo, '.agents', 'skills', 'verify-notes');
+  mkdirSync(old, { recursive: true });
+  writeFileSync(join(old, 'SKILL.md'), '---\nname: "verify-notes"\n---\n\n# verify-notes\n');
+  assert.equal(dd('doctor').out.includes('verify-notes/SKILL.md'), true, 'before init, the older skill is still the one read');
+  const r = dd('init');
+  assert.equal(toon(r).skill_renamed, '.agents/skills/verify-notes -> .agents/skills/done-done-verify-notes');
+  assert.equal(existsSync(old), false, 'the old folder is moved, not copied');
+  assert.match(readFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md'), 'utf8'), /^name: "done-done-verify-notes"$/m);
+  assert.equal(toon(dd('init')).skill_renamed, undefined, 'a second init has nothing to move');
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'and makes no duplicate');
+});
+
 test('init never overwrites an existing verify skill', () => {
   const { repo, dd } = shapeRepo('cli', 'notes');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md');
   mkdirSync(dirname(skill), { recursive: true });
   writeFileSync(skill, '# hand-written\n');
   const r = dd('init');
   assert.equal(r.code, 2, r.out);
-  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/SKILL\.md already exist; delete the skill folder to regenerate$/);
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/done-done-verify-notes\/SKILL\.md already exist; delete the skill folder to regenerate$/);
   assert.equal(readFileSync(skill, 'utf8'), '# hand-written\n', 'the existing file is kept');
 });
 
 test('init writes the verify skill all-or-nothing: a pre-existing features file blocks the whole scaffold', () => {
   const { repo, env } = shapeRepo('cli', 'notes');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'features', 'add.md'), '# kept\n');
   const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
-  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/features\/add\.md already exist; delete the skill folder to regenerate$/);
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/done-done-verify-notes\/features\/add\.md already exist; delete the skill folder to regenerate$/);
   assert.equal(existsSync(join(skill, 'SKILL.md')), false, 'no SKILL.md next to the blocked scaffold');
   assert.equal(existsSync(join(skill, 'features', 'README.md')), false, 'no feature index next to it');
   assert.equal(readFileSync(join(skill, 'features', 'add.md'), 'utf8'), '# kept\n', 'the existing file is kept byte-identical');
@@ -1538,12 +1552,12 @@ test('init writes the verify skill all-or-nothing: a pre-existing features file 
 
 test('init writes the verify skill all-or-nothing: a directory at a target path blocks it', () => {
   const { repo, env } = shapeRepo('cli', 'notes');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features', 'add.md'), { recursive: true });
   const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
-  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/features\/add\.md already exist; delete the skill folder to regenerate$/);
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/done-done-verify-notes\/features\/add\.md already exist; delete the skill folder to regenerate$/);
   assert.equal(existsSync(join(skill, 'SKILL.md')), false, 'no partial scaffold');
   assert.equal(existsSync(join(skill, 'features', 'README.md')), false, 'no feature index next to it');
 });
@@ -1555,18 +1569,18 @@ test('init refuses a feature drive that is only a period, instead of crashing', 
   assert.equal(r.code, 1, r.out);
   assert.doesNotMatch(r.out, /TypeError/, 'no uncaught error');
   assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: has a feature without a title, reach, drive, source or capture; record /);
-  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes')), false, 'no skill from an empty drive');
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes')), false, 'no skill from an empty drive');
 });
 
 test('init blocks a skill missing only SKILL.md before asking the agent', () => {
   const { repo, env } = shapeRepo('cli', 'notes');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'features', 'README.md'), '# kept\n');
   const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
-  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/verify-notes\/features\/README\.md already exist; delete the skill folder to regenerate$/);
+  assert.match(toon(r).verify_skill, /^skipped: \.agents\/skills\/done-done-verify-notes\/features\/README\.md already exist; delete the skill folder to regenerate$/);
   assert.equal(s.calls().length, 0, 'the run is already determined, so no agent call is spent on it');
   assert.equal(readFileSync(join(skill, 'features', 'README.md'), 'utf8'), '# kept\n', 'nothing overwritten');
   assert.equal(existsSync(join(skill, 'SKILL.md')), false, 'no SKILL.md next to the blocked scaffold');
@@ -1590,7 +1604,7 @@ test('init on a repo with nothing tracked says to commit first and asks the agen
 
 test('a feature titled so it slugs to the index name is filed under a different slug', () => {
   const { repo, env } = shapeRepo('cli', 'notes');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'README', reach: 'the README page', drive: 'read the README', source: 'README.md', capture: 'text' }] }));
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 0, r.out);
@@ -1604,19 +1618,19 @@ test('a verify-skill write blocked by a file at the skill folder leaves no temp 
   const { repo, env } = shapeRepo('cli', 'notes');
   const skills = join(repo, '.agents', 'skills');
   mkdirSync(skills, { recursive: true });
-  writeFileSync(join(skills, 'verify-notes'), 'a file where the skill folder goes\n');
+  writeFileSync(join(skills, 'done-done-verify-notes'), 'a file where the skill folder goes\n');
   const s = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'run node bin/cli.js add', source: 'bin/cli.js', capture: 'text' }] }));
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 1, r.out);
   assert.match(toon(r).verify_skill, /^not written: the verify skill could not be written .*; nothing was left behind, so fix the cause and re-run init$/);
-  assert.equal(existsSync(join(skills, 'verify-notes', 'SKILL.md')), false, 'no SKILL.md under the blocked path');
+  assert.equal(existsSync(join(skills, 'done-done-verify-notes', 'SKILL.md')), false, 'no SKILL.md under the blocked path');
   assert.deepEqual(readdirSync(skills).filter((n) => n.includes('.tmp-')), [], 'the temp dir is cleaned up');
 });
 
 test('a verify-skill write that fails at the SKILL.md rename removes the feature files it moved', { skip: process.getuid?.() === 0 && 'root bypasses directory modes' }, () => {
   const { repo, env } = shapeRepo('cli', 'notes');
   const skills = join(repo, '.agents', 'skills');
-  const skill = join(skills, 'verify-notes');
+  const skill = join(skills, 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   chmodSync(skill, 0o555);
   try {
@@ -1667,7 +1681,7 @@ test('init skips the verify skill behind a symlinked ancestor and writes the res
   const { dir, repo, dd } = shapeRepo('cli', 'notes');
   mkdirSync(join(dir, 'elsewhere'));
   symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents'));
-  writeFileSync(join(repo, '.done-done.yaml'), 'skill: .agents/skills/verify-notes\n');
+  writeFileSync(join(repo, '.done-done.yaml'), 'skill: .agents/skills/done-done-verify-notes\n');
   const r = dd('init');
   assert.equal(r.code, 2, r.out);
   assert.match(toon(r).verify_skill, /^skipped, \.agents is a symlink/);
@@ -1677,14 +1691,14 @@ test('init skips the verify skill behind a symlinked ancestor and writes the res
 
 test('init skips the verify skill when a symlink sits beneath the skill dir', () => {
   const { dir, repo, dd } = shapeRepo('cli', 'notes');
-  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
+  mkdirSync(join(repo, '.agents', 'skills', 'done-done-verify-notes'), { recursive: true });
   mkdirSync(join(dir, 'elsewhere'));
-  symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents', 'skills', 'verify-notes', 'features'));
+  symlinkSync(join(dir, 'elsewhere'), join(repo, '.agents', 'skills', 'done-done-verify-notes', 'features'));
   const r = dd('init');
   assert.equal(r.code, 2, r.out);
   assert.match(toon(r).verify_skill, /features is a symlink/);
   assert.deepEqual(readdirSync(join(dir, 'elsewhere')), [], 'no feature file is written through the symlink');
-  assert.equal(existsSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md')), false, 'no partial scaffold');
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md')), false, 'no partial scaffold');
 });
 
 test('init outside a git repository reports a clear usage error', () => {
@@ -2891,9 +2905,9 @@ process.exitCode = 1;`;
 
 test('verify with no journey: the author agent drives the verify skill feature, the judge passes it; a wrong claim parks at the gate until respond --action fix', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\n');
-  const skill = join(t.repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(t.repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '---\nname: verify-notes\n---\n# verify-notes\n\n## Launch\n\nnode src/app.js\n');
+  writeFileSync(join(skill, 'SKILL.md'), '---\nname: done-done-verify-notes\n---\n# done-done-verify-notes\n\n## Launch\n\nnode src/app.js\n');
   writeFileSync(join(skill, 'features', 'README.md'), '- [Add a note](add-note.md)\n');
   writeFileSync(join(skill, 'features', 'add-note.md'), '# Add a note\n');
   t.sh('add', '-A');
@@ -2951,10 +2965,10 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.match(drive.stdin, /Never add steps or data to make the outcome look true/, 'the drive is told not to stage the claim');
   assert.match(drive.stdin, /a capture of an earlier step \(such as an empty or half-filled form, or text from before the outcome\) fails the drive: keep those in /, 'the drive saves only captures of the outcome, since the judge checks each against it');
   assert.match(drive.stdin, /for example \{"feature":"features\/<name>\.md","captures":\["<name>\.png"\],"blocker":""\}[\s\S]*"required":\["feature","captures","blocker"\]\}\nThat object holds your own values, never the schema itself/, 'the prompt shows an answer and ends on words, not the schema a weak model copies back');
-  assert.match(drive.stdin, /Outcome to prove: the note Umer added shows in the list[\s\S]*verify-notes\/features\/add-note\.md/, 'the claim and the feature recipe go on stdin');
+  assert.match(drive.stdin, /Outcome to prove: the note Umer added shows in the list[\s\S]*done-done-verify-notes\/features\/add-note\.md/, 'the claim and the feature recipe go on stdin');
   assert.ok(!drive.argv.some((a) => a.includes('Umer added')), 'never in argv');
   assert.deepEqual([judged.length, judged[0].agent], [1, 'opencode'], 'one capture, judged by another agent');
-  assert.ok(!judged[0].file.includes('verify-notes'), 'the judge sees the claim and the capture, not the recipe or the drive');
+  assert.ok(!judged[0].file.includes('done-done-verify-notes'), 'the judge sees the claim and the capture, not the recipe or the drive');
   assert.equal(JSON.parse(readFileSync(join(runDir, 'agents', 'drive.json'), 'utf8')).ok, true, 'the drive call leaves a record');
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 0);
   // A wrong claim parks at the gate; skip and approve are refused there, and fix ends the run fail.
@@ -3044,7 +3058,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   const status = spawnSync(process.execPath, [CLI, 'status', '--run', blocked.o.run_id], { cwd: t.repo, env: right.env, encoding: 'utf8' });
   assert.equal([blocked.out, status.stdout + status.stderr].some((o) => o.includes(secret)), false, 'the blocker secret is never printed');
   // Usage errors before any run: an unknown feature, a journey with --feature, no verify skill.
-  assert.match(toon(verify(right.env, 'x', '--feature', 'nope')).error, /no feature nope in \.agents\/skills\/verify-notes\/features; it has: add-note/);
+  assert.match(toon(verify(right.env, 'x', '--feature', 'nope')).error, /no feature nope in \.agents\/skills\/done-done-verify-notes\/features; it has: add-note/);
   rmSync(skill, { recursive: true });
   const none = verify(right.env, 'x');
   assert.equal(none.code, 2, none.out);
@@ -3803,8 +3817,8 @@ test('doctor checks the evidence root from a valid global config when the repo h
 
 test('doctor reports a present verify skill as ok', () => {
   const { repo, dd } = setup();
-  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
-  writeFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), '# verify-notes\n');
+  mkdirSync(join(repo, '.agents', 'skills', 'done-done-verify-notes'), { recursive: true });
+  writeFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md'), '# done-done-verify-notes\n');
   const d = toon(dd('doctor'));
   assert.equal(d.checks[3].status, 'ok');
   assert.match(d.checks[3].detail, /SKILL\.md/);
@@ -3949,9 +3963,9 @@ test('agent "" is refused in the repo and the global config; removing the key le
 test('the run error names agent_path_override only when the override is set and does not start', () => {
   const { repo, env, sh } = setup();
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe app starts at src/app.js:1.\n');
   sh('add', '-A');
@@ -4935,9 +4949,9 @@ test('an edit step whose answer is not JSON is never asked again, while a tool-l
 test('maintain counts a truncated feature file as a notice, not drift', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), `# Home\n\n${'x'.repeat(20_000)}\n`);
   sh('add', '-A');
@@ -4951,11 +4965,11 @@ test('maintain counts a truncated feature file as a notice, not drift', () => {
 test('maintain does not read host:port text as a file citation', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1;\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nOpen api.example.com:8443 and app.js:1.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nOpen api.example.com:8443 and app.js:1.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe API is at api.example.com:8443.\n');
   sh('add', '-A');
@@ -4969,9 +4983,9 @@ test('maintain does not read host:port text as a file citation', () => {
 test('maintain blocks a dangling feature entry next to untracked symlinks', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n- [Broken](broken.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -4988,10 +5002,10 @@ test('maintain reports an untracked symlink retargeted during a run as a repo ch
   const { repo, env, sh } = setup();
   const answer = JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] });
   const s = stubAgents(env, answer);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5008,9 +5022,9 @@ test('maintain reports an untracked symlink retargeted during a run as a repo ch
 test('maintain runs a reader with no user settings or MCP servers', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5024,10 +5038,10 @@ test('maintain runs a reader with no user settings or MCP servers', () => {
 test('maintain blocks on an unreadable feature file instead of crashing', { skip: process.getuid?.() === 0 && 'root reads files whatever their mode' }, () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   const home = join(skill, 'features', 'home.md');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(home, '# Home\n');
   sh('add', '-A');
@@ -5047,11 +5061,11 @@ test('maintain blocks when a reader rewrites a file that was already modified', 
   const { repo, env, sh } = setup();
   const answer = JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] });
   const s = stubAgents(env, answer);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1;\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5071,9 +5085,9 @@ test('maintain does not send a symlinked feature file to the agent', () => {
   try {
     const secret = join(outside, 'creds.txt');
     writeFileSync(secret, 'SECRET-TOKEN\n');
-    const skill = join(repo, '.agents', 'skills', 'verify-notes');
+    const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
     mkdirSync(join(skill, 'features'), { recursive: true });
-    writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+    writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
     writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n- [Creds](creds.md)\n');
     writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
     symlinkSync(secret, join(skill, 'features', 'creds.md'));
@@ -5092,9 +5106,9 @@ test('maintain does not send a symlinked feature file to the agent', () => {
 test('maintain pins the read-only reader to read tools with no user settings, MCP servers or extra directories', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5114,9 +5128,9 @@ test('maintain refuses a skill reached through a symlinked ancestor', () => {
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   const outside = mkdtempSync(join(tmpdir(), 'dd-ancestor-'));
   try {
-    const skill = join(outside, 'skills', 'verify-notes');
+    const skill = join(outside, 'skills', 'done-done-verify-notes');
     mkdirSync(join(skill, 'features'), { recursive: true });
-    writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+    writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
     writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
     writeFileSync(join(skill, 'features', 'home.md'), 'SECRET-NOTE\n');
     symlinkSync(outside, join(repo, '.agents'));
@@ -5140,9 +5154,9 @@ test('maintain blocks a symlinked features folder and never checks the index beh
   try {
     writeFileSync(join(outside, 'README.md'), '# features\n\n- [Home](home.md)\n- [Home](home.md)\n');
     writeFileSync(join(outside, 'home.md'), '# Home\n');
-    const skill = join(repo, '.agents', 'skills', 'verify-notes');
+    const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
     mkdirSync(skill, { recursive: true });
-    writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+    writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
     symlinkSync(outside, join(skill, 'features'));
     sh('add', '-A');
     sh('commit', '-qm', 'skill');
@@ -5163,9 +5177,9 @@ test('maintain blocks a symlinked CHECKLIST.md with a dead link and reads nothin
   const outside = mkdtempSync(join(tmpdir(), 'dd-checklist-'));
   try {
     writeFileSync(join(outside, 'CHECKLIST.md'), '# Checklist\n\n- [Gone](gone.md)\n');
-    const skill = join(repo, '.agents', 'skills', 'verify-notes');
+    const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
     mkdirSync(join(skill, 'features'), { recursive: true });
-    writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+    writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
     writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
     writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
     symlinkSync(join(outside, 'CHECKLIST.md'), join(skill, 'CHECKLIST.md'));
@@ -5186,11 +5200,11 @@ test('maintain gives a pi reader no tools and puts the cited source in its promp
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1; // CITED-SOURCE-LINE\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe app starts at src/app.js:1.\n');
   sh('add', '-A');
@@ -5208,11 +5222,11 @@ test('maintain sends a pi reader only the source its prompt shows, not a citatio
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1; // LATE-CITED-LINE\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), `# Home\n\n${'x'.repeat(20_000)}\nThe app starts at src/app.js:1.\n`);
   sh('add', '-A');
@@ -5226,9 +5240,9 @@ test('maintain sends a pi reader only the source its prompt shows, not a citatio
 test('maintain names at most 500 recently changed paths to reconcile and says how many it left out', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   mkdirSync(join(repo, 'churn'));
@@ -5247,11 +5261,11 @@ test('maintain names at most 500 recently changed paths to reconcile and says ho
 test('maintain lists a reader drift item with a string line as unverified, not as a finding', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ recipe: 'open it', drift: [{ claim: 'app is 2', why: 'it is 1', file: 'src/app.js', line: '1' }], recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1;\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5267,11 +5281,11 @@ test('maintain gives a pi reader the cited source for a ./ path citation', () =>
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1; // CITED-SOURCE-LINE\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe app starts at ./src/app.js:1.\n');
   sh('add', '-A');
@@ -5289,9 +5303,9 @@ test('maintain says a cited symlink that points outside the repo is outside the 
   try {
     writeFileSync(join(outside, 'secrets.txt'), 'token\n');
     symlinkSync(join(outside, 'secrets.txt'), join(repo, 'link.txt'));
-    const skill = join(repo, '.agents', 'skills', 'verify-notes');
+    const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
     mkdirSync(join(skill, 'features'), { recursive: true });
-    writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee link.txt:1.\n');
+    writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee link.txt:1.\n');
     writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
     writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
     sh('add', '-A');
@@ -5308,10 +5322,10 @@ test('maintain says a cited symlink that points outside the repo is outside the 
 test('maintain does not wait on a cited path that is a named pipe; it is a citation finding', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'pipes'));
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee pipes/x.sh:3.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee pipes/x.sh:3.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5329,13 +5343,13 @@ test('maintain caps the source a tool-less reader gets at 60,000 characters and 
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   for (const d of ['a', 'b', 'c', 'd', ...Array.from({ length: 24 }, (_, i) => `e${i}`)]) {
     mkdirSync(join(repo, d), { recursive: true });
     writeFileSync(join(repo, d, 'index.ts'), `export const ${d} = 1;\n${'x'.repeat(19_000)}\n`);
   }
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nSee index.ts:1.\n');
   sh('add', '-A');
@@ -5356,9 +5370,9 @@ test('maintain caps the source a tool-less reader gets at 60,000 characters and 
 test('maintain blocks an unreadable features folder instead of failing the run', { skip: process.getuid?.() === 0 && 'root reads files whatever their mode' }, () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5379,9 +5393,9 @@ test('maintain reports a citation under an unreadable folder as a citation findi
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(join(repo, 'locked'));
   writeFileSync(join(repo, 'locked', 'x.js'), 'export const x = 1;\n');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee locked/x.js:1.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee locked/x.js:1.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5404,9 +5418,9 @@ test('maintain does not follow a committed symlink folder out of the repo to cou
   try {
     writeFileSync(join(outside, 'secrets.txt'), 'token\n');
     symlinkSync(outside, join(repo, 'notes'));
-    const skill = join(repo, '.agents', 'skills', 'verify-notes');
+    const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
     mkdirSync(join(skill, 'features'), { recursive: true });
-    writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee notes/secrets.txt:99.\n');
+    writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee notes/secrets.txt:99.\n');
     writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
     writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
     sh('add', '-A');
@@ -5427,7 +5441,7 @@ test('maintain blocks a verify skill that resolves outside the repo and reads no
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   const outside = join(repo, '..', 'outside');
   mkdirSync(join(outside, 'features'), { recursive: true });
-  writeFileSync(join(outside, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(outside, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(outside, 'features', 'README.md'), '# features\n');
   writeFileSync(join(outside, 'features', 'home.md'), '# Home\n');
   const r = doctorIn(repo, s.env, 'maintain', '--foreground');
@@ -5440,9 +5454,9 @@ test('maintain reports a cited line in an empty file as a citation finding with 
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   writeFileSync(join(repo, 'docs', 'empty.md'), '');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee docs/empty.md:1.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee docs/empty.md:1.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5456,9 +5470,9 @@ test('maintain reports a cited line in an empty file as a citation finding with 
 test('maintain blocks a dangling symlink folder in the skill', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   symlinkSync('../missing', join(skill, 'refs'));
@@ -5467,7 +5481,7 @@ test('maintain blocks a dangling symlink folder in the skill', () => {
   const r = doctorIn(repo, s.env, 'maintain', '--foreground');
   const m = toon(r);
   assert.equal(m.result, 'blocked', r.out);
-  assert.deepEqual(m.findings.map((f) => [f.kind, f.file]), [['coverage', '.agents/skills/verify-notes/refs']], r.out);
+  assert.deepEqual(m.findings.map((f) => [f.kind, f.file]), [['coverage', '.agents/skills/done-done-verify-notes/refs']], r.out);
 });
 
 test('maintain reads a cited path whose first segment starts with two dots as inside the repo', () => {
@@ -5475,9 +5489,9 @@ test('maintain reads a cited path whose first segment starts with two dots as in
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(join(repo, '..cache'));
   writeFileSync(join(repo, '..cache', 'app.js'), 'export const app = 1;\n');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee ..cache/app.js:1.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee ..cache/app.js:1.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5490,9 +5504,9 @@ test('maintain reads a cited path whose first segment starts with two dots as in
 test('maintain fingerprints an untracked file whose name has a newline', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5515,9 +5529,9 @@ test('maintain reports a dead link, a wrong file:line and drift from read-only r
   const none = dd('maintain', '--foreground');
   assert.equal(none.code, 3, none.out);
   assert.deepEqual([toon(none).result, toon(none).help[0]], ['blocked', 'Create the verify skill: done-done init']);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nThe map: [features](features/README.md). See https://example.com:443/x and localhost:3000.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nThe map: [features](features/README.md). See https://example.com:443/x and localhost:3000.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n- [Search](search.md)\n- [Home again](home.md#top)\n');
   mkdirSync(join(repo, 'src', 'café'));
   writeFileSync(join(repo, 'src', 'café', 'gate.js'), 'export const gate = 1;\n');
@@ -5531,7 +5545,7 @@ test('maintain reports a dead link, a wrong file:line and drift from read-only r
   assert.equal(r.code, 1, r.out);
   const m = toon(r);
   assert.deepEqual([m.kind, m.result, m.git_status], ['maintain', 'drift', 'same']);
-  const at = (f) => `${f.kind} ${f.file.replace('.agents/skills/verify-notes/', '')}${f.line ? `:${f.line}` : ''}`;
+  const at = (f) => `${f.kind} ${f.file.replace('.agents/skills/done-done-verify-notes/', '')}${f.line ? `:${f.line}` : ''}`;
   assert.deepEqual(m.findings.map(at), [
     'dead-link features/README.md:4', 'duplicate features/README.md:5', 'unlisted features/README.md', 'truncated features/home.md',
     'citation features/home.md:3', 'citation features/home.md:4', 'citation features/home.md:4', 'drift features/extra.md', 'drift features/home.md', 'unmapped src/app.js',
@@ -5577,11 +5591,11 @@ if (argv[0] === '--version') process.exit(0);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv, stdin: readFileSync(0, 'utf8') }) + '\\n');
 console.log(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ${JSON.stringify(answer)} } } } }));
 `, { mode: 0o755 });
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1; // ACP-CITED-LINE\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe app starts at src/app.js:1.\n');
   sh('add', '-A');
@@ -5599,11 +5613,11 @@ test('maintain checks and sends a tracked symlink to an in-repo file as that fil
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(repo, 'CLAUDE.md'), '# Rules\n// LINK-CITED-LINE\n');
   symlinkSync('CLAUDE.md', join(repo, 'AGENTS.md'));
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nSee AGENTS.md:2.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nSee AGENTS.md:2.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe rules are in AGENTS.md:2.\n');
   sh('add', '-A');
@@ -5619,9 +5633,9 @@ test('maintain treats an untracked repo path as a citation problem in the skill 
   const { repo, env, sh } = setup();
   const answer = JSON.stringify({ drift: [{ claim: 'scratch is right', why: 'the source has it', file: 'scratch/notes.js', line: 1 }], recipe: 'open it', recipes: [], missing: [] });
   const s = stubAgents(env, answer);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\nScratch is at scratch/notes.js:1.\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nScratch is at scratch/notes.js:1.\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5639,11 +5653,11 @@ test('maintain treats an untracked repo path as a citation problem in the skill 
 test('maintain checks a link whose target has balanced parentheses and reports only the dead one', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(skill, 'notes', '(auth)'), { recursive: true });
   writeFileSync(join(skill, 'notes', '(auth)', 'login.md'), '# Login\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\n[Login](notes/(auth)/login.md) and [Gone](gone/(auth)/login.md).\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\n[Login](notes/(auth)/login.md) and [Gone](gone/(auth)/login.md).\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5659,13 +5673,13 @@ test('maintain checks a bracketed or parenthesized file:line citation and sends 
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'app', '[slug]'), { recursive: true });
   mkdirSync(join(repo, 'app', '(auth)'), { recursive: true });
   writeFileSync(join(repo, 'app', '[slug]', 'page.tsx'), 'export default 1;\n');
   writeFileSync(join(repo, 'app', '(auth)', 'login.tsx'), 'export const Login = 1; // BRACKET-CITED-LINE\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe page is app/[slug]/page.tsx:10, and login is app/(auth)/login.tsx:1. Run handler(login.tsx:1) or foo[page.tsx:1].\n');
   sh('add', '-A');
@@ -5683,9 +5697,9 @@ test('maintain checks a citation of a bracketed file name like pages/[id].tsx an
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(join(repo, 'pages'), { recursive: true });
   writeFileSync(join(repo, 'pages', '[id].tsx'), 'export default 1;\n');
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe detail page is pages/[id].tsx:10.\n');
   sh('add', '-A');
@@ -5701,12 +5715,12 @@ test('maintain leaves an unreadable cited file out of the reader source and name
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, 'src', 'secret.js'), 'export const secret = 1;\n');
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1; // READABLE-CITED-LINE\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe secret is in src/secret.js:1 and the app is in src/app.js:1.\n');
   sh('add', '-A');
@@ -5729,11 +5743,11 @@ test('maintain leaves an unreadable cited file out of the reader source and name
 test('maintain does not name a file that was untracked since the window as recently changed', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [{ file: 'secrets/.env', why: 'a feature should cover it' }] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   mkdirSync(join(repo, 'secrets'), { recursive: true });
   writeFileSync(join(repo, 'secrets', '.env'), 'TOKEN=1\n');
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5753,9 +5767,9 @@ test('maintain refuses gemini, which cannot read tool-less, before any run and w
   const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   mkdirSync(env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: gemini\n${judgeYaml(env, 'pi')}`);
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n\n[Gone](gone.md)\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\n[Gone](gone.md)\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5771,9 +5785,9 @@ test('maintain refuses gemini, which cannot read tool-less, before any run and w
 test('rerun refuses a maintain run with a usage error that points to done-done maintain', () => {
   const { repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5794,9 +5808,9 @@ const { writeFileSync } = require('node:fs');
 writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 setTimeout(() => {}, 30_000);
 `, { mode: 0o755 });
-  const skill = join(repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
@@ -5828,10 +5842,10 @@ if (role === 'judge') {
   const p = mode === 'product' ? { skill: 0.02, product: 0.97, unclear: 0.01 } : { skill: 0.97, product: 0.02, unclear: 0.01 };
   answer = Object.fromEntries(ids.map((id) => [id, { probabilities: p, rationale: 'r', personReason: mode === 'product' ? 'the source looks broken' : 'the rename is deliberate' }]));
 } else if (role === 'fixer') {
-  const f = '.agents/skills/verify-notes/features/home.md';
+  const f = '.agents/skills/done-done-verify-notes/features/home.md';
   writeFileSync(f, readFileSync(f, 'utf8').replace('OLD', 'NEW'));
   if (mode === 'outside') writeFileSync('src/app.js', 'export const app = 2;\\n');
-  if (mode === 'move') require('node:child_process').execFileSync('git', ['mv', 'src/app.js', '.agents/skills/verify-notes/app.js']);
+  if (mode === 'move') require('node:child_process').execFileSync('git', ['mv', 'src/app.js', '.agents/skills/done-done-verify-notes/app.js']);
   answer = { summary: 'renamed the title', blocker: '' };
 } else if (role === 'reader') {
   const [file, line] = readFileSync(${JSON.stringify(join(e.PATH, 'cite'))}, 'utf8').trim().split(':');
@@ -5846,9 +5860,9 @@ else console.log(JSON.stringify({ type: 'text', part: { type: 'text', text } }))
   writeFileSync(join(e.PATH, 'cite'), 'src/app.js:1');
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  route: answerer:pi\n  model: pi/judge\n');
-  const skill = join(t.repo, '.agents', 'skills', 'verify-notes');
+  const skill = join(t.repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
-  writeFileSync(join(skill, 'SKILL.md'), '# verify-notes\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nThe title is OLD. See src/app.js:1.\n');
   t.sh('add', '-A');
@@ -5883,8 +5897,8 @@ test('maintain with auto_fix fixes the skill in one skill-only commit on a done-
   assert.equal(t.git('rev-parse', 'HEAD'), head, 'the user branch did not move');
   assert.equal(t.git('status', '--porcelain'), '', 'the checkout is untouched');
   assert.equal(t.git('rev-list', '--count', `${head}..${m.fix.branch}`), '1');
-  assert.equal(t.git('diff', '--name-only', head, m.fix.branch), '.agents/skills/verify-notes/features/home.md');
-  assert.match(t.git('show', `${m.fix.branch}:.agents/skills/verify-notes/features/home.md`), /The title is NEW/);
+  assert.equal(t.git('diff', '--name-only', head, m.fix.branch), '.agents/skills/done-done-verify-notes/features/home.md');
+  assert.match(t.git('show', `${m.fix.branch}:.agents/skills/done-done-verify-notes/features/home.md`), /The title is NEW/);
   assert.equal(t.git('worktree', 'list').split('\n').length, 1, 'the done-done worktree is removed');
 });
 
@@ -5893,7 +5907,7 @@ test('maintain with auto_fix drops a fix that edits outside the skill folder and
   t.mode('outside');
   const { r, m } = t.maintain();
   assert.deepEqual([r.code, m.result], [3, 'blocked'], r.out);
-  assert.match(m.reason, /^fix: opencode changed files outside \.agents\/skills\/verify-notes\/ \(src\/app\.js\)/);
+  assert.match(m.reason, /^fix: opencode changed files outside \.agents\/skills\/done-done-verify-notes\/ \(src\/app\.js\)/);
   assert.equal(t.branches(), '');
   assert.equal(readFileSync(join(t.repo, 'src', 'app.js'), 'utf8'), 'export const app = 1;\n');
   assert.equal(t.git('worktree', 'list').split('\n').length, 1);
@@ -5905,7 +5919,7 @@ test('maintain with auto_fix drops a fix that moves a product file into the skil
   const head = t.git('rev-parse', 'HEAD');
   const { r, m } = t.maintain();
   assert.deepEqual([r.code, m.result], [3, 'blocked'], r.out);
-  assert.match(m.reason, /^fix: opencode changed files outside \.agents\/skills\/verify-notes\/ \(.*src\/app\.js/);
+  assert.match(m.reason, /^fix: opencode changed files outside \.agents\/skills\/done-done-verify-notes\/ \(.*src\/app\.js/);
   assert.equal(t.branches(), '');
   assert.equal(t.git('rev-parse', 'HEAD'), head);
   assert.equal(readFileSync(join(t.repo, 'src', 'app.js'), 'utf8'), 'export const app = 1;\n');
@@ -5936,7 +5950,7 @@ test('maintain with auto_fix stops and asks when the judge says the product may 
 
 test('maintain with auto_fix on a clean skill ends clean with no branch and no judge', () => {
   const t = fixSetup(2);
-  writeFileSync(join(t.repo, '.agents', 'skills', 'verify-notes', 'features', 'home.md'), '# Home\n\nThe title is NEW. See src/app.js:1.\n');
+  writeFileSync(join(t.repo, '.agents', 'skills', 'done-done-verify-notes', 'features', 'home.md'), '# Home\n\nThe title is NEW. See src/app.js:1.\n');
   t.sh('commit', '-qam', 'fresh');
   const { r, m } = t.maintain();
   assert.deepEqual([r.code, m.result], [0, 'clean'], r.out);
@@ -5966,7 +5980,7 @@ test('maintain with auto_fix triages a bare file name with the first file that h
   mkdirSync(join(t.repo, 'web'), { recursive: true });
   writeFileSync(join(t.repo, 'api', 'app.js'), 'export const api = 1;\n');
   writeFileSync(join(t.repo, 'web', 'app.js'), 'one\ntwo\nthree\nfour\nweb-marker-five\nsix\n');
-  writeFileSync(join(t.repo, '.agents', 'skills', 'verify-notes', 'features', 'home.md'), '# Home\n\nThe title is OLD. See app.js:5.\n');
+  writeFileSync(join(t.repo, '.agents', 'skills', 'done-done-verify-notes', 'features', 'home.md'), '# Home\n\nThe title is OLD. See app.js:5.\n');
   writeFileSync(join(t.e.PATH, 'cite'), 'app.js:5');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'two app.js files');
@@ -5981,7 +5995,7 @@ test('maintain with auto_fix leaves out a cited file the numbered source would p
   const t = fixSetup(0);
   const body = 'ab\n'.repeat(6666);
   for (const n of ['one', 'two', 'three']) writeFileSync(join(t.repo, `${n}.txt`), body);
-  writeFileSync(join(t.repo, '.agents', 'skills', 'verify-notes', 'features', 'home.md'), '# Home\n\nThe notes are in one.txt:1, two.txt:1 and three.txt:1.\n');
+  writeFileSync(join(t.repo, '.agents', 'skills', 'done-done-verify-notes', 'features', 'home.md'), '# Home\n\nThe notes are in one.txt:1, two.txt:1 and three.txt:1.\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'three notes');
   const { r, m } = t.maintain();
@@ -6074,7 +6088,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
     ['test/home.test.js', false, 1, off], ['src/app_test.go', false, 1, off], ['test_app.py', false, 1, off], ['spec/home_spec.rb', false, 1, off],
     ['tests/home.js', false, 1, off], ['__tests__/home.js', false, 1, off], ['e2e/home.js', false, 1, off], ['src/app.test.js', false, 1, off], ['src/app.spec.ts', false, 1, off],
     ['app_test.py', false, 1, off], ['vitest.config.ts', false, 1, off], ['playwright.config.ts', false, 1, off], ['jest.config.js', false, 1, off],
-    ['cypress.config.ts', false, 1, off], ['cypress.json', false, 1, off], ['.done-done.yaml', false, 1, off], ['.agents/skills/verify-notes/SKILL.md', false, 1, off],
+    ['cypress.config.ts', false, 1, off], ['cypress.json', false, 1, off], ['.done-done.yaml', false, 1, off], ['.agents/skills/done-done-verify-notes/SKILL.md', false, 1, off],
     ['', true, 1, /^dirty: uncommitted changes to tracked files \(docs\/guide\.md\)/],
     ['', false, 1, /^your HEAD failed; the fix passes, on done-done\/verify-/],
   ]) {

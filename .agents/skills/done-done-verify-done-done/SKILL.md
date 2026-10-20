@@ -1,9 +1,9 @@
 ---
-name: verify-done-done
+name: done-done-verify-done-done
 description: Drive the done-done CLI the way a user does and capture proof it works. Use when proving a done-done change, capturing evidence, or keeping the feature map honest.
 ---
 
-# verify-done-done
+# done-done-verify-done-done
 
 Written by hand from this repo's own files (surface: CLI). Where a step says to find something, the first drive finds it and records it there.
 

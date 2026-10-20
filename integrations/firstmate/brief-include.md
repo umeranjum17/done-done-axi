@@ -17,7 +17,7 @@ wherever this text or the skill says `done-done`. If done-done cannot run, repor
    ## Checks
    outcome: <what a user can now do>
    repro: <command that failed before and passes now, or n/a; a fix PR needs one>
-   proof: <the command or path that drove the real product; name the repo's verify-<app> skill, or say "no verify skill">
+   proof: <the command or path that drove the real product; name the repo's done-done-verify-<app> skill, or say "no verify skill">
    evidence: <the evidence file paths, or "not proven: <cause>">
    ```
    Put it at the end of the PR body. With no PR, put it in `checks.md` in your task's data folder outside the
