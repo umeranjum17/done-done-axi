@@ -1824,8 +1824,20 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
   return code;
 }
 
+// A progress line on stderr every 60s (DONE_DONE_HEARTBEAT_MS overrides) naming the running step, so a caller that kills silent commands does not.
+function heartbeat(dir: string): () => void {
+  const t = setInterval(() => {
+    const run = loadRun(dir);
+    process.stderr.write(`done-done: run ${run.run_id} still ${run.status}, step ${run.steps.find((s) => s.status === 'running')?.name ?? 'between steps'}\n`);
+  }, Number(process.env.DONE_DONE_HEARTBEAT_MS) || 60_000);
+  return () => clearInterval(t);
+}
+
 async function waitRun(dir: string, pid: number): Promise<void> {
-  while (['pending', 'running'].includes(loadRun(dir).status) && alive(pid)) await new Promise((r) => setTimeout(r, 200));
+  const stop = heartbeat(dir);
+  try {
+    while (['pending', 'running'].includes(loadRun(dir).status) && alive(pid)) await new Promise((r) => setTimeout(r, 200));
+  } finally { stop(); }
 }
 
 // The judge a command will start: the user's agent and judge, asked for when unset.
@@ -1902,7 +1914,8 @@ async function cmdVerify(argv: string[]): Promise<number> {
 // runner goes on when this command or its shell ends; --wait (the default) holds this command until the run ends.
 async function launch(dir: string, cfg: Config, command: string, how: { foreground?: boolean; 'no-wait'?: boolean }): Promise<number> {
   if (how.foreground) {
-    await runSteps(dir);
+    const stop = heartbeat(dir);
+    try { await runSteps(dir); } finally { stop(); }
     return showRun(dir, cfg, command);
   }
   const fd = openSync(join(dir, 'logs', 'runner.log'), 'a');

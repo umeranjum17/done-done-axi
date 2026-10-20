@@ -1926,6 +1926,18 @@ async function groupGone(pgid) {
   return false;
 }
 
+test('verify prints a progress line naming the running step while it waits', async () => {
+  const { repo, env, release } = slowRepo();
+  const child = spawn(process.execPath, [CLI, 'verify', 'slow', '--outcome', 'home and settings render'], { cwd: repo, env: { ...env, DONE_DONE_HEARTBEAT_MS: '200' } });
+  let err = '';
+  child.stderr.on('data', (d) => (err += d));
+  const ended = new Promise((r) => child.on('close', r));
+  for (let i = 0; i < 200 && !/still running, step drive/.test(err); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.match(err, /done-done: run \S+ still running, step drive/);
+  writeFileSync(release, '');
+  assert.equal(await ended, 0);
+});
+
 test('a runner killed mid-step shows as failed at that step, and status stops the journey it left', async () => {
   const { dd, runs, runningAt } = slowRepo();
   const started = dd('verify', 'slow', '--outcome', 'home and settings render', '--no-wait');
