@@ -223,7 +223,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 ## What's next
 
-So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
+So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `lint` (a no-model gate on a Checks block), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
 
 ## Develop
 
