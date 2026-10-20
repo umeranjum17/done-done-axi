@@ -122,6 +122,16 @@ export function judgeEnv(cfg: Config): Record<string, string> {
   return env;
 }
 
+// minimax:key runs the kit's Anthropic backend against MiniMax's Anthropic-compatible endpoint: the kit has no MiniMax backend, and its
+// fetch is the host's. A request for any other address is refused, so a kit that changes its base can never send the MiniMax key elsewhere.
+const ANTHROPIC_BASE = 'https://api.anthropic.com/v1';
+const MINIMAX_BASE = 'https://api.minimax.io/anthropic/v1';
+const minimaxFetch: typeof fetch = (url, init) => {
+  const to = String(url);
+  if (!to.startsWith(`${ANTHROPIC_BASE}/`)) throw new UsageError(`judge: minimax:key refused a request to ${to}, which is not the Anthropic API path it redirects`, 'Update done-done, or use another judge route');
+  return fetch(MINIMAX_BASE + to.slice(ANTHROPIC_BASE.length), init);
+};
+
 // The kit loads only when a capture is judged, so a command that judges nothing stays fast.
 async function kit() {
   const [major, minor] = process.versions.node.split('.').map(Number);
@@ -142,8 +152,8 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
     // The kit never reads the environment: done-done reads the key here and hands it only to the kit.
     const key = process.env[name] ?? judgeEnv(cfg)[name];
     if (!key) throw new UsageError(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
-    const { openai, resolve } = await kit();
-    const ask = openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 }).ask;
+    const { anthropic, openai, resolve } = await kit();
+    const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 })).ask;
     return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
   }
   const override = cfg.agent_path_override[choice.agent];
@@ -264,7 +274,25 @@ export function writeCache(dir: string, key: string, value: unknown) {
 // Verdicts are cached in the run store, per app, so a re-run or a later run of the same capture and claim asks no model.
 // The answerer's agent call leaves a record in `records` (judge-<stamp>-<n>-<request>.agent.json), never the prompt.
 // missing: the parts the outcome names that no passing capture shows.
-export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string): Promise<{ judged: Judged[]; notJudged: string[]; choice?: JudgeChoice; missing: string[] }> {
+type Judging = { judged: Judged[]; notJudged: string[]; choice?: JudgeChoice; missing: string[] };
+// fallback: the judge for a route that fails (selectFallback). The whole check is judged again on it, so one check never mixes routes,
+// and the result names the route that answered; when that fails too, the error carries both causes.
+export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string, fallback?: () => JudgeChoice | undefined): Promise<Judging> {
+  try {
+    return await judgeOn(cfg, choose, outcome, captures, records);
+  } catch (e) {
+    const next = e instanceof UsageError && fallback?.();
+    if (!next) throw e;
+    try {
+      return await judgeOn(cfg, () => next, outcome, captures, records);
+    } catch (again) {
+      if (!(again instanceof UsageError)) throw again;
+      throw new UsageError(`${again.message} (after ${choose().route} failed: ${e.message})`, again.help);
+    }
+  }
+}
+
+async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string): Promise<Judging> {
   const dir = join(home(), 'runs', cfg.app, 'judge');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const judged: Judged[] = [];

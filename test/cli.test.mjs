@@ -3340,6 +3340,52 @@ globalThis.fetch = async (url, init) => {
   assert.match(sameModel.detail, /the author's agent and model in a fresh session/);
 });
 
+test('minimax:key judges on MINIMAX_API_KEY through the kit at its default model, and a failing route is judged again by claude haiku', () => {
+  const j = judgeSetup(CORRECT);
+  writeFileSync(join(j.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\njudge:\n  route: minimax:key\nagent_path_override: { claude: ${JSON.stringify(join(j.dir, 'claude'))} }\n`);
+  // The network is stubbed at fetch, the kit's only way out: it answers as MiniMax's Anthropic-compatible endpoint, or with a status.
+  const log = join(j.dir, 'requests.jsonl');
+  const stub = join(j.dir, 'fetch-stub.mjs');
+  writeFileSync(stub, `import { appendFileSync } from 'node:fs';
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url: String(url), key: init.headers['x-api-key'], model: body.model, image: JSON.stringify(body.messages).includes('"type":"image"') }) + '\\n');
+  if (process.env.STUB_STATUS) return new Response('{"error":{"message":"bad key"}}', { status: Number(process.env.STUB_STATUS) });
+  const probabilities = ${JSON.stringify(CORRECT)};
+  const input = { relevance: { probabilities, pick: 'correct', rationale: 'The list shows the notes.', personReason: 'The list shows the notes.' } };
+  return new Response(JSON.stringify({ content: [{ type: 'tool_use', name: 'decisions', input }], usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+`);
+  const key = 'mm-test-not-a-real-key';
+  const env = { ...j.env, MINIMAX_API_KEY: key, NODE_OPTIONS: `--import=${pathToFileURL(stub)}` };
+  const check = (e, outcome) => {
+    const { files } = j.shots();
+    const r = spawnSync(process.execPath, [CLI, 'check', '--outcome', outcome, ...files], { cwd: j.repo, env: e, encoding: 'utf8' });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  const requests = () => readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const ok = check(env, 'home and settings render');
+  assert.equal(ok.code, 0, ok.out);
+  assert.deepEqual([toon(ok).judge.route, toon(ok).judge.model], ['minimax:key', 'MiniMax-M3.1-Flash-Preview']);
+  assert.equal(requests().length, 2, 'one request per capture');
+  assert.ok(requests().every((r) => r.url === 'https://api.minimax.io/anthropic/v1/messages' && r.key === key && r.model === 'MiniMax-M3.1-Flash-Preview' && r.image), 'the key goes only to MiniMax, with the capture');
+  assert.equal(j.calls().length, 0, 'claude is not asked while the route answers');
+  // A refused key, then no key at all: each is judged again by claude at its cheap model, and the result names the route that answered.
+  for (const [why, e] of [['a refused key', { ...env, STUB_STATUS: '401' }], ['a missing key', { ...env, MINIMAX_API_KEY: '' }]]) {
+    const before = j.calls().length;
+    const fell = check(e, `the notes list shows three notes (${why})`);
+    assert.equal(fell.code, 0, fell.out);
+    assert.deepEqual([toon(fell).judge.route, toon(fell).judge.model], ['claude-code', 'claude-haiku-5-5'], why);
+    assert.equal(j.calls().length - before, 2, `${why}: claude judged both captures`);
+  }
+  // When the fallback fails too, the error carries both causes.
+  j.stub('error');
+  const both = check({ ...env, STUB_STATUS: '401' }, 'the home screen shows the sync banner');
+  assert.equal(both.code, 2, both.out);
+  assert.match(toon(both).error, /^judge: the judge did not answer: .*usage limit reached.* \(after minimax:key failed: judge: the judge did not answer: http 401 \(check judge\.model MiniMax-M3\.1-Flash-Preview and the key in MINIMAX_API_KEY\)\)/);
+  assert.equal(spawnSync('grep', ['-rl', key, j.env.DONE_DONE_HOME, j.repo], { encoding: 'utf8' }).stdout, '', 'the key is written nowhere');
+});
+
 // done-done never picks the judge: no auto pick, no PATH detection, no fallback. With none set, verify asks the user.
 test('with no judge set, verify stops with the ask (exit 2, the choices, the save command) and starts no run and no agent', () => {
   const t = setup(JUDGED);
@@ -4103,7 +4149,7 @@ test('judge.route must name a judge, and judge.model is the judge\'s model', () 
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), "agent: claude\njudge:\n  route: ''\n");
   assert.match(toon(doctorIn(repo, pathEnv(env, ['claude']), 'doctor')).checks[1].detail, /judge\.route must not be empty; to leave it unset, remove the key$/);
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:acp:gemini\n');
-  assert.match(toon(doctorIn(repo, pathEnv(env, ['claude']), 'doctor')).checks[1].detail, /judge\.route must be claude-code \(for claude\), answerer:<agent> for one of opencode, pi, gemini, or a key route \(openai:key\)/);
+  assert.match(toon(doctorIn(repo, pathEnv(env, ['claude']), 'doctor')).checks[1].detail, /judge\.route must be claude-code \(for claude\), answerer:<agent> for one of opencode, pi, gemini, or a key route \(openai:key, minimax:key\)/);
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: claude-code\n  model: x\n');
   const d = toon(doctorIn(repo, pathEnv(env, ['claude']), 'doctor'));
   assert.equal(d.checks[1].status, 'ok');
@@ -4249,7 +4295,7 @@ test('the agent comes from config, and doctor --probe asks it one schema questio
   routeCfg('  allow_same: true\n');
   assert.match(doctor('agent: opencode\n').by('config').detail, /judge\.allow_same is gone/);
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: answerer:claude\n');
-  assert.match(doctor('').out, /judge\.route must be claude-code \(for claude\), answerer:<agent> for one of opencode, pi, gemini, or a key route \(openai:key\)/, 'claude judges through claude-code');
+  assert.match(doctor('').out, /judge\.route must be claude-code \(for claude\), answerer:<agent> for one of opencode, pi, gemini, or a key route \(openai:key, minimax:key\)/, 'claude judges through claude-code');
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: answerer:acp:gemini\n');
   assert.match(doctor('').out, /judge\.route must be .*; an acp:<target> agent cannot judge, since done-done cannot send it an image/, 'an acp agent cannot judge, and the config error says why');
   writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), 'judge:\n  route: opencode-go\n');

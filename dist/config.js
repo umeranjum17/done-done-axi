@@ -18,7 +18,11 @@ export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // claude judges through claude-code. An acp:<target> agent cannot be sent an image. codex cannot run tools-off, so it does not judge.
 export const ANSWERER_JUDGES = ['opencode', 'pi', 'gemini'];
 // BYOKit key routes: a judge on the user's own API key, read from this environment variable, with no agent CLI.
-export const KEY_ROUTES = { 'openai:key': 'OPENAI_API_KEY' };
+// openai:key needs judge.model; a route with a model here runs it when judge.model is empty (the free MiniMax route).
+export const KEY_ROUTES = { 'openai:key': 'OPENAI_API_KEY', 'minimax:key': 'MINIMAX_API_KEY' };
+export const KEY_ROUTE_MODELS = { 'minimax:key': 'MiniMax-M3.1-Flash-Preview' };
+// The route that judges again when a route's own call fails, so a down or rate-limited free route never leaves a check with no verdict.
+export const FALLBACK_ROUTES = { 'minimax:key': 'claude-code' };
 // Or acp:<target>, any agent the user's acpx bridge can start; the target is one argv word, so it never reads as a flag.
 const ROUTE_FORM = `claude-code (for claude), answerer:<agent> for one of ${ANSWERER_JUDGES.join(', ')}, or a key route (${Object.keys(KEY_ROUTES).join(', ')}); an acp:<target> agent cannot judge, since done-done cannot send it an image`;
 export const isJudgeRoute = (v) => typeof v === 'string' && (v === 'claude-code' || Object.hasOwn(KEY_ROUTES, v) || ANSWERER_JUDGES.some((a) => v === `answerer:${a}`));
