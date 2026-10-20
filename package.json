@@ -1,6 +1,6 @@
 {
   "name": "done-done-axi",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "license": "Apache-2.0",
   "description": "Proof that the real product works before a task is called done: commit-bound evidence runs and evidence checks.",
   "type": "module",
