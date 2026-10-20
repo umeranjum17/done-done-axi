@@ -10,20 +10,6 @@ done-done won't accept "done" without real, fresh proof from your product, captu
 
 [![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-3fb950?logo=nodedotjs&logoColor=white)](https://nodejs.org) [![Status: early preview](https://img.shields.io/badge/status-early%20preview-d29922)](#whats-next) [![npm: done-done-axi](https://img.shields.io/npm/v/done-done-axi?logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/done-done-axi)
 
-<br>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/flow-dark.svg">
-  <img src="docs/media/flow-light.svg" alt="How it works: capture your real app, tie every file to the exact commit, then check: pass with exit 0 or fail with exit 1." width="710">
-</picture>
-
-<br><br>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.svg">
-  <img src="docs/media/hero-light.svg" alt="A terminal: done-done records a run of a demo notes app and the check passes. After a code change, the same check fails because the proof is for an older commit." width="560">
-</picture>
-
 </div>
 
 ## Install in 3 steps
@@ -41,6 +27,22 @@ done-done doctor
 3. **Check the setup.** `doctor` changes nothing and names each missing piece with the exact command that fixes it.
 
 Then prove something: `done-done verify --outcome "<what a user can now do>"`. [Manual CLI](#manual-cli) below walks through journeys, `check` and `receipt`.
+
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/flow-dark.svg">
+  <img src="docs/media/flow-light.svg" alt="How it works: capture your real app, tie every file to the exact commit, then check: pass with exit 0 or fail with exit 1." width="710">
+</picture>
+
+<br><br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.svg">
+  <img src="docs/media/hero-light.svg" alt="A terminal: done-done records a run of a demo notes app and the check passes. After a code change, the same check fails because the proof is for an older commit." width="560">
+</picture>
+
+</div>
 
 ## Why
 
