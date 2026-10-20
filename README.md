@@ -1,9 +1,8 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/wordmark-dark.svg">
-  <img src="docs/media/wordmark-light.svg" alt="done-done" width="300">
-</picture>
+<img src="docs/logo.svg" width="72" height="72" alt="done-done logo">
+
+# done-done
 
 ### No proof, no "done".
 
@@ -26,6 +25,22 @@ done-done won't accept "done" without real, fresh proof from your product, captu
 </picture>
 
 </div>
+
+## Install in 3 steps
+
+You need Node 22.18 or later and git.
+
+```sh
+npm install -g done-done-axi
+cd your-app && done-done init
+done-done doctor
+```
+
+1. **Install.** This puts `done-done` (and the long name `done-done-axi`) on your PATH. No `sudo`? Add `--prefix ~/.local` and put `~/.local/bin` on your `PATH`.
+2. **Set up your repo.** `init` writes a minimal `.done-done.yaml` and asks you, in a terminal, which coding agent and which judge to use. done-done never picks either for you. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
+3. **Check the setup.** `doctor` changes nothing and names each missing piece with the exact command that fixes it.
+
+Then prove something: `done-done verify --outcome "<what a user can now do>"`. [Manual CLI](#manual-cli) below walks through journeys, `check` and `receipt`.
 
 ## Why
 
@@ -68,7 +83,7 @@ The skill tells your agent to use `done-done` if it is on PATH and otherwise run
 npx -y done-done-axi --help
 ```
 
-The skill stays a short stub and sends the agent to `--help` and the bare command for current instructions, so an installed copy cannot go stale against a newer CLI.
+The skill is a short stub and sends the agent to `--help` and the bare command for current instructions, so an installed copy cannot go stale against a newer CLI.
 
 Then, in agents that expose skills as slash commands (Claude Code, for example), invoke it directly:
 
@@ -101,7 +116,7 @@ cd your-app
 done-done init
 ```
 
-`init` writes a minimal `.done-done.yaml` (only if you don't already have one) that names your app, and a commented global `~/.done-done/config.yaml` (only if there is none). done-done never picks the coding agent it starts: `init` asks you in a terminal, or takes `--agent <agent> --model <model>`. It never picks the judge either, the agent of its own that `check`, `receipt`, `verify` and `design` always start to look at each capture: `init` asks in a terminal, or takes `--judge <agent> --judge-model <model>`. Any agent and model you choose runs, your coding agent's own too (the judge is a fresh session of its own). The config keys are in the [reference](docs/reference.md#config). A plain `init` never overwrites an existing config. It writes no verify skill: write `.agents/skills/verify-<app>/SKILL.md` by hand, with a launch that never touches real accounts or your own state. Evidence lives outside the repo, in `~/.done-done/evidence/<app>`, so it outlives the checkout that captured it. For an `answerer:pi` judge with no explicit model, done-done uses `openai-codex/gpt-6-luna`; `judge.model` or `agent_config.pi.model` overrides it. Then describe how to capture proof — swap the command for whatever drives your real app and saves screenshots, recordings or logs:
+`init` writes a minimal `.done-done.yaml` (only if you don't already have one) that names your app, and a commented global `~/.done-done/config.yaml` (only if there is none). done-done never picks the coding agent it starts: `init` asks you in a terminal, or takes `--agent <agent> --model <model>`. It never picks the judge either, the agent of its own that `check`, `receipt`, `verify` and `design` always start to look at each capture: `init` asks in a terminal, or takes `--judge <agent> --judge-model <model>`. Any agent and model you choose runs, your coding agent's own too (the judge is a fresh session of its own). The config keys are in the [reference](docs/reference.md#config). A plain `init` never overwrites an existing config. When your coding agent is set, `init` also has it write a verify skill, `.agents/skills/verify-<app>/SKILL.md`, from the repo's own files (never overwriting one; with no agent set, no skill is written). Check its launch never touches real accounts or your own state. Evidence lives outside the repo, in `~/.done-done/evidence/<app>`, so it outlives the checkout that captured it. For an `answerer:pi` judge with no explicit model, done-done uses `openai-codex/gpt-6-luna`; `judge.model` or `agent_config.pi.model` overrides it. Then describe how to capture proof — swap the command for whatever drives your real app and saves screenshots, recordings or logs:
 
 ```yaml
 journeys:
@@ -168,7 +183,18 @@ Run `done-done` with no arguments to see the current config and the next step.
 
 Every answer is an exit code: **0** pass, **1** fail, **2** usage or config error (including no agent or judge set, a check that fails before its judge, a capture the judge cannot be sent, or a judge that did not answer: never a result), **3** can't tell either way, **4** a `verify`, `maintain` or `rerun` run is still running, or a `verify` run waits at its gate.
 
+## Alone, and with the other tools
+
+done-done works on its own: the CLI and the skill need nothing else. It is one of three tools that each do one job and connect through small written contracts ([Vision](VISION.md)):
+
+- [`sign-off-axi`](https://www.npmjs.com/package/sign-off-axi): the board where agents ask you questions. `done-done signoff` writes a run's gate (when the judge was unsure) or its evidence in sign-off's message format and prints the post command; it never posts. Without sign-off you answer at the terminal with `done-done respond`.
+- [`learn-from-mistakes-axi`](https://www.npmjs.com/package/learn-from-mistakes-axi): the retro tool that finds mistakes your agents keep repeating, with evidence. Neither tool needs the other.
+- [`first-draft-axi`](https://www.npmjs.com/package/first-draft-axi): turns a prompt into design mocks. Pass a mock to `done-done design <screen> --mock <screen>=<mock>` to judge a captured screen next to it.
+
 ## Use with Firstmate or another agent fleet
+
+done-done works the same with or without Firstmate: nothing below is needed to use it, and the skill and CLI behave identically inside or outside a Firstmate home.
+
 
 [Firstmate](https://github.com/kunchenguid/firstmate) hands tasks to agent workers and merges their work. done-done ships what those workers need to prove each task, and what the merge needs to check that proof, in [`integrations/firstmate/`](integrations/firstmate/).
 
@@ -217,4 +243,4 @@ npx -y --allow-git=all github:umeranjum17/done-done-axi --help
 
 `dist/` is committed, so installing from GitHub needs no build step. `npm test` rebuilds it and fails while the rebuilt `dist/` differs from the commit or has files git does not track, so `git add` the new `dist/` files with your change.
 
-The terminal pictures (hero, run, pass, reasons, config) are real output from the current build, with a stub judge (no model); redraw them with `npx tsc && node docs/media/make.mjs`. The wordmark and the flow picture are hand-made SVGs.
+The terminal pictures (hero, run, pass, reasons, config) are real output from the current build, with a stub judge (no model); redraw them with `npx tsc && node docs/media/make.mjs`. The logo (`docs/logo.svg`) and the flow picture are hand-made SVGs.

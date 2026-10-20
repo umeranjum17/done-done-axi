@@ -14,10 +14,10 @@ text{font:16px ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation 
 <text xml:space="preserve" x="22" y="96" textLength="134.4" lengthAdjust="spacing"><tspan class="d">command: </tspan>check</text>
 <text xml:space="preserve" x="22" y="120" textLength="460.8" lengthAdjust="spacing"><tspan class="f b">error: </tspan>"check: the judge was not asked, so there</text>
 <text xml:space="preserve" x="22" y="144" textLength="451.2" lengthAdjust="spacing">    is no verdict: ~/.done-done/evidence/notes/</text>
-<text xml:space="preserve" x="22" y="168" textLength="451.2" lengthAdjust="spacing">    20261018T081521Z-396dc99b-969550/after.png:</text>
-<text xml:space="preserve" x="22" y="192" textLength="460.8" lengthAdjust="spacing">    evidence is for commit 396dc99b6db7, HEAD is</text>
-<text xml:space="preserve" x="22" y="216" textLength="422.4" lengthAdjust="spacing">    a890428671ea (changed: src/sync.js) (run</text>
-<text xml:space="preserve" x="22" y="240" textLength="364.8" lengthAdjust="spacing">    20261018T081521Z-396dc99b-969550);</text>
+<text xml:space="preserve" x="22" y="168" textLength="451.2" lengthAdjust="spacing">    20261020T065410Z-fedec802-12efe2/after.png:</text>
+<text xml:space="preserve" x="22" y="192" textLength="460.8" lengthAdjust="spacing">    evidence is for commit fedec802045e, HEAD is</text>
+<text xml:space="preserve" x="22" y="216" textLength="422.4" lengthAdjust="spacing">    cce55aa4e026 (changed: src/sync.js) (run</text>
+<text xml:space="preserve" x="22" y="240" textLength="364.8" lengthAdjust="spacing">    20261020T065410Z-fedec802-12efe2);</text>
 <text xml:space="preserve" x="22" y="264" textLength="441.6" lengthAdjust="spacing">    empty.png: empty (0 bytes); blank.png: png</text>
 <text xml:space="preserve" x="22" y="288" textLength="451.2" lengthAdjust="spacing">    is a blank frame (luminance spread 0.0000)"</text>
 <text xml:space="preserve" x="22" y="312" textLength="432.0" lengthAdjust="spacing"><tspan class="d">help[1]: </tspan>"Commit your change, re-capture with</text>

@@ -46,7 +46,9 @@ First run \`command -v done-done\`. If it prints a path, run \`done-done\` as sh
 - \`done-done <command> --help\` for one command's usage and flags
 
 Results are TOON: read \`result\` and follow the \`help\` lines through
-\`init\`, \`doctor\`, \`run\`, \`verify\`, \`check\` and \`receipt\`. Proof comes from driving the real product, not from a unit test run, and counts only from a committed
+\`init\`, \`doctor\`, \`run\`, \`verify\`, \`check\` and \`receipt\`. \`design\` judges captured screens for visual defects,
+\`maintain\` keeps the repo's verify skill true, and \`signoff\` writes a run's gate or evidence as a sign-off message
+(it prints the post command and never posts). Proof comes from driving the real product, not from a unit test run, and counts only from a committed
 tree: commit the done-done setup (config, capture script) before you capture. \`fail\` or
 \`inconclusive\` is not done: fix the cause and re-run, or tell the user exactly what is still unproven.
 A run waiting at its judge gate (\`awaiting_approval\`) did not pass, and nothing moves it past its judge: show the user
@@ -67,6 +69,9 @@ To gate a worker's claim cheaply, \`done-done lint <PR URL | report file> <evide
 with no judge or model and prints \`PASS\` or \`FAIL: <reason>\` (exit 1 on a fail): missing lines, evidence that is absent,
 empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
 \`evidence: not proven: <cause>\` passes. Fix the cause it names and re-run; never edit the evidence to get past it.
+
+\`init\` also has that agent write the repo's \`.agents/skills/verify-<app>/SKILL.md\` (never overwriting one): read it before
+you drive the app, and fix it when it is wrong.
 
 done-done starts a coding agent the user chose. When it says no agent is set, ask the user which agent
 (and model) to use and save their answer with the command it prints; never choose one for them.

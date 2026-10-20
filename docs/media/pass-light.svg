@@ -16,7 +16,7 @@ text{font:16px ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation 
 <text xml:space="preserve" x="22" y="144" textLength="172.8" lengthAdjust="spacing"><tspan class="d">repro: </tspan>n/a: no bug</text>
 <text xml:space="preserve" x="22" y="168" textLength="412.8" lengthAdjust="spacing"><tspan class="d">proof: </tspan>no verify skill - done-done run sync</text>
 <text xml:space="preserve" x="22" y="192" textLength="364.8" lengthAdjust="spacing"><tspan class="d">evidence: </tspan>~/.done-done/evidence/notes/</text>
-<text xml:space="preserve" x="22" y="216" textLength="441.6" lengthAdjust="spacing">    20261018T081521Z-396dc99b-969550/after.png</text>
+<text xml:space="preserve" x="22" y="216" textLength="441.6" lengthAdjust="spacing">    20261020T065410Z-fedec802-12efe2/after.png</text>
 <text xml:space="preserve" x="22" y="240" textLength="412.8" lengthAdjust="spacing"><tspan class="c">~/notes $ </tspan><tspan class="b">done-done check --from pr-body.md</tspan></text>
 <text xml:space="preserve" x="22" y="264" textLength="134.4" lengthAdjust="spacing"><tspan class="d">command: </tspan>check</text>
 <text xml:space="preserve" x="22" y="288" textLength="115.2" lengthAdjust="spacing"><tspan class="d">result: </tspan><tspan class="p b">pass</tspan></text>
@@ -24,7 +24,7 @@ text{font:16px ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation 
 <text xml:space="preserve" x="22" y="336" textLength="172.8" lengthAdjust="spacing"><tspan class="d">source: </tspan>pr-body.md</text>
 <text xml:space="preserve" x="22" y="360" textLength="76.8" lengthAdjust="spacing"><tspan class="d">files: </tspan>1</text>
 <text xml:space="preserve" x="22" y="384" textLength="393.6" lengthAdjust="spacing"><tspan class="d">evidence[1]: </tspan>~/.done-done/evidence/notes/</text>
-<text xml:space="preserve" x="22" y="408" textLength="441.6" lengthAdjust="spacing">    20261018T081521Z-396dc99b-969550/after.png</text>
+<text xml:space="preserve" x="22" y="408" textLength="441.6" lengthAdjust="spacing">    20261020T065410Z-fedec802-12efe2/after.png</text>
 <text xml:space="preserve" x="22" y="432" textLength="57.6" lengthAdjust="spacing">judge:</text>
 <text xml:space="preserve" x="22" y="456" textLength="249.6" lengthAdjust="spacing">  route: "answerer:gemini"</text>
 <text xml:space="preserve" x="22" y="480" textLength="182.4" lengthAdjust="spacing">  model: demo-judge</text>
@@ -32,7 +32,7 @@ text{font:16px ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation 
 <text xml:space="preserve" x="22" y="528" textLength="211.2" lengthAdjust="spacing">  author: no agent set</text>
 <text xml:space="preserve" x="22" y="552" textLength="432.0" lengthAdjust="spacing">  judged[1]{path,verdict,reason,seen,cached}:</text>
 <text xml:space="preserve" x="22" y="576" textLength="307.2" lengthAdjust="spacing">    ~/.done-done/evidence/notes/</text>
-<text xml:space="preserve" x="22" y="600" textLength="355.2" lengthAdjust="spacing">    20261018T081521Z-396dc99b-969550/</text>
+<text xml:space="preserve" x="22" y="600" textLength="355.2" lengthAdjust="spacing">    20261020T065410Z-fedec802-12efe2/</text>
 <text xml:space="preserve" x="22" y="624" textLength="441.6" lengthAdjust="spacing">    after.png,pass,The screen shows the synced</text>
 <text xml:space="preserve" x="22" y="648" textLength="355.2" lengthAdjust="spacing">    note.,The screen shows the synced</text>
 <text xml:space="preserve" x="22" y="672" textLength="144.0" lengthAdjust="spacing">    note.,false</text>
