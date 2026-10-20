@@ -124,11 +124,11 @@ try {
   writeFileSync(join(base, 'stray.log'), 'unrecorded output\n');
   drive(2, 'check', '--citation-base', base, '--outcome', 'fixture home renders', 'stray.log');
   const body = join(tmp, 'checks.md');
-  writeFileSync(body, '## Checks\noutcome: fixture home renders\nrepro: n/a: no bug\nproof: no verify skill - done-done run shots\nevidence: home.png\n');
+  writeFileSync(body, '## Checks\noutcome: fixture home renders\nrepro: n/a: no bug\nproof: done-done-verify-fixture - done-done run shots\nevidence: home.png\n');
   // Untracked counterfactual output must not change the caller's tracked identity.
   const from = JSON.parse(dd('--json', 'check', '--citation-base', base, '--from', body));
   follow(from);
-  dd('receipt', '--verify', head);
+  assert.match(dd('receipt', '--verify', head), /skill: done-done-verify-fixture/, 'the receipt names the verify skill that ran');
   sh('remote', 'add', 'origin', 'https://example.com/fixture.git');
   sh('update-ref', 'refs/remotes/origin/main', head);
   for (const args of [['--from', body], ['--outcome', 'fixture home renders', 'home.png']]) {
