@@ -76,7 +76,7 @@ npx skills add umeranjum17/done-done-axi --skill done-done -a <agent> -y
 
 `<agent>` is `claude-code`, `codex`, `opencode`, `pi` or `gemini-cli`. `-a` and `-y` skip the installer's four prompts and keep it from writing skill folders for agents you do not use.
 
-The skill lands in this project (`.claude/skills/done-done/` for Claude Code, `.agents/skills/done-done/` for Codex, opencode, Pi and Gemini CLI) next to a `skills-lock.json`: commit both so teammates and CI get it too. Or add `-g` to install it once for all your projects (for example `~/.claude/skills/` for Claude Code) and leave the project untouched.
+The skill lands in this project (`.claude/skills/done-done/` for Claude Code, `.agents/skills/done-done/` for Codex, opencode, Pi and Gemini CLI) next to a `skills-lock.json`: commit both so your teammates get it too. Or add `-g` to install it once for all your projects (for example `~/.claude/skills/` for Claude Code) and leave the project untouched.
 
 That is the entire setup - no npm install needed.
 The skill tells your agent to use `done-done` if it is on PATH and otherwise run the npm package through `npx`, so the CLI comes along on demand:
@@ -175,13 +175,13 @@ Run `done-done` with no arguments to see the current config and the next step.
 - ⏱️ **Fresh**: Proof from an older commit fails. Commits that only touch docs can be set to keep it fresh.
 - ♻️ **Not reused**: Proof made only of files already used for a different claim fails, and so does citing the same file twice. A claim is named by `--claim-id <id>`, which defaults to your branch, so rewording it keeps its proof. Several claims on one branch each need their own `--claim-id`.
 - 🧾 **Honest claims**: Reads a pull request's `## Checks` block — from a file, a URL, or stdin — and makes sure every line is filled in.
-- 📌 **Verifiable later**: `receipt` records a passing check against the exact commit and the sha256 of every file it cited; `receipt --verify` re-checks it from any checkout of that commit on the same machine (a merge gate or a fresh clone), or in CI once the evidence folder is copied there ([how](docs/reference.md#where-proof-lives)).
+- 📌 **Verifiable later**: `receipt` records a passing check against the exact commit and the sha256 of every file it cited; `receipt --verify` re-checks it from any checkout of that commit on the same machine (a merge gate or a fresh clone) ([how](docs/reference.md#where-proof-lives)).
 - 👀 **Shows the outcome** (always): `check`, `receipt` and `verify` start done-done's own judge, a fresh, tools-off agent on your own plan or key (Claude Code, opencode, pi or Gemini CLI, or your own OpenAI API key), to say whether each capture is the right screen for the claim (and each text capture, such as a log, JSON or CLI output, the right output), and a wrong one fails. There is no way to turn it off: done-done gives no result without it. The checks above never pass on their own, and a check that cites only files the judge cannot read (a video) stops before the judge, with exit 2. You choose the judge route (`done-done init --judge <agent> --judge-model <model>`, or pick it from the list done-done shows in a terminal; `done-done check --judge <route>` overrides it for one call); for a Pi judge with no explicit model, done-done defaults to `openai-codex/gpt-6-luna` unless `agent_config.pi.model` is set. Any agent and model you choose runs, your coding agent's own too. A judge that fails or times out stops the command with its cause (exit 2; a `verify` run stops with exit 2 and its cause in the run record), and no receipt is written.
 - 🎨 **Looks right**: `done-done design <screens...> [--mock <screen>=<mock>]` has the same judge look at each captured screen, alone or next to its approved mock, and fails it on stretched or squashed images, clipped or squashed text, overlap, elements off-screen, blank or black strips and broken layout, naming each defect and where it is ([how](docs/reference.md#design-check)).
 - 📐 **Fits the screen**: `done-done look <url>` opens a web page in headless Chrome at a 390x844 phone viewport, captures it, and fails the journey that calls it on squashed text, clipped text, elements cut off by an edge or a page wider than the screen, naming each element, with no model ([how](docs/reference.md#look-check)).
 - 🧮 **Honest, cheap claim gate**: `done-done lint <PR URL | report file> <evidence folder>` is a no-model gate on a worker's `## Checks` block, on whenever you call it. It prints `PASS` or `FAIL: <reason>` and exits 1 on a fail: the four lines present, proof naming a command or path, a real repro on a fix PR, evidence files that exist, are non-empty, are newer than the evidence folder and differ from each other, at least one never used by another PR (hashes kept in `~/.done-done/lint.hashes`, every run logged to `lint.log` there), and under 1,000 added non-generated lines ([how](docs/reference.md#lint-check)). `evidence: not proven: <cause>` passes.
+- 🚦 **CI gate, no model**: `done-done gate [<head>]` passes when a receipt committed under `.done-done-receipts/` covers the head, with no judge, config, key or evidence files. CI never runs `check`, `run` or `verify` and never gets a model key; proof runs on your desktop ([how](docs/reference.md#ci-gate)).
 - 🧩 **Page is clean** (with a `dom` block): each captured screen also needs its page-check record. A page that overflows the viewport, logs a console error, has a failed request or shows squashed, clipped or cut-off UI fails, unless an allow list names it ([how](docs/reference.md#dom-assertions)).
-- 🔒 **Safe in CI**: `--trusted-ref origin/main` reads the rules from your main branch, so a pull request can't loosen them.
 
 Every answer is an exit code: **0** pass, **1** fail, **2** usage or config error (including no agent or judge set, a check that fails before its judge, a capture the judge cannot be sent, or a judge that did not answer: never a result), **3** can't tell either way, **4** a `verify`, `maintain` or `rerun` run is still running, or a `verify` run waits at its gate.
 
@@ -223,7 +223,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 ## What's next
 
-So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `lint` (a no-model gate on a Checks block), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
+So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
 
 ## Develop
 
@@ -234,7 +234,7 @@ npm install
 npm install -g --prefix ~/.local .   # optional: links this checkout as done-done on your PATH
 npm test   # builds, then runs the end-to-end tests against throwaway git repos
 npm run build:skill              # regenerate skills/done-done/SKILL.md from src/skill.ts
-npm run build:skill -- --check   # fail if the committed skill is out of date (CI runs this)
+npm run build:skill -- --check   # fail if the committed skill is out of date
 ```
 
 To try an unreleased commit without cloning, run it straight from GitHub (npm 12 needs `--allow-git=all`):

@@ -8,7 +8,7 @@ import { findBin } from './agents.js';
 
 // done-done look: opens one page in headless Chrome at a phone viewport over the DevTools protocol (Node's own
 // WebSocket, no browser library), writes the screenshot and its page-check record next to it, and returns the record.
-// Chrome runs without its sandbox so it starts in containers and CI: point look at your own app, not untrusted sites.
+// Chrome runs without its sandbox so it starts in containers: point look at your own app, not untrusted sites.
 
 const BROWSERS = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
 const WAIT = 30_000;
