@@ -741,12 +741,14 @@ async function runCheck(argv, run) {
             findings.push({ level: 'inconclusive', why: `${name}: not in any done-done run record, so it is not tied to a commit` });
             continue;
         }
-        // Records from before runs had their own folders can both claim one file; never guess which run wrote it.
-        if (claims.length > 1) {
+        // Identical bytes (a deterministic capture) are claimed by every run that wrote them; a run at the current commit is enough.
+        // With none, records from before runs had their own folders can both claim one file; never guess which run wrote it.
+        const atNow = claims.filter((r) => r.commit === now.commit);
+        if (!atNow.length && claims.length > 1) {
             findings.push({ level: 'inconclusive', why: `${name}: claimed by more than one run (${claims.map((r) => r.run_id).join(', ')}), so it is not tied to one commit` });
             continue;
         }
-        const rec = claims[0];
+        const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
         // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
         const c = { name, bytes, sha256: hash, media: v };
         if (v.status === 'ok' && !record && pair)
