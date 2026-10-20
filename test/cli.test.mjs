@@ -176,6 +176,9 @@ test('files outside any run record stop before the judge; a failed or dirty run 
   const none = dd('run', '--', 'true');
   assert.equal(none.code, 1, none.out);
   assert.equal(toon(none).reason.split(';')[0], `the run wrote no files into its folder .proof/${toon(none).run_id}`, 'the reason names the run folder repo-relative');
+  const lit = dd('run', '--', 'node', 'make-shots.mjs', '$DONE_DONE_EVIDENCE_ROOT/x.png');
+  assert.equal(lit.code, 2, lit.out);
+  assert.match(lit.out, /literal text \$DONE_DONE_EVIDENCE_ROOT.*env var inside the script, or double quotes/);
   const run = dd('run', 'broken');
   assert.equal(run.code, 1, run.out);
   assert.match(run.out, /exited 4/);
