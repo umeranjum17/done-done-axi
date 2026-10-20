@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -300,7 +300,9 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   apply(cfg, readOptional(globalFile), globalFile, 'global');
   const projectFile = join(repo, '.done-done.yaml');
   apply(cfg, projectText ?? readOptional(projectFile), projectFile, 'repo');
-  cfg.skill ||= `.agents/skills/verify-${cfg.app}`;
+  // A skill dir an older init wrote (verify-<app>) is still read until init renames it to the prefixed name.
+  cfg.skill ||= existsSync(join(repo, `.agents/skills/done-done-verify-${cfg.app}`)) || !existsSync(join(repo, `.agents/skills/verify-${cfg.app}`))
+    ? `.agents/skills/done-done-verify-${cfg.app}` : `.agents/skills/verify-${cfg.app}`;
   const local = tilde(cfg.evidence.local_root);
   cfg.acpx_path = tilde(cfg.acpx_path);
   for (const a of Object.keys(cfg.agent_path_override)) cfg.agent_path_override[a] = tilde(cfg.agent_path_override[a]);

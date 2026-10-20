@@ -57,7 +57,7 @@ A CI job gets no model and no key, so it never runs `check`, `run` or `verify`. 
 receipt it wrote (`<evidence root>/.done-done/receipts/<head>.json`) into `.done-done-receipts/` in a follow-up commit. CI runs only
 `done-done gate <head>` (full history): `PASS` or `FAIL: <reason>` for a missing, late, other-head or moved-on receipt.
 
-`init` also has that agent write the repo's `.agents/skills/verify-<app>/SKILL.md` (never overwriting one): read it before
+`init` also has that agent write the repo's `.agents/skills/done-done-verify-<app>/SKILL.md` (never overwriting one): read it before
 you drive the app, and fix it when it is wrong.
 
 done-done starts a coding agent the user chose. When it says no agent is set, ask the user which agent
