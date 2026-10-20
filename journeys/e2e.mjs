@@ -83,6 +83,18 @@ try {
   const head = sh('rev-parse', 'HEAD').trim();
   say(`fixture HEAD: ${head}`);
 
+  // A repo whose older init wrote .agents/skills/verify-<app> keeps working, and init moves it to done-done-verify-<app> once.
+  const old = join(tmp, 'legacy');
+  mkdirSync(join(old, '.agents', 'skills', 'verify-legacy'), { recursive: true });
+  writeFileSync(join(old, '.done-done.yaml'), 'app: legacy\n');
+  writeFileSync(join(old, '.agents', 'skills', 'verify-legacy', 'SKILL.md'), '---\nname: "verify-legacy"\n---\n\n# verify-legacy\n');
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: old, env });
+  const init = spawnSync(process.execPath, [CLI, 'init'], { cwd: old, env, encoding: 'utf8' });
+  say(`$ done-done init   (in a repo with .agents/skills/verify-legacy)\n${init.stdout}${init.stderr}\nexit: ${init.status}`);
+  assert.match(init.stdout, /skill_renamed: \.agents\/skills\/verify-legacy -> \.agents\/skills\/done-done-verify-legacy/);
+  assert.deepEqual(readdirSync(join(old, '.agents', 'skills')), ['done-done-verify-legacy'], 'moved, no duplicate');
+  assert.match(readFileSync(join(old, '.agents', 'skills', 'done-done-verify-legacy', 'SKILL.md'), 'utf8'), /name: "done-done-verify-legacy"/);
+
   dd('doctor');
   const runOut = dd('run', 'shots');
   const runId = /run_id:\s*"?([^\s"]+)"?/.exec(runOut)?.[1];
