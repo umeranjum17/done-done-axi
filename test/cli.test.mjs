@@ -240,12 +240,30 @@ test('a file claimed by more than one legacy run record stops before the judge',
   writeFileSync(join(repo, '.proof', 'legacy.log'), 'added: milk\n');
   const file = { path: 'legacy.log', sha256: createHash('sha256').update('added: milk\n').digest('hex'), bytes: 12 };
   for (const id of ['old-a', 'old-b']) {
-    const rec = { schema: 1, run_id: id, journey: null, command: 'x', commit: head(), tree: 't', dirty: false, started_at: `2026-01-01T00:00:0${id.at(-1) === 'a' ? 1 : 2}Z`, ended_at: '2026-01-01T00:00:03Z', exit: 0, files: [file] };
+    const rec = { schema: 1, run_id: id, journey: null, command: 'x', commit: 'a'.repeat(40), tree: 't', dirty: false, started_at: `2026-01-01T00:00:0${id.at(-1) === 'a' ? 1 : 2}Z`, ended_at: '2026-01-01T00:00:03Z', exit: 0, files: [file] };
     writeFileSync(join(repo, '.proof', '.done-done', 'runs', `${id}.json`), JSON.stringify(rec));
   }
   const r = dd('check', '--outcome', 'notes add works', '.proof/legacy.log');
   assert.equal(r.code, 2, r.out);
   assert.match(r.out, /claimed by more than one run \(old-a, old-b\)/);
+});
+
+test('byte-identical frames from runs at different commits are valid for the run at the current commit', () => {
+  const { repo, dd, sh, head } = setup();
+  mkdirSync(join(repo, '.proof', '.done-done', 'runs'), { recursive: true });
+  writeFileSync(join(repo, '.proof', 'frame.log'), 'added: milk\n');
+  const file = { path: 'frame.log', sha256: createHash('sha256').update('added: milk\n').digest('hex'), bytes: 12 };
+  const record = (id, commit, sec) => writeFileSync(join(repo, '.proof', '.done-done', 'runs', `${id}.json`), JSON.stringify({ schema: 1, run_id: id, journey: null, command: 'x', commit, tree: 't', dirty: false, started_at: `2026-01-01T00:00:0${sec}Z`, ended_at: '2026-01-01T00:00:09Z', exit: 0, files: [file] }));
+  const first = head();
+  record('run-a', first, 1);
+  sh('commit', '--allow-empty', '-qm', 'second');
+  record('run-b', head(), 2);
+  const r = dd('check', '--outcome', 'notes add works', '.proof/frame.log');
+  assert.doesNotMatch(r.out, /claimed by more than one run/);
+  assert.doesNotMatch(r.out, /evidence is for commit/);
+  sh('commit', '--allow-empty', '-qm', 'third');
+  const later = dd('check', '--outcome', 'notes add works', '.proof/frame.log');
+  assert.match(later.out, /claimed by more than one run \(run-a, run-b\)|evidence is for commit/, 'no run at the current commit still refuses');
 });
 
 test('the same evidence cannot prove a second, different claim', () => {
