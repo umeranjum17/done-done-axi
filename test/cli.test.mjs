@@ -106,6 +106,35 @@ function setup(projectYaml = JUDGED) {
   return { dir, repo, env, sh, dd, ddin, head, shots };
 }
 
+test('check and receipt refuse proof from code-only journeys: a test, typecheck or lint log is not the product', () => {
+  // The config that shipped a broken app: a journey that wraps the repo's check script, whose log says the code checks pass.
+  const checkJourney = '  check:\n    command: npm run check > $DONE_DONE_EVIDENCE_ROOT/check.log 2>&1\n';
+  const { repo, sh, dd, shots } = setup(`${JUDGED}${checkJourney}`);
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { check: 'echo all 42 tests passed' } }));
+  sh('add', '-A');
+  sh('commit', '-qm', 'check script');
+  const run = dd('run', 'check');
+  assert.equal(run.code, 0, run.out);
+  const [log] = toon(run).evidence;
+  const refused = dd('check', '--outcome', 'pane attach works', log);
+  assert.equal(refused.code, 2, refused.out);
+  assert.match(refused.out, /the judge was not asked.*every cited capture comes from a code-only run \(check\): a test, typecheck, lint or build run proves the code checks pass, not that the product works/);
+  assert.match(refused.out, /done-done run shots/, 'the help names the journey that drives the product, never the code-only one');
+  assert.equal(dd('receipt', '--outcome', 'pane attach works', log).code, 2, 'no receipt for code-only proof');
+  // Beside captures of the real product the log is fine: the screens carry the proof.
+  const { files } = shots();
+  assert.equal(dd('check', '--outcome', 'home and settings render', ...files, log).code, 0);
+  // A config whose journeys are all code-only is refused whatever it cites, naming them.
+  writeFileSync(join(repo, '.done-done.yaml'), `app: notes\nevidence:\n  root: .proof\njourneys:\n${checkJourney}`);
+  sh('commit', '-qam', 'only the check journey');
+  const adhoc = dd('run', '--', 'node make-shots.mjs ${RUN_ID}');
+  assert.equal(adhoc.code, 0, adhoc.out);
+  const config = dd('check', '--outcome', 'home and settings render', ...toon(adhoc).evidence);
+  assert.equal(config.code, 2, config.out);
+  assert.match(config.out, /every journey in \.done-done\.yaml is code-only \(check\)/);
+  assert.match(config.out, /done-done init --journey <name> -- '<command that drives the real app/, 'the help says how to record a real journey');
+});
+
 test('a fresh run of the real journey passes the check', () => {
   const { dd, shots } = setup();
   const { files } = shots();
@@ -1602,6 +1631,20 @@ test('init refuses a feature drive that is only a period, instead of crashing', 
   assert.doesNotMatch(r.out, /TypeError/, 'no uncaught error');
   assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: has a feature without a title, reach, drive, source or capture; record /);
   assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes')), false, 'no skill from an empty drive');
+});
+
+test('init refuses a verify skill whose launch or feature drive only runs code checks: the skill drives the real product', () => {
+  const { repo, env } = shapeRepo('cli', 'notes');
+  const testLaunch = stubAgents(env, scaffoldAnswer({ launch: { steps: 'npm ci && yarn run check > check.log 2>&1', source: 'bin/cli.js', safe: true, why: 'runs the tests' } }));
+  const r = doctorIn(repo, testLaunch.env, 'init');
+  assert.equal(r.code, 1, r.out);
+  assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: the launch npm ci && yarn run check > check\.log 2>&1 is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works; record /);
+  assert.match(testLaunch.calls()[0].stdin, /a test suite, typecheck, lint or build .* is never a launch, a drive or the proof/, 'the prompt says so up front');
+  const testDrive = stubAgents(env, scaffoldAnswer({ launch: { steps: 'node bin/cli.js --help', source: 'bin/cli.js', safe: true, why: 'help only' }, features: [{ title: 'add', reach: 'the add command', drive: 'npx vitest run add', source: 'bin/cli.js', capture: 'text' }] }));
+  const d = doctorIn(repo, testDrive.env, 'init');
+  assert.equal(d.code, 1, d.out);
+  assert.match(toon(d).verify_skill, /^not written: claude's answer is unusable: the feature "add" drive npx vitest run add is code-only/);
+  assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes')), false, 'no skill from a code-only answer');
 });
 
 test('init blocks a skill missing only SKILL.md before asking the agent', () => {
@@ -3861,7 +3904,8 @@ test('doctor passes in a set-up repo and lists every check', () => {
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
   assert.equal(d.result, 'pass');
-  assert.deepEqual(d.checks.map((c) => c.check), ['git', 'config', 'evidence_root', 'verify_skill', 'agent', 'judge', 'ffprobe', 'judge_choice', 'agent_settings']);
+  assert.deepEqual(d.checks.map((c) => c.check), ['git', 'config', 'evidence_root', 'verify_skill', 'agent', 'judge', 'ffprobe', 'judge_choice', 'agent_settings', 'real_product']);
+  assert.deepEqual(d.checks.at(-1), { check: 'real_product', status: 'ok', detail: 'shots drives the product', fix: '' });
   assert.deepEqual(d.checks.slice(0, 3).map((c) => c.status), ['ok', 'ok', 'ok']);
   assert.match(d.checks[1].detail, /app notes/);
   assert.equal(d.checks[3].status, 'missing', 'no verify skill yet, and that is optional');
@@ -3869,7 +3913,23 @@ test('doctor passes in a set-up repo and lists every check', () => {
   assert.ok(d.help.length >= 1);
   const j = json(doctorIn(repo, stubs, 'doctor', '--json'));
   assert.equal(j.result, 'pass');
-  assert.equal(j.checks.length, 9);
+  assert.equal(j.checks.length, 10);
+  // A code-only journey beside a real one is a warning: doctor still passes.
+  const check = '\n  check:\n    command: yarn run check > $DONE_DONE_EVIDENCE_ROOT/check.log 2>&1\n';
+  writeFileSync(join(repo, '.done-done.yaml'), `${JUDGED}${check}`);
+  const mixed = json(doctorIn(repo, stubs, 'doctor', '--json'));
+  assert.equal(mixed.result, 'pass');
+  assert.equal(mixed.checks.at(-1).status, 'warning');
+  assert.match(mixed.checks.at(-1).detail, /^check is code-only .*; shots drives the product$/);
+  assert.equal(mixed.checks.at(-1).fix, 'Cite captures from the journeys that drive the product; delete check from .done-done.yaml if it is not needed');
+  // Only code-only journeys (the shipped-broken-APK config): the row is missing and doctor fails with the fix command.
+  writeFileSync(join(repo, '.done-done.yaml'), `app: notes\njourneys:${check}  types:\n    command: npx tsc --noEmit && npm test\n`);
+  const code = doctorIn(repo, stubs, 'doctor', '--json');
+  assert.equal(code.code, 2, code.out);
+  const row = JSON.parse(code.out).checks.at(-1);
+  assert.equal(row.status, 'missing');
+  assert.match(row.detail, /every journey in \.done-done\.yaml is code-only \(check, types\)/);
+  assert.match(row.fix, /done-done init --journey <name> -- '<command>'; then delete check, types from \.done-done\.yaml/);
 });
 
 test('doctor does not send a repo with a malformed global config to init', () => {
@@ -4132,7 +4192,7 @@ test('doctor finds agent, judge and ffprobe binaries from PATH; a missing ffprob
   const none = doctorIn(repo, pathEnv(env, []), 'doctor');
   assert.equal(none.code, 2, 'an agent or judge that cannot start fails doctor');
   const n = toon(none);
-  assert.deepEqual(n.checks.slice(4).map((c) => c.status), ['missing', 'missing', 'missing', 'ok', 'ok']);
+  assert.deepEqual(n.checks.slice(4).map((c) => c.status), ['missing', 'missing', 'missing', 'ok', 'ok', 'ok']);
   assert.match(n.checks[4].fix, /^Install claude, or ask the user which agent to use/, 'a missing agent is never swapped for an installed one');
   assert.match(n.checks[5].fix, /^Install opencode, or ask the user for another judge and save it: done-done init --judge/);
   assert.match(n.checks[6].fix, /ffprobe/);
@@ -6824,6 +6884,23 @@ test('gate vouches for a committed receipt with no judge, config or evidence, an
   clone();
   assert.deepEqual(gate(), { code: 0, out: 'PASS\n' });
   assert.equal(gate(head()).code, 0, 'the head can be named');
+
+  // The receipt keeps the run behind each capture, so gate applies the real-product rule with no config: a receipt from an
+  // older build (no runs), or one whose captures all come from code-only runs, vouches for nothing.
+  const rec = JSON.parse(readFileSync(join(folder, `${proven}.json`), 'utf8'));
+  assert.deepEqual(rec.runs.map((r) => [r.journey, r.command]), [['shots', `node make-shots.mjs ${rec.runs[0].run_id}`]]);
+  const gateOn = (r, msg) => {
+    writeFileSync(join(folder, `${proven}.json`), JSON.stringify(r, null, 2));
+    sh('commit', '-qam', msg);
+    clone();
+    return gate();
+  };
+  const { runs, ...older } = rec;
+  assert.match(gateOn(older, 'receipt from an older build').out, /^FAIL: receipt for .* is no real-product proof: it records no capture runs/);
+  const code = gateOn({ ...rec, runs: runs.map((r) => ({ ...r, journey: 'check', command: 'yarn run check > $DONE_DONE_EVIDENCE_ROOT/check.log' })) }, 'code-only receipt');
+  assert.equal(code.code, 1);
+  assert.match(code.out, /^FAIL: receipt for .* is no real-product proof: every cited capture comes from a code-only run \(check\)/);
+  assert.deepEqual(gateOn(rec, 'receipt restored'), { code: 0, out: 'PASS\n' });
 
   assert.match(gate('--pushed', '2000-01-01T00:00:00Z').out, /^FAIL: receipt time .* is not before the push/, 'a receipt made after the push');
   assert.equal(gate('--pushed', 'tomorrow-ish').code, 2);

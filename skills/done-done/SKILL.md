@@ -31,8 +31,10 @@ First run `command -v done-done`. If it prints a path, run `done-done` as shown 
 Results are TOON: read `result` and follow the `help` lines through
 `init`, `doctor`, `run`, `verify`, `check` and `receipt`. `design` judges captured screens for visual defects,
 `maintain` keeps the repo's verify skill true, and `signoff` writes a run's gate or evidence as a sign-off message
-(it prints the post command and never posts). Proof comes from driving the real product, not from a unit test run, and counts only from a committed
-tree: commit the done-done setup (config, capture script) before you capture. `fail` or
+(it prints the post command and never posts). Proof comes from driving the real product (the app, CLI or site the way a user does,
+captured as screenshots, a recording or its transcript), never from a test, typecheck, lint or build run: `init --journey` refuses a journey
+that only wraps one (`npm test`, `yarn run check`, `tsc`, `pytest`), and `check`, `receipt` and `gate` refuse proof from it. Proof counts only
+from a committed tree: commit the done-done setup (config, capture script) before you capture. `fail` or
 `inconclusive` is not done: fix the cause and re-run, or tell the user exactly what is still unproven.
 A run waiting at its judge gate (`awaiting_approval`) did not pass, and nothing moves it past its judge: show the user
 its findings and captures, and end it with `done-done respond --action fix` only when they say so.
@@ -57,7 +59,7 @@ run the journey, commit it, then open the PR, in that order. Fix the cause it na
 
 A CI job gets no model and no key, so it never runs `check`, `run` or `verify`. Proof runs on the desktop, then commit the
 receipt it wrote (`<evidence root>/.done-done/receipts/<head>.json`) into `.done-done-receipts/` in a follow-up commit. CI runs only
-`done-done gate <head>` (full history): `PASS` or `FAIL: <reason>` for a missing, late, other-head or moved-on receipt.
+`done-done gate <head>` (full history): `PASS` or `FAIL: <reason>` for a missing, late, other-head, moved-on or code-only receipt.
 
 `init` also has that agent write the repo's `.agents/skills/done-done-verify-<app>/SKILL.md` (never overwriting one): read it before
 you drive the app, and fix it when it is wrong.

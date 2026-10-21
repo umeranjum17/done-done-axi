@@ -94,10 +94,16 @@ test('the README manual-CLI worked example runs as written: init, journey, run, 
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr, stdout: r.stdout };
   };
-  assert.equal(dd('init', '--journey', 'smoke', '--', 'npm test > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log').code, 2, 'init records the journey and stops at the agent ask');
+  // A journey that wraps the test script is code-only: init refuses it and writes nothing.
+  const tests = dd('init', '--journey', 'smoke', '--', 'npm test > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log');
+  assert.equal(tests.code, 2, tests.out);
+  assert.match(tests.out, /is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works/);
+  assert.ok(!existsSync(join(repo, '.done-done.yaml')), 'nothing was written');
+  assert.equal(dd('init', '--journey', 'smoke', '--', 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log').code, 2, 'init records the journey and stops at the agent ask');
   // The user's answer to the judge ask, saved in the global config.
   stubJudge(dir);
-  writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'node -e "console.log(\'ok\')"' } }));
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } }));
+  writeFileSync(join(repo, 'app.js'), 'console.log("notes: 1 note");\n');
   sh('add', '-A');
   sh('commit', '-qm', 'Add done-done');
   const run = dd('run', '--json', 'smoke');
