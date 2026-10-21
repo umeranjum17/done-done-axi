@@ -1,22 +1,21 @@
+<a id="done-done"></a>
 <div align="center">
 
-<img src="docs/logo.svg" width="72" height="72" alt="done-done logo">
+<img src="docs/logo.svg" width="64" height="64" alt="done-done">
 
-# done-done
-
-### No proof, no "done".
-
-**[Landing page](https://umeranjum17.github.io/done-done-axi/)**
-
-done-done won't accept "done" without real, fresh proof from your product, captured at the exact commit being called done.
-
-[![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-3fb950?logo=nodedotjs&logoColor=white)](https://nodejs.org) [![Status: early preview](https://img.shields.io/badge/status-early%20preview-d29922)](#whats-next) [![npm: done-done-axi](https://img.shields.io/npm/v/done-done-axi?logo=npm&logoColor=white&label=npm)](https://www.npmjs.com/package/done-done-axi)
+[![npm](https://img.shields.io/npm/v/done-done-axi?label=done-done&color=5754d7)](https://www.npmjs.com/package/done-done-axi) [![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-3fb950)](https://nodejs.org) [![Early preview](https://img.shields.io/badge/status-preview-d29922)](#whats-next)
 
 </div>
 
-## Install in 3 steps
+# Prove your app really works.
 
-You need Node 22.18 or later and git.
+A command-line check of real screenshots, recordings and output.
+
+For developers using coding agents. Tests can pass while the app is still broken.
+
+<img src="docs/media/demo.png" width="320" alt="Real sample app: Release checklist shows Capture the real app checked and Done. The actual claude-haiku-5-5 judge passes that captured screenshot at sample commit 08d635e46a98.">
+
+<sub>Real sample app + live judge verdict, at the captured commit.</sub>
 
 ```sh
 npm install -g done-done-axi
@@ -24,31 +23,29 @@ cd your-app && done-done init
 done-done doctor
 ```
 
-1. **Install.** This puts `done-done` (and the long name `done-done-axi`) on your PATH. No `sudo`? Add `--prefix ~/.local` and put `~/.local/bin` on your `PATH`.
+[Website](https://umeranjum17.github.io/done-done-axi/) · [Setup](#install-in-3-steps) · [Agent skill](#use-it-from-your-agent) · [Reference](docs/reference.md) · [npm](https://www.npmjs.com/package/done-done-axi)
+
+## Install in 3 steps
+
+You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in coding agent or API key for the judge. Early preview; see [what's next](#whats-next).
+
+1. **Install.** The first line above puts `done-done` (and the long name `done-done-axi`) on your PATH. No `sudo`? Add `--prefix ~/.local` and put `~/.local/bin` on your `PATH`.
 2. **Set up your repo.** `init` writes a minimal `.done-done.yaml` and asks you, in a terminal, which coding agent and which judge to use. done-done never picks either for you. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
-3. **Check the setup.** `doctor` changes nothing and names each missing piece with the exact command that fixes it.
+3. **Check the setup.** `doctor` changes nothing and names each missing piece with the exact command that fixes it. It checks setup, not whether your app works.
 
-Then prove something: `done-done verify --outcome "<what a user can now do>"`. [Manual CLI](#manual-cli) below walks through journeys, `check` and `receipt`.
+Review and commit the capture recipe and verify skill, then ask for proof:
 
-<div align="center">
+```sh
+done-done verify --outcome "<what a user can now do>"
+```
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/flow-dark.svg">
-  <img src="docs/media/flow-light.svg" alt="How it works: capture your real app, tie every file to the exact commit, then check: pass with exit 0 or fail with exit 1." width="710">
-</picture>
-
-<br><br>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.svg">
-  <img src="docs/media/hero-light.svg" alt="A terminal: done-done records a run of a demo notes app and the check passes. After a code change, the same check fails because the proof is for an older commit." width="560">
-</picture>
-
-</div>
+Your agent drives the real product and saves screenshots or output. A fresh judge checks whether each capture shows your claim. No judge pass, no receipt. You choose the agents and models; captures go to your chosen judge's provider, on your own plan or key. [Manual CLI](#manual-cli) walks through recording a journey, checking it and saving a receipt.
 
 ## Why
 
-"Done" is easy to say. Screenshots get reused, recordings go stale, and a green test run is not the app.
+<a id="no-proof-no-done"></a>
+
+**No proof, no "done".** "Done" is easy to say. Screenshots get reused, recordings go stale, and a green test run is not the app.
 
 done-done runs your capture and ties every screenshot, recording and log it saves to the exact commit. When someone says "done", it checks the proof they point to: is it really there, is it a real picture or video, is it from this commit, and is it new? If not, the check fails. If it can't tell, it says so instead of passing.
 
@@ -103,77 +100,7 @@ The skill is the recommended path, but it is not the only one.
 
 ### Manual CLI
 
-**1. Install**
-
-```sh
-npm install -g --prefix ~/.local done-done-axi
-```
-
-`--prefix ~/.local` installs into your home folder, so it needs no `sudo`. This installs two names for the same CLI: `done-done-axi` and the short `done-done` used below. If `command -v done-done` prints nothing, add `~/.local/bin` to your `PATH`: `export PATH="$HOME/.local/bin:$PATH"`.
-
-To skip the install, run `npx -y done-done-axi` wherever this README says `done-done`.
-
-**2. Set it up in your app's repo**
-
-```sh
-cd your-app
-done-done init
-```
-
-`init` writes a minimal `.done-done.yaml` (only if you don't already have one) that names your app, and a commented global `~/.done-done/config.yaml` (only if there is none). done-done never picks the coding agent it starts: `init` asks you in a terminal, or takes `--agent <agent> --model <model>`. It never picks the judge either, the agent of its own that `check`, `receipt`, `verify` and `design` always start to look at each capture: `init` asks in a terminal, or takes `--judge <agent> --judge-model <model>`. Any agent and model you choose runs, your coding agent's own too (the judge is a fresh session of its own). The config keys are in the [reference](docs/reference.md#config). A plain `init` never overwrites an existing config. When your coding agent is set, `init` also has it write a verify skill, `.agents/skills/done-done-verify-<app>/SKILL.md`, from the repo's own files (never overwriting one; with no agent set, no skill is written; an older `verify-<app>` skill is renamed to this once). Check its launch never touches real accounts or your own state. Evidence lives outside the repo, in `~/.done-done/evidence/<app>`, so it outlives the checkout that captured it. For an `answerer:pi` judge with no explicit model, done-done uses `openai-codex/gpt-6-luna`; `judge.model` or `agent_config.pi.model` overrides it. Then describe how to capture proof — swap the command for whatever drives your real app the way a user does and saves its screenshots, recordings or output (here a CLI's own output):
-
-```yaml
-journeys:
-  smoke:
-    command: npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log && node record-steps.mjs
-    core: true
-```
-
-The command runs from the repo root with `DONE_DONE_EVIDENCE_ROOT` (a new folder for this run in the evidence root) and `DONE_DONE_RUN_ID` set, and `${RUN_ID}` in it is replaced. A run that writes nothing into its folder fails. The command also writes `steps.json` beside its captures: the target version, the state it started from, the steps a user takes and the result a user sees. `check`, `receipt` and `gate` read the claim against that record, so a test log wrapped in a script cannot prove a claim about the product ([the record](docs/reference.md#step-record)). A journey that only runs code checks (`npm test`, `yarn run check`, `tsc`, `pytest`, a linter or a build) is code-only: its log says the code checks pass, not that the product works, so `init --journey` refuses it and `check`, `receipt` and `gate` never count it as proof ([the rule](docs/reference.md#real-product-evidence)).
-
-Name your **core journey** with `core: true`: the one thing a user cannot live without, driven end to end on the real target (for a remote terminal app: pair, open a pane, type, see the output). If your app ships something users install and upgrade (an npm CLI, an Android app, a host service), also record an **upgrade journey** with `upgrade: true` that installs your previous release, upgrades over it in place, then drives the core journey: a fresh install alone is not how users get your release. `doctor` fails until both are named ([the rule](docs/reference.md#core-journey-and-release-path)).
-
-Optional: `done-done init --hook <claude|codex|opencode|gemini|pi>` adds a session hook or plugin to the repo that shows each session the bare `done-done` state. Each agent's file and behavior are in the [reference](docs/reference.md#set-up-a-repo).
-
-Record the recipe in the repo so anyone can re-run the proof, then commit it (and `.claude/settings.json`, `.codex/hooks.json`, `.gemini/settings.json`, `.opencode/plugins/done-done.js` or `.pi/extensions/done-done.js` if you added a hook):
-
-```sh
-done-done init --journey smoke --core -- 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log && node record-steps.mjs'
-git add .done-done.yaml
-git commit -m "Add done-done"
-```
-
-A `run -- <command>` whose command matches no recorded journey still runs, but its result hints that the recipe is not in the repo. For a proof you drive by hand or by your agent instead of a journey, `done-done run --open` prints a run id and a folder to capture into, and `done-done run --close <run-id>` seals it ([how](docs/reference.md#run-a-journey)).
-
-At any point, `done-done doctor` checks the setup and changes nothing except the `--probe` call record. Each item reports `ok`, `warning` or `missing` with the exact fix command; an agent you have not set yet is `missing`, with the command that saves your choice, and so is a config whose journeys only run code checks, one that names no core journey, or an app that ships an installable artifact with no upgrade journey. `done-done doctor --probe` also asks the agent one question to prove it answers; on a new machine that probe fails until the agent is signed in (for pi, run `pi` and then `/login`). The quick start above never calls the coding agent, so `run` and `check` work before it is signed in; `check` does call the judge, so set one first. The items are listed in the [reference](docs/reference.md#check-the-setup).
-
-`done-done maintain` keeps the verify skill true: it checks the skill's links and feature index, checks that every `file:line` it cites exists, and has your coding agent read the source for each feature, read-only, to report drift. It ends `clean`, `drift` with the findings to fix, or `blocked`. It never runs without that reader: an agent that is not set asks, and one that cannot start or cannot read without tools stops it before the run (exit 2). With `auto_fix: { maintain: <n> }` (as in no-mistakes; 0, the default, reports only), your judge first sorts each drift finding (a skill out of date, or a product that may be wrong, which stops and asks you), then your agent fixes the skill folder only, in a done-done worktree, and maintain runs again, up to n times. A clean end is `changed`: one commit on a `done-done/maintain-<run-id>` branch, your branch untouched ([reference](docs/reference.md#keep-the-verify-skill-true)).
-
-**3. Run it, then check it**
-
-```sh
-done-done run smoke
-done-done check --outcome "it starts" ~/.done-done/evidence/your-app/*/*.log
-```
-
-Each command prints one machine-readable result. By default it is [TOON](https://github.com/toon-format/spec) (the compact AXI convention). `run` shows `result: recorded`: it captured evidence, and says nothing about whether it proves the claim. `check` starts your judge on each capture, and only a check the judge passes shows `result: pass`; with no judge set it asks for one, and a judge that fails stops with the cause (exit 2), never a result. Add `--json` for JSON, or `--full` to list every evidence file or finding instead of the first few. After later runs, use the `run_id` the result prints in place of the first `*`.
-
-Not sure which journeys a change touches? `done-done affected` lists them from the verify skill's feature map and the paths each feature cites (the core journey when it cannot tell, never fewer), and exits 1 until a receipt for HEAD covers them. Bare `done-done`, which the session hooks run, names them too.
-
-When a check passes, save a receipt and re-verify it later:
-
-```sh
-done-done receipt --outcome "it starts" ~/.done-done/evidence/your-app/*/*.log
-done-done receipt --verify "$(git rev-parse HEAD)"
-```
-
-No journey yet? `done-done verify --outcome "<what a user can now do>"` has your coding agent drive one feature of the verify skill the way a user does (`--feature <name>` picks it). Your judge then checks the captures. When it says a capture is wrong or unclear, or a capture it cannot read (a video or other file) is not judged, the run waits at its gate (exit 4) until you answer with `done-done respond --action fix`, which ends it `fail` so you fix the product or the recipe and run again: nothing moves a run past its judge, and no receipt is written without a judge pass. Until then, a new `verify` or `rerun` of the same claim in that checkout is refused, so nothing goes around the gate ([details](docs/reference.md#drive-by-agent)).
-
-With `auto_fix: { verify: <n> }` (0, the default, reports only), a failed verify is fixed with your own agent: your judge first sorts each wrong screen (a product bug to fix, or a question that waits at the gate for you), then your agent fixes the product in a done-done worktree with your ignored files copied in, and verify runs again there, up to n times. A pass ends `changed`, with the fix on a `done-done/verify-<run-id>` branch and your branch untouched ([details](docs/reference.md#fix-the-product)).
-
-While a `verify` or `maintain` run goes, `done-done status` shows its steps and next move, `done-done attach` streams its events, and `done-done logs --step <name>` shows one step's log. `done-done rerun` runs a failed verify run again from the failed step, `done-done abort` stops a live run, `done-done signoff` writes a verify run's sign-off message, and `done-done history` lists past runs.
-
-Run `done-done` with no arguments to see the current config and the next step.
+Prefer a terminal to an agent skill? The [manual walkthrough](docs/manual-cli.md) covers installation without sudo, choosing agents, capture recipes, core and upgrade journeys, hooks, `doctor`, checks, receipts and the verify/fix loop. All behavior details live there or in the [reference](docs/reference.md).
 
 ## What it checks
 
@@ -255,6 +182,6 @@ npx -y --allow-git=all github:umeranjum17/done-done-axi --help
 
 `dist/` is committed, so installing from GitHub needs no build step. `npm test` rebuilds it and fails while the rebuilt `dist/` differs from the commit or has files git does not track, so `git add` the new `dist/` files with your change.
 
-The terminal pictures (hero, run, pass, reasons, config) are real output from the current build, with a stub judge (no model); redraw them with `npx tsc && node docs/media/make.mjs`. The logo (`docs/logo.svg`) and the flow picture are hand-made SVGs.
+The first-screen PNG pairs an actual sample-app screenshot with its real configured-judge pass and captured commit. Start a fresh sample with `node docs/media/demo.mjs <fresh-scratch-directory> 0` (the server prints its owned port), open a native run in its `app/` repo, drive the checklist in the browser, save `app.png` at 400×140 DPR 2 into the run's evidence folder, seal it and run `check` with your configured judge. Save the open result as `<scratch>/open.json` and the check result as `<scratch>/check.json`; `/proof` displays that screenshot and verdict. Capture `/proof` at 400×230 DPR 2 with `chrome-devtools-axi`. It refuses to show a pass without a real passing result. Keep scratch outside the repo and stop the server afterwards. The lower terminal illustrations (hero, run, pass, reasons, config) use a stub judge (no model); redraw them with `npx tsc && node docs/media/make.mjs`. The logo (`docs/logo.svg`) and the flow picture are hand-made SVGs.
 
 The landing page ([`docs/index.html`](docs/index.html), served by GitHub Pages from `main` `/docs`) is static: change it in the same PR as any README change it repeats (install steps, what it checks, the other tools).
