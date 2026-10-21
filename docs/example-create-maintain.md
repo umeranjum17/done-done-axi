@@ -42,7 +42,7 @@ git merge --ff-only done-done/maintain-<run-id>
 done-done maintain --foreground          # result: clean
 ```
 
-The first run reports that the feature file says `Write a note` and `Add note` and `SKILL.md` says `/health`, each with the source line. The fix commit touches only the skill folder; your branch is untouched until you merge it. (Before 0.5.2 a tool-less reader was given no source when a feature file named it without a line number, so this step ended `clean` without reading anything.)
+The first run reports that the feature file says `Write a note` and `Add note` and `SKILL.md` says `/health`, each with the source line. The fix commit touches only the skill folder; your branch is untouched until you merge it. (Before 0.6.3 a tool-less reader was given no source when a feature file named it without a line number, so this step ended `clean` without reading anything.)
 
 **5. A real journey.** `init --journey` records it (the command drives the product; a test run would be refused):
 
