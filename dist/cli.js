@@ -22,8 +22,9 @@ import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
 import { mapChange } from './affected.js';
-import { codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault } from './proof.js';
+import { codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, stepRecordFault, stepsFault } from './proof.js';
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 // The shape of a journey, so a new user or agent can write one without opening the reference.
 // done-done sets DONE_DONE_EVIDENCE_ROOT (the run's own folder) and replaces ${RUN_ID}, so the example works for any evidence root.
 const journeyExample = 'journeys: { smoke: { command: "<drive the core user journey on the real app> > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log", core: true } }';
@@ -33,6 +34,8 @@ const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DO
   real product: a journey whose command only runs tests, typecheck, lint or a build (npm test, yarn run check, tsc, pytest, or a test or guard
   script such as bash tests/x.test.sh or node scripts/floor-guard.mjs) is code-only;
   init --journey refuses it, and check, receipt and gate refuse proof that comes only from code-only runs or a config of only code-only journeys
+  step record: the journey also writes steps.json into $DONE_DONE_EVIDENCE_ROOT, shaped ${STEPS_SHAPE};
+  check, receipt and gate refuse a claim that no cited run's step record covers (a run recorded before step records only warns)
   core (journeys.<name>.core: true): the core user journey, the one thing a user cannot live without, driven end to end on the real target
   (for a remote terminal: pair, open a pane, type, see the output); doctor requires one, here or as a "(core journey)" entry in the verify skill's feature map
   upgrade (journeys.<name>.upgrade: true): the release path users take: install the previous shipped version, upgrade over it in place, then drive the
@@ -430,7 +433,26 @@ function openRun(repo, cfg, journey, command, id) {
     const runId = id ?? newRunId(h.commit);
     mkdirSync(cfg.evidence.root, { recursive: true });
     mkdirSync(runDir(cfg, runId));
-    return { schema: 1, run_id: runId, journey, command, ...h, started_at: new Date().toISOString(), ended_at: null, exit: null, files: [] };
+    return { schema: 1, run_id: runId, journey, command, ...h, started_at: new Date().toISOString(), ended_at: null, exit: null, files: [], tool: VERSION };
+}
+// The step record a run's journey (or driving agent) wrote beside its captures; it is a record, not a capture, so it is not a run file.
+function readSteps(cfg, rec) {
+    delete rec.steps;
+    delete rec.steps_error;
+    const file = join(runDir(cfg, rec.run_id), STEPS_FILE);
+    if (!existsSync(file))
+        return;
+    try {
+        const steps = JSON.parse(readFileSync(file, 'utf8'));
+        const bad = stepRecordFault(steps);
+        if (bad)
+            rec.steps_error = bad;
+        else
+            rec.steps = steps;
+    }
+    catch (e) {
+        rec.steps_error = `it is not JSON (${e.message})`;
+    }
 }
 // The first line of a run's log that names a failure, trimmed: what a non-zero exit is about. Empty when none does.
 function firstFailure(log) {
@@ -441,7 +463,9 @@ function firstFailure(log) {
 }
 function closeRun(repo, cfg, rec, log) {
     const now = head(repo);
+    readSteps(cfg, rec);
     rec.files = captured(cfg, rec.run_id)
+        .filter((p) => basename(p) !== STEPS_FILE || dirname(p) !== rec.run_id)
         .sort()
         .map((p) => {
         const b = readFileSync(join(cfg.evidence.root, p));
@@ -802,7 +826,7 @@ async function runCheck(argv, run) {
             continue;
         }
         const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
-        runs.set(rec.run_id, { run_id: rec.run_id, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }) });
+        runs.set(rec.run_id, { run_id: rec.run_id, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }), ...(rec.tool && { tool: rec.tool }), ...(rec.steps && { steps: rec.steps }), ...(rec.steps_error && { steps_error: rec.steps_error }) });
         // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
         const c = { name, bytes, sha256: hash, media: v };
         if (v.status === 'ok' && !record && pair)
@@ -835,6 +859,15 @@ async function runCheck(argv, run) {
     const codeRuns = runs.size ? runsFault([...runs.values()]) : null;
     if (codeRuns)
         findings.push({ level: 'fail', why: codeRuns });
+    // The user steps behind the captures: a cited real run needs a step record covering the claim. Runs from before step records warn.
+    const warnings = [];
+    if (claim && runs.size && !codeRuns) {
+        const s = stepsFault([...runs.values()], claim.outcome);
+        if (s.fault)
+            findings.push({ level: 'fail', why: s.fault });
+        if (s.warning)
+            warnings.push(s.warning);
+    }
     // Reuse: fail only when every cited file was already used for a different claim id. The ledger lives in the
     // evidence root next to the run records it guards: one per app (repo), shared by every checkout of it, never in git.
     const ledger = join(cfg.evidence.root, '.done-done', 'ledger');
@@ -890,12 +923,12 @@ async function runCheck(argv, run) {
     if (j.notJudged.length)
         judged.not_judged = j.notJudged;
     judged.note = 'PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not';
-    const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel });
+    const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel, warnings });
     if (rep.code === PASS) {
         mkdirSync(dirname(ledger), { recursive: true });
         appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
     }
-    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings };
+    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings, warnings };
 }
 async function cmdCheck(argv) {
     const r = await runCheck(argv);
@@ -933,8 +966,13 @@ function receiptFault(rec, short) {
     if (badJudge)
         return `receipt for ${short} has a malformed judge block`;
     const code = runsFault(rec.runs);
-    return code ? `receipt for ${short} is no real-product proof: ${code}` : null;
+    if (code)
+        return `receipt for ${short} is no real-product proof: ${code}`;
+    const steps = stepsFault(rec.runs, rec.claim);
+    return steps.fault ? `receipt for ${short} has no step record covering its claim: ${steps.fault}` : null;
 }
+// The warning a well-formed receipt still carries: its runs were recorded before step records.
+const receiptWarning = (rec) => stepsFault(rec.runs, rec.claim).warning;
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
 function verifyReceipt(repo, cfg, headArg) {
@@ -986,7 +1024,7 @@ function verifyReceipt(repo, cfg, headArg) {
     }
     if (bad.length)
         return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, help: ['This receipt is valid for this head.'] } };
+    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 async function cmdReceipt(argv) {
     const vi = argv.indexOf('--verify');
@@ -1024,7 +1062,7 @@ function recordReceipt(repo, cfg, r) {
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
     const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock };
     const path = writeReceipt(cfg, rec);
-    const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, receipt: shown(repo, path) };
+    const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
@@ -1070,6 +1108,8 @@ function checkHelp(code, findings, files, { cfg, repo, claim, source, citationBa
             ? `${absent} named file${absent > 1 ? 's are' : ' is'} not in this checkout. If the evidence is in another folder, check against it: ${form}`
             : `${absent} named file${absent > 1 ? 's are' : ' is'} not under --citation-base ${arg(citationBase)} either: check the paths in the Checks block`);
     }
+    if (findings.some((f) => f.why.includes('step record')))
+        help.push(`Have the journey write ${STEPS_FILE} into $DONE_DONE_EVIDENCE_ROOT, shaped ${STEPS_SHAPE}, naming the steps and the result the claim is about; then re-run it (${captureHint(cfg)}) and cite the new files`);
     // Proof refused as code-only needs a journey that drives the product, not a re-capture of the same run.
     if (findings.some((f) => f.why.endsWith(RULE)))
         help.push(`Capture the real product: ${captureHint(cfg).startsWith('done-done init') ? captureHint(cfg) : `${captureHint(cfg)}, or ${RECORD_REAL}`}, then cite its files`);
@@ -1101,6 +1141,8 @@ function report(findings, files, ctx) {
         result.findings = rows.items;
     if (rows.omitted)
         result.findings_omitted = rows.omitted;
+    if (ctx.warnings?.length)
+        result.warnings = ctx.warnings;
     result.help = checkHelp(code, findings, files, ctx);
     return { code, result };
 }
@@ -1330,11 +1372,12 @@ ${inst}${cells}${dom}${before}
 2. ${cfg.instance ? 'Drive that running instance' : 'Launch the app as the skill says, then drive'} that feature through the real user path, step by step as its recipe says.
    Never add steps or data to make the outcome look true: capture what that path shows, even when it contradicts the outcome.
 3. Save PNG screenshots of what a user sees once the path is done (the resulting state the outcome is about) into ${evidence} (also in $DONE_DONE_EVIDENCE_ROOT); when the outcome shows in text (a CLI's output, a log or JSON), save that text there as a .txt, .log or .json file instead.
-   The judge checks every capture there against the outcome, so a capture of an earlier step (such as an empty or half-filled form, or text from before the outcome) fails the drive: keep those in ${scratch}. Save nothing else there, and never edit a capture.
-4. Stop everything you started.
+   The judge checks every capture there against the outcome, so a capture of an earlier step (such as an empty or half-filled form, or text from before the outcome) fails the drive: keep those in ${scratch}. Save nothing else there but the step record of step 4, and never edit a capture.
+4. Write ${STEPS_FILE} into ${evidence} (also in $DONE_DONE_EVIDENCE_ROOT), the record of what you did, as JSON shaped ${STEPS_SHAPE}: the app version you drove (its package or build version, else the commit), the state it started from, each step a user takes in your own words, and what a user can see at the end. Write what you did, never what the outcome needs.
+5. Stop everything you started.
 
 Do not change any file in the repository. Do not run done-done: it refuses inside a drive, and done-done answers the run after you stop. Put logs and other scratch files in ${scratch} (also in $TMPDIR), never in /tmp.
-Keep working until all four steps are done: your next message without a tool call ends the drive and must be the answer.
+Keep working until all five steps are done: your next message without a tool call ends the drive and must be the answer.
 If you cannot launch the app or reach the feature, say why in blocker and save no capture.
 Answer with feature (the feature file you drove, such as features/<name>.md), captures (the file names you saved) and blocker ("" when you drove it),
 for example {"feature":"features/<name>.md","captures":["<name>.png"],"blocker":""}.`;
@@ -3657,7 +3700,7 @@ async function cmdLook(argv) {
 // The folder of a branch where a receipt copied from the evidence root is committed, for `gate`.
 const GATE_DIR = '.done-done-receipts';
 // The reason no committed receipt vouches for `tip`, or null when one does. Reads git objects only: no config, no judge, no evidence files.
-function gateFault(repo, tip, dir, pushed) {
+function gateFault(repo, tip, dir, pushed, warnings) {
     const short = tip.slice(0, 12);
     const names = git(repo, '-c', 'core.quotepath=off', 'ls-tree', '-r', '--name-only', tip, '--', dir).split('\n').filter((n) => n.endsWith('.json'));
     if (!names.length)
@@ -3689,6 +3732,9 @@ function gateFault(repo, tip, dir, pushed) {
             const at = Date.parse(rec.at);
             if (!(Math.floor(at / 1000) <= Math.floor(pushed / 1000)))
                 return `receipt time ${rec.at} is not before the push (${new Date(pushed).toISOString()})`;
+            const warn = receiptWarning(rec);
+            if (warn)
+                warnings.push(warn);
             return null;
         })();
         if (!why)
@@ -3713,8 +3759,9 @@ function cmdGate(argv) {
     const pushed = values.pushed === undefined ? Number(git(repo, 'log', '-1', '--format=%ct', tip)) * 1000 : Date.parse(values.pushed);
     if (Number.isNaN(pushed))
         throw new UsageError(`gate: --pushed ${values.pushed} is not a time`, 'Pass an ISO time such as 2026-10-20T09:05:56Z');
-    const why = gateFault(repo, tip, (values.dir ?? GATE_DIR).replace(/\/+$/, ''), pushed);
-    console.log(why === null ? 'PASS' : `FAIL: ${why}`);
+    const warnings = [];
+    const why = gateFault(repo, tip, (values.dir ?? GATE_DIR).replace(/\/+$/, ''), pushed, warnings);
+    console.log(why === null ? ['PASS', ...warnings.map((w) => `WARN: ${w}`)].join('\n') : `FAIL: ${why}`);
     return why === null ? PASS : FAIL;
 }
 function cmdLint(argv) {
@@ -4009,7 +4056,7 @@ async function main(argv) {
             return PASS;
         }
         if (cmd === '--version') {
-            console.log(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+            console.log(VERSION);
             return PASS;
         }
         if (cmd === '--help' || cmd === '-h' || cmd === 'help') {

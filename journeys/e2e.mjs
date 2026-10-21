@@ -76,8 +76,10 @@ try {
   writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\njourneys:\n  shots:\n    command: node make-shots.mjs \${RUN_ID}\n    core: true\n${['clipped', 'fixed'].map((p) => `  look-${p}:\n    command: ${JSON.stringify(look(p))}\n`).join('')}`);
   // The screen is committed beside the recipe and named relative to it, so the fixture holds no absolute path.
   writeFileSync(join(repo, 'screen.png'), png(3));
+  // The step record a journey writes beside its captures: target version, start state, user steps and the result a user sees.
+  const shotsSteps = { target: { version: '1.0.0' }, start: 'a fresh fixture app', steps: ['open the home screen'], result: 'the fixture home screen renders' };
   writeFileSync(join(repo, 'make-shots.mjs'),
-    `import { copyFileSync } from 'node:fs';\ncopyFileSync('screen.png', process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
+    `import { copyFileSync, writeFileSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT;\ncopyFileSync('screen.png', out + '/home.png');\nwriteFileSync(out + '/steps.json', ${JSON.stringify(JSON.stringify(shotsSteps))});\n`);
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1;\n');
   sh('init', '-q', '-b', 'main'); sh('add', '-A'); sh('commit', '-qm', 'init');
   const head = sh('rev-parse', 'HEAD').trim();
@@ -256,6 +258,27 @@ esac
   // init refuses a journey that only wraps the test script, and writes nothing.
   assert.match(drive(2, 'init', '--journey', 'check', '--', 'yarn run check > $DONE_DONE_EVIDENCE_ROOT/check.log'), /is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works/);
   assert.equal(readFileSync(join(repo, '.done-done.yaml'), 'utf8'), config, 'init wrote nothing');
+  // The step record: a wrapper script that only runs the unit suite and logs it cannot satisfy a pane claim, a real CLI transcript
+  // still satisfies a CLI claim, and a run recorded before step records keeps working with a warning.
+  const withSteps = (rec) => `import { writeFileSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT;\n${rec}writeFileSync(out + '/steps.json', JSON.stringify(steps));\n`;
+  writeFileSync(join(repo, 'wrapper.mjs'), withSteps(`writeFileSync(out + '/suite.log', 'ok 42 tests passed\\n');\nconst steps = { target: { version: '1.0.0' }, start: 'the repo checkout', steps: ['ran the unit suite'], result: '42 tests passed' };\n`));
+  writeFileSync(join(repo, 'fixture-cli.mjs'), withSteps(`writeFileSync(out + '/greet.txt', '$ fixture-cli greet\\nhello\\n');\nconst steps = { target: { version: '1.0.0' }, start: 'fixture-cli installed, no config', steps: ['run fixture-cli greet'], result: 'fixture-cli greet prints hello' };\n`));
+  writeFileSync(join(repo, '.done-done.yaml'), `${config}  wrapper:\n    command: node wrapper.mjs\n  cli:\n    command: node fixture-cli.mjs\n`);
+  sh('add', '-A');
+  sh('commit', '-qm', 'wrapper and cli journeys');
+  const wrapRun = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'wrapper'))[1];
+  assert.match(drive(2, 'check', '--outcome', 'a user can attach to a pane and see its output', join(home, 'evidence', 'fixture', wrapRun, 'suite.log')), /no cited capture comes from a run whose step record covers the claim.*never mentions attach, pane/);
+  const cliRun = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'cli'))[1];
+  dd('check', '--outcome', 'fixture-cli greet prints hello', join(home, 'evidence', 'fixture', cliRun, 'greet.txt'));
+  const recFile = join(home, 'evidence', 'fixture', '.done-done', 'runs', `${cliRun}.json`);
+  const recorded = JSON.parse(readFileSync(recFile, 'utf8'));
+  delete recorded.tool;
+  delete recorded.steps;
+  writeFileSync(recFile, JSON.stringify(recorded));
+  assert.match(dd('check', '--outcome', 'fixture-cli greet prints hello', join(home, 'evidence', 'fixture', cliRun, 'greet.txt')), /warnings[\s\S]*recorded before step records/);
+  writeFileSync(join(repo, '.done-done.yaml'), config);
+  sh('add', '-A');
+  sh('commit', '-qm', 'journeys restored');
   // A hand-written check journey still runs, but its log alone is no proof, and doctor flags it.
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { check: 'echo all 42 tests passed' } }));
   const checkJourney = '  check:\n    command: npm run check > $DONE_DONE_EVIDENCE_ROOT/check.log 2>&1\n';
@@ -281,6 +304,13 @@ esac
   writeFileSync(join(OUT, `${RUN_ID}.real-product.log`), realProduct.join('\n') + '\n');
   writeFileSync(join(OUT, `${RUN_ID}.affected.log`), affectedLog.join('\n') + '\n');
   for (const [page, r] of [['clipped', clipped], ['fixed', fixed]]) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
+  // The step record of this run, beside its captures: what a user does with the built CLI and what the fixture shows at the end.
+  writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
+    target: { version: JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version },
+    start: 'the built done-done CLI and a fresh fixture repo with no run, receipt or evidence',
+    steps: ['init a repo and record its journeys', 'run the core journey and check its capture', 'record a receipt and gate on it', 'refuse code-only proof', 'look at a clipped and a fixed screen', 'lint a PR claim'],
+    result: 'the fixture home screen is checked and receipted, code-only proof is refused, and the clipped screen fails look where the fixed one passes',
+  }));
   const names = readdirSync(OUT).sort();
   say(`evidence: ${names.join(', ')}`);
 } catch (err) {

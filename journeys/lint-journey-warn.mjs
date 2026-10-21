@@ -3,7 +3,7 @@
 // Runs from the done-done repo root with DONE_DONE_EVIDENCE_ROOT and DONE_DONE_RUN_ID set by `done-done run lint-journey-warn`.
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,12 @@ try {
   run(['src/app.ts', 'README.md'], 'WARN: ');
   run(['src/app.ts', 'journeys/app.mjs'], 'PASS');
   writeFileSync(join(OUT, `${RUN_ID}.lint-warn-then-pass.txt`), transcript);
+  writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
+    target: { version: JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version },
+    start: 'a PR that changes src/ with no journeys/ file, read through a stand-in gh',
+    steps: ['lint the PR with src/ and README changes', 'lint it again with a journeys/ file added'],
+    result: 'lint warns about the src/ change with no journeys/ file, then passes once a journey is added',
+  }));
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

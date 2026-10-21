@@ -43,6 +43,12 @@ function png(w, h, pixel, colour = 2) {
 const screen = (seed = 0) => png(200, 120, (x, y) => [(x * 3 + seed) % 256, (y * 5) % 256, (x + y) % 256]);
 const blank = () => png(200, 120, () => [250, 250, 250]);
 
+// The step record a fixture journey writes beside its captures (steps.json): what the check reads a claim against.
+const STEPS = { target: { version: '1.0.0' }, start: 'a fresh notes app with no notes', steps: ['open the home screen', 'open settings'], result: 'home and settings render' };
+// The script a fixture journey runs (or imports) to write its step record: it restates the outcome a call claims (DD_OUTCOME).
+const STEPS_MJS = `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/steps.json', JSON.stringify({ ...${JSON.stringify(STEPS)}, result: process.env.DD_OUTCOME || ${JSON.stringify(STEPS.result)} }));\n`;
+// The step record of a hand-driven run, for an outcome.
+const stepsOf = (result) => JSON.stringify({ ...STEPS, result });
 const JUDGED = 'app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n    core: true\n';
 // done-done gives no result without its judge, so every repo starts with a stub judge (never a model): a gemini stub
 // through agent_path_override that says each capture shows the outcome. A test about the judge writes its own config,
@@ -80,15 +86,19 @@ function setup(projectYaml = JUDGED) {
   writeFileSync(join(repo, 'docs', 'guide.md'), '# guide\n');
   writeFileSync(join(dir, 'screen.png'), screen());
   writeFileSync(join(dir, 'screen2.png'), screen(7));
+  writeFileSync(join(repo, 'steps.mjs'), STEPS_MJS);
   writeFileSync(
     join(repo, 'make-shots.mjs'),
-    `import { copyFileSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/home.png');\ncopyFileSync(${JSON.stringify(join(dir, 'screen2.png'))}, out + '/settings.png');\n`,
+    `import './steps.mjs';\nimport { copyFileSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/home.png');\ncopyFileSync(${JSON.stringify(join(dir, 'screen2.png'))}, out + '/settings.png');\n`,
   );
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');
   sh('add', '-A');
   sh('commit', '-qm', 'init');
+  // The fixture journey's step record restates the outcome a call claims (DD_OUTCOME), the way a journey written for that claim would.
   const dd = (...args) => {
+    const at = args.indexOf('--outcome');
+    if (at >= 0) env.DD_OUTCOME = args[at + 1];
     const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
@@ -97,7 +107,8 @@ function setup(projectYaml = JUDGED) {
     return { code: r.status, out: r.stdout + r.stderr };
   };
   const head = () => sh('rev-parse', 'HEAD').toString().trim();
-  const shots = () => {
+  const shots = (...outcomes) => {
+    if (outcomes.length) env.DD_OUTCOME = outcomes.join('; ');
     const r = dd('run', 'shots');
     assert.equal(r.code, 0, r.out);
     const id = toon(r).run_id;
@@ -157,7 +168,7 @@ test('check and receipt refuse proof from code-only journeys: a test, typecheck 
   assert.match(refused.out, /done-done run shots/, 'the help names the journey that drives the product, never the code-only one');
   assert.equal(dd('receipt', '--outcome', 'pane attach works', log).code, 2, 'no receipt for code-only proof');
   // Beside captures of the real product the log is fine: the screens carry the proof.
-  const { files } = shots();
+  const { files } = shots('home and settings render');
   assert.equal(dd('check', '--outcome', 'home and settings render', ...files, log).code, 0);
   // A config whose journeys are all code-only is refused whatever it cites, naming them.
   writeFileSync(join(repo, '.done-done.yaml'), `app: notes\nevidence:\n  root: .proof\njourneys:\n${checkJourney}`);
@@ -168,6 +179,115 @@ test('check and receipt refuse proof from code-only journeys: a test, typecheck 
   assert.equal(config.code, 2, config.out);
   assert.match(config.out, /every journey in \.done-done\.yaml is code-only \(check\)/);
   assert.match(config.out, /done-done init --journey <name> -- '<command that drives the real app/, 'the help says how to record a real journey');
+});
+
+// A journey script that drives something, saves one capture and writes its step record (or none, or a broken one).
+const driver = (capture, text, steps) => `import { writeFileSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT;\nwriteFileSync(out + '/${capture}', ${JSON.stringify(text)});\n${steps === undefined ? '' : `writeFileSync(out + '/steps.json', ${JSON.stringify(typeof steps === 'string' ? steps : JSON.stringify(steps))});\n`}`;
+
+test('a claim needs a step record that covers it: a wrapped test log cannot prove a pane claim, a real CLI transcript still proves a CLI claim', () => {
+  const journeys = {
+    // A script that only runs the unit suite and logs it: not code-only by its name, so only its step record says what it did.
+    wrapper: driver('suite.log', 'ok 42 tests passed\n', { target: { version: '1.0.0' }, start: 'the repo checkout', steps: ['ran the unit suite'], result: '42 tests passed' }),
+    cli: driver('greet.txt', '$ notes greet\nhello\n', { target: { version: '1.0.0' }, start: 'notes installed with no config', steps: ['run notes greet'], result: 'notes greet prints hello' }),
+    bare: driver('bare.txt', 'hello\n'),
+    broken: driver('broken.txt', 'hello\n', { target: { version: '1.0.0' }, start: 'a fresh notes app', steps: [], result: 'notes greet prints hello' }),
+    garbled: driver('garbled.txt', 'hello\n', '{not json'),
+  };
+  const { repo, sh, dd } = setup(`${JUDGED}${Object.keys(journeys).map((j) => `  ${j}:\n    command: node ${j}.mjs\n`).join('')}`);
+  for (const [j, code] of Object.entries(journeys)) writeFileSync(join(repo, `${j}.mjs`), code);
+  sh('add', '-A');
+  sh('commit', '-qm', 'journeys');
+  const version = JSON.parse(readFileSync(join(CLI, '..', '..', 'package.json'), 'utf8')).version;
+  const ran = (j, capture) => {
+    const r = dd('run', j);
+    assert.equal(r.code, 0, r.out);
+    const d = toon(r);
+    assert.deepEqual(d.evidence.map((f) => basename(f)), [capture], 'the step record is a record, not a capture');
+    return { id: d.run_id, file: d.evidence[0] };
+  };
+  const recordOf = (id) => JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'runs', `${id}.json`), 'utf8'));
+
+  // The run record carries the steps, the target version and the done-done version that recorded it, beside the captures.
+  const cli = ran('cli', 'greet.txt');
+  assert.deepEqual(recordOf(cli.id).steps, { target: { version: '1.0.0' }, start: 'notes installed with no config', steps: ['run notes greet'], result: 'notes greet prints hello' });
+  assert.equal(recordOf(cli.id).tool, version);
+  assert.equal(existsSync(join(repo, '.proof', cli.id, 'steps.json')), true, 'the file stays beside the captures');
+  // A real CLI transcript whose record names the command and its output proves a CLI claim.
+  const pass = dd('check', '--outcome', 'notes greet prints hello', cli.file);
+  assert.equal(pass.code, 0, pass.out);
+  assert.equal(toon(pass).warnings, undefined);
+
+  // A wrapped test log: its honest record says it ran the unit suite, so it cannot prove a claim about a pane.
+  const wrapper = ran('wrapper', 'suite.log');
+  const wrapped = dd('check', '--outcome', 'a user can attach to a pane and see its output', wrapper.file);
+  assert.equal(wrapped.code, 2, wrapped.out);
+  assert.match(wrapped.out, new RegExp(`the judge was not asked.*no cited capture comes from a run whose step record covers the claim: run ${wrapper.id}'s step record \\(1 step, target 1\\.0\\.0\\) never mentions attach, pane`));
+  assert.match(wrapped.out, /Have the journey write steps\.json into \$DONE_DONE_EVIDENCE_ROOT/, 'the help says how to record the steps');
+  assert.equal(dd('receipt', '--outcome', 'a user can attach to a pane and see its output', wrapper.file).code, 2, 'no receipt either');
+  // The same log is no proof of a claim it does not mention, and a claim it names is covered: the record, not the file name, decides.
+  assert.equal(dd('check', '--outcome', 'the unit suite passes with 42 tests', wrapper.file).code, 0);
+
+  // A run with no step record, an invalid one, or one with a step list that is empty is refused, with the cause.
+  const bare = dd('check', '--outcome', 'notes greet prints hello', ran('bare', 'bare.txt').file);
+  assert.equal(bare.code, 2, bare.out);
+  assert.match(bare.out, /run \S+ has no step record \(steps\.json beside its captures\)/);
+  const broken = dd('check', '--outcome', 'notes greet prints hello', ran('broken', 'broken.txt').file);
+  assert.match(broken.out, /step record steps\.json is invalid: steps must be a non-empty list of strings/);
+  const garbled = ran('garbled', 'garbled.txt');
+  assert.match(dd('check', '--outcome', 'notes greet prints hello', garbled.file).out, /step record steps\.json is invalid: it is not JSON/);
+  assert.match(recordOf(garbled.id).steps_error, /^it is not JSON/);
+
+  // A real capture whose record covers the claim carries the claim beside a log that has none.
+  assert.equal(dd('check', '--outcome', 'notes greet prints hello', cli.file, wrapper.file).code, 0);
+
+  // A run recorded before step records (no tool, no steps) keeps working, with a warning rather than a silent pass.
+  const path = join(repo, '.proof', '.done-done', 'runs', `${cli.id}.json`);
+  const old = recordOf(cli.id);
+  delete old.tool;
+  delete old.steps;
+  writeFileSync(path, JSON.stringify(old));
+  const warned = dd('check', '--outcome', 'notes greet prints hello', cli.file);
+  assert.equal(warned.code, 0, warned.out);
+  assert.match(toon(warned).warnings[0], new RegExp(`run ${cli.id} was recorded before step records.*re-run the journey so it writes steps\\.json`));
+});
+
+test('a receipt carries the step record of its runs, and gate refuses one whose runs have none', () => {
+  const { dir, repo, env, sh, dd, head, shots } = setup();
+  const { files } = shots();
+  assert.equal(dd('receipt', '--outcome', 'home and settings render', ...files).code, 0);
+  const proven = head();
+  const rec = JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'receipts', `${proven}.json`), 'utf8'));
+  assert.deepEqual(rec.runs[0].steps, STEPS, 'the receipt keeps the run\'s steps');
+  assert.equal(typeof rec.runs[0].tool, 'string');
+  assert.equal(dd('receipt', '--verify', proven).code, 0);
+
+  const folder = join(repo, '.done-done-receipts');
+  mkdirSync(folder);
+  const runner = join(dir, 'runner');
+  const bare = { ...env, DONE_DONE_HOME: join(dir, 'empty-home') };
+  const gateOn = (r, msg) => {
+    writeFileSync(join(folder, `${proven}.json`), JSON.stringify(r, null, 2));
+    sh('add', '-A');
+    sh('commit', '-qm', msg);
+    rmSync(runner, { recursive: true, force: true });
+    execFileSync('git', ['clone', '-q', repo, runner], { env });
+    const g = spawnSync(process.execPath, [CLI, 'gate'], { cwd: runner, env: bare, encoding: 'utf8' });
+    return { code: g.status, out: g.stdout + g.stderr };
+  };
+  assert.deepEqual(gateOn(rec, 'receipt'), { code: 0, out: 'PASS\n' });
+  // The receipt's runs have a tool but no step record, or one that does not cover its claim: refused.
+  const { steps, ...noSteps } = rec.runs[0];
+  const none = gateOn({ ...rec, runs: [noSteps] }, 'receipt without steps');
+  assert.equal(none.code, 1);
+  assert.match(none.out, /^FAIL: receipt for .* has no step record covering its claim: .*run \S+ has no step record/);
+  const other = gateOn({ ...rec, claim: 'a user can attach to a pane' }, 'receipt claiming a pane');
+  assert.equal(other.code, 1);
+  assert.match(other.out, /^FAIL: .*never mentions attach, pane/);
+  // A receipt from a run recorded before step records (no tool, no steps) passes, with a warning.
+  const { tool, ...legacy } = noSteps;
+  const warned = gateOn({ ...rec, runs: [legacy] }, 'receipt from before step records');
+  assert.equal(warned.code, 0);
+  assert.match(warned.out, /^PASS\nWARN: run \S+ was recorded before step records/);
 });
 
 test('a fresh run of the real journey passes the check', () => {
@@ -219,7 +339,7 @@ test('empty, truncated, blank, tiny and mislabelled images fail with the reason'
 
 test('evidence goes stale when HEAD moves past code, but not past ignored paths', () => {
   const { repo, sh, dd, shots } = setup();
-  const { files } = shots();
+  const { files } = shots('still fresh', 'stale now');
   sh('commit', '-q', '--allow-empty', '-m', 'empty');
   assert.equal(dd('check', '--outcome', 'still fresh', ...files).code, 2, 'an empty diff is not "only ignored paths"');
   writeFileSync(join(repo, 'docs', 'guide.md'), '# guide v2\n');
@@ -264,6 +384,7 @@ test('open and close a hand-driven run', () => {
   const { run_id: id, evidence_root: folder } = toon(open);
   assert.equal(folder, `.proof/${id}`, 'a hand-driven run captures into its own folder');
   writeFileSync(join(repo, folder, 'cli.log'), '$ notes add milk\nadded: milk\nexit 0\n');
+  writeFileSync(join(repo, folder, 'steps.json'), stepsOf('notes add works'));
   const close = dd('run', '--close', id);
   assert.equal(close.code, 0, close.out);
   assert.equal(dd('check', '--outcome', 'notes add works', `${folder}/cli.log`).code, 0);
@@ -397,7 +518,7 @@ test('init --journey refuses an absolute path inside the repo and names the rela
 
 test('two repos never see each other\'s reuse ledger', () => {
   const capture = (t) => {
-    const r = t.dd('run', '--', `node -e "require('fs').copyFileSync('../screen.png', process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png')"`);
+    const r = t.dd('run', '--', `node -e "require('fs').copyFileSync('../screen.png', process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png')" && DD_OUTCOME="home renders" node steps.mjs`);
     assert.equal(r.code, 0, r.out);
     return toon(r).evidence[0];
   };
@@ -471,6 +592,7 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   const { repo, dd } = setup('app: notes\nevidence:\n  root: .proof\n');
   const open = dd('run', '--open');
   const id = toon(open).run_id;
+  writeFileSync(join(repo, '.proof', id, 'steps.json'), stepsOf('clip plays'));
   const out = join(repo, '.proof', id, 'clip.mp4');
   execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=128x96:rate=10', '-t', '1', '-pix_fmt', 'yuv420p', out]);
   const full = readFileSync(out);
@@ -659,6 +781,7 @@ test('evidence edited after its run fails as changed after that run', () => {
   const { run_id: id, evidence_root: folder } = toon(open);
   const log = `${folder}/${id}.log`;
   writeFileSync(join(repo, log), 'added: milk\n');
+  writeFileSync(join(repo, folder, 'steps.json'), stepsOf('notes add works'));
   assert.equal(dd('run', '--close', id).code, 0);
   assert.equal(dd('check', '--outcome', 'notes add works', log).code, 0);
   const h = head();
@@ -1865,8 +1988,9 @@ test('a repo set up by init captures, checks and receipts real evidence that out
   const init = dd('init');
   assert.equal(init.code, 2);
   // Follow init's hint as printed: its example journey, placeholder filled in, becomes the config.
-  const example = toon(init).help[0].match(/journeys: \{.*\} \}/)[0].replace('<drive the core user journey on the real app>', 'echo added: milk');
+  const example = toon(init).help[0].match(/journeys: \{.*\} \}/)[0].replace('<drive the core user journey on the real app>', 'cp steps.src.json $DONE_DONE_EVIDENCE_ROOT/steps.json && echo added: milk');
   appendFileSync(join(repo, '.done-done.yaml'), `${example}\n`);
+  writeFileSync(join(repo, 'steps.src.json'), stepsOf('notes add works'));
   sh('add', '-A');
   sh('commit', '-qm', 'config');
   const r = dd('run', 'smoke');
@@ -1908,6 +2032,7 @@ test('overlapping runs from two checkouts sharing the evidence root never claim 
   const { dir, repo, env, sh, dd } = bareRepo();
   withStubJudge(env, dir);
   assert.equal(dd('init').code, 2);
+  writeFileSync(join(repo, 'steps.mjs'), STEPS_MJS);
   sh('add', '-A');
   sh('commit', '-qm', 'config');
   const lane2 = join(dir, 'lane2');
@@ -1922,9 +2047,10 @@ test('overlapping runs from two checkouts sharing the evidence root never claim 
   const open = toon(dd('run', '--open'));
   const failed = in2('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/b.log', 'broken'); process.exit(1)"`);
   assert.equal(failed.code, 1, failed.out);
-  const passed = in2('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/c.log', 'added: milk')"`);
+  const passed = in2('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/c.log', 'added: milk')" && DD_OUTCOME="notes add works" node steps.mjs`);
   assert.equal(passed.code, 0, passed.out);
   writeFileSync(join(open.evidence_root, 'a.log'), 'added: milk\n');
+  writeFileSync(join(open.evidence_root, 'steps.json'), stepsOf('notes add works'));
   const closed = dd('run', '--close', open.run_id);
   assert.deepEqual(toon(closed).evidence, [join(open.evidence_root, 'a.log')], 'lane 1 records only its own folder');
   // The failed run's file cannot pass through lane 1's successful record.
@@ -1969,7 +2095,7 @@ test('a noisy journey leaves run stdout as one document; its words go to stderr'
 
 test('--full lists every finding; the compact default truncates and says how many it dropped', () => {
   const { dir, dd, shots } = setup();
-  const { files } = shots();
+  const { files } = shots('many unrecorded');
   // Files in no run record are inconclusive, one finding each; the judged screens pass, so the result is inconclusive.
   const stray = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n) => join(dir, `${n}.log`));
   for (const f of stray) writeFileSync(f, `${f}\n`);
@@ -2028,7 +2154,7 @@ function slowRepo() {
   const release = join(t.dir, 'release');
   writeFileSync(
     join(t.repo, 'slow.mjs'),
-    `import { copyFileSync, existsSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\nwhile (!existsSync(${JSON.stringify(release)})) await new Promise((r) => setTimeout(r, 50));\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, out + '/home.png');\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen2.png'))}, out + '/settings.png');\n`,
+    `import './steps.mjs';\nimport { copyFileSync, existsSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\nwhile (!existsSync(${JSON.stringify(release)})) await new Promise((r) => setTimeout(r, 50));\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, out + '/home.png');\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen2.png'))}, out + '/settings.png');\n`,
   );
   appendFileSync(join(t.repo, '.done-done.yaml'), '  slow:\n    command: node slow.mjs ${RUN_ID}\n  broken:\n    command: node -e "process.exit(3)"\n');
   t.sh('add', '-A');
@@ -2198,7 +2324,7 @@ test('a check that stops before the judge keeps every cause in the run store, no
   const t = setup();
   writeFileSync(
     join(t.repo, 'dup.mjs'),
-    `import { copyFileSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\nfor (let i = 0; i < 7; i++) copyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, out + '/copy' + i + '.png');\n`,
+    `import './steps.mjs';\nimport { copyFileSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\nfor (let i = 0; i < 7; i++) copyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, out + '/copy' + i + '.png');\n`,
   );
   appendFileSync(join(t.repo, '.done-done.yaml'), '  dup:\n    command: node dup.mjs ${RUN_ID}\n');
   t.sh('add', '-A');
@@ -2278,7 +2404,7 @@ test('a failed verify drive whose output holds a secret names where and never pr
 test('auto_fix.verify never re-runs a spends journey: one approval buys one spend, and the reason says so', () => {
   const t = setup(JUDGED.replace('journeys:', 'auto_fix:\n  verify: 2\njourneys:'));
   appendFileSync(join(t.repo, '.done-done.yaml'), '  paid:\n    command: echo spent >> ../spent.txt && node shot.mjs\n    spends: one live generation\n');
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A'); t.sh('commit', '-qm', 'a spending journey and a broken title');
   const e = pathEnv(t.env, []);
@@ -2309,7 +2435,7 @@ test('a journey that spends parks before it runs until the user approves; respon
   assert.deepEqual([parked.status, parked.step, spends()], ['awaiting_approval', 'drive', 0], 'nothing runs before approval');
   assert.match(parked.findings[0].what, /journey paid spends \(one live generation\)/);
   assert.ok(parked.help.includes(`done-done respond --run ${parked.run_id} --action approve --reason "<who approved the spend>"`), parked.help);
-  assert.equal(t.dd('verify', 'paid', '--outcome', 'x').code, 2, 'a parked spend blocks a new run around it');
+  assert.equal(t.dd('verify', 'paid', '--outcome', 'home and settings render').code, 2, 'a parked spend blocks a new run around it');
   const ok = t.dd('respond', '--run', parked.run_id, '--action', 'approve', '--reason', 'Umer approved one generation');
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual([toon(ok).result, toon(ok).spend.reason, spends()], ['pass', 'Umer approved one generation', 1]);
@@ -2469,7 +2595,7 @@ test('with no judge set, check and receipt give no result and write no receipt: 
 test('judge pass exits 0, sends one downscaled image and the outcome only, and a re-run is a cache hit', () => {
   const j = judgeSetup(CORRECT);
   writeFileSync(join(j.dir, 'screen2.png'), png(2000, 1000, (x, y) => [x % 256, y % 256, 90]));
-  const { files: cited } = j.shots();
+  const { files: cited } = j.shots('the notes list shows three notes');
   const r = j.dd('check', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
@@ -2499,7 +2625,7 @@ test('judge pass exits 0, sends one downscaled image and the outcome only, and a
 
 test('judge wrong screen fails with exit 1, unsure and low confidence are inconclusive with exit 3', () => {
   const j = judgeSetup({ correct: 0.05, wrong: 0.9, unclear: 0.05 });
-  const { files } = j.shots();
+  const { files } = j.shots('the settings page shows dark mode on', 'the sync finished in the background', 'the home screen shows the welcome card', 'the home screen shows the sync banner');
   const fail = j.dd('check', '--outcome', 'the settings page shows dark mode on', files[0]);
   assert.equal(fail.code, 1, fail.out);
   const f = toon(fail);
@@ -2538,7 +2664,7 @@ test('judge wrong screen fails with exit 1, unsure and low confidence are inconc
 test('an allowed claude rate-limit event does not stop the judge call, and its answer is used', () => {
   const j = judgeSetup(CORRECT);
   writeFileSync(join(j.dir, 'screen2.png'), png(2000, 1000, (x, y) => [x % 256, y % 256, 90]));
-  const { files: cited } = j.shots();
+  const { files: cited } = j.shots('the notes list shows three notes');
   j.stub(CORRECT, true, [{ type: 'system', subtype: 'api_retry', error_status: 429, error: 'rate_limit' }, { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: 1792692000, utilization: 0.91 } }]);
   const r = j.dd('check', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(r.code, 0, r.out);
@@ -2623,17 +2749,17 @@ test('judge.floor is config: the default 0.7 counts a supported pick, a higher f
   const supported = { correct: 0.75, wrong: 0.2, unclear: 0.05 };
   const outcome = 'the home screen shows the notes';
   const pass = judgeSetup(supported);
-  const { files } = pass.shots();
+  const { files } = pass.shots('the settings page shows dark mode on', outcome);
   const ok = pass.dd('check', '--outcome', outcome, files[0]);
   assert.equal(ok.code, 0, ok.out);
   assert.equal(toon(ok).judge.judged[0].verdict, 'pass');
   const strict = judgeSetup(supported, { floor: 0.8 });
-  const { files: strictFiles } = strict.shots();
+  const { files: strictFiles } = strict.shots('the settings page shows dark mode on', outcome);
   const unsure = strict.dd('check', '--outcome', outcome, strictFiles[0]);
   assert.equal(unsure.code, 3, unsure.out);
   assert.match(toon(unsure).judge.judged[0].reason, /not confident enough \(confidence 0.75 below floor 0.8\)/);
   const wrong = judgeSetup({ correct: 0.2, wrong: 0.75, unclear: 0.05 }, { floor: 0.8 });
-  const { files: wrongFiles } = wrong.shots();
+  const { files: wrongFiles } = wrong.shots('the settings page shows dark mode on', outcome);
   const notFail = wrong.dd('check', '--outcome', 'the settings page shows dark mode on', wrongFiles[0]);
   assert.equal(notFail.code, 3, 'a wrong pick below the floor is inconclusive, never a pass');
   assert.equal(toon(notFail).judge.judged[0].verdict, 'unsure');
@@ -2671,7 +2797,7 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
     { width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }, { name: 'after-scroll', newest_message: 'hello', at: 'bottom' }] },
   ];
   writeFileSync(widths, JSON.stringify({ checks }));
-  const r = j.dd('run', '--', `${cp(chat, 'chat-1440.png')} && ${cp(widths, 'widths.json')}`);
+  const r = j.dd('run', '--', `${cp(chat, 'chat-1440.png')} && ${cp(widths, 'widths.json')} && DD_OUTCOME="the sent message shows as the newest bubble at the bottom of the thread" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const ok = j.dd('check', '--outcome', 'the sent message shows as the newest bubble at the bottom of the thread', `${mixed}/chat-1440.png`, `${mixed}/widths.json`);
@@ -2693,7 +2819,7 @@ test('an outcome that names two widths passes only once a passing capture shows 
   const w1440 = join(j.dir, 'widths-1440.json');
   writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
   writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
-  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')} && DD_OUTCOME="the sent message shows at the bottom of the thread at 390 and 1440 wide" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const outcome = 'the sent message shows at the bottom of the thread at 390 and 1440 wide';
@@ -2717,7 +2843,7 @@ test('a second capture that orders and writes the parts differently still covers
   const w1440 = join(j.dir, 'widths-1440.json');
   writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
   writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
-  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')} && DD_OUTCOME="the sent message shows at the bottom of the thread at 390 and 1440 wide" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
@@ -2736,7 +2862,7 @@ test('a reply that repeats or blanks a part label still covers the part its cove
   const w1440 = join(j.dir, 'widths-1440.json');
   writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
   writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
-  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')} && DD_OUTCOME="the sent message shows at the bottom of the thread at 390 and 1440 wide" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
@@ -2751,7 +2877,7 @@ test('a judge reply that leaves out the coverage lists is asked again, then stop
   j.stub(CORRECT, true, [], [], '', { noLists: true });
   const w390 = join(j.dir, 'widths-390.json');
   writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
-  const r = j.dd('run', '--', `node -e "require('node:fs').copyFileSync('${w390}', process.env.DONE_DONE_EVIDENCE_ROOT + '/widths-390.json')"`);
+  const r = j.dd('run', '--', `node -e "require('node:fs').copyFileSync('${w390}', process.env.DONE_DONE_EVIDENCE_ROOT + '/widths-390.json')" && DD_OUTCOME="the sent message shows at the bottom of the thread at 390 and 1440 wide" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const one = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`);
@@ -2768,7 +2894,7 @@ test('a reply whose covers names a position its own parts list has no part at is
   j.stub(CORRECT, true, [], [], '', { shows: { '"width":1440': { parts: ['390 wide', '1440 wide'], covers: [1, 2] } } });
   const w1440 = join(j.dir, 'widths-1440.json');
   writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
-  const r = j.dd('run', '--', `node -e "require('node:fs').copyFileSync('${w1440}', process.env.DONE_DONE_EVIDENCE_ROOT + '/widths-1440.json')"`);
+  const r = j.dd('run', '--', `node -e "require('node:fs').copyFileSync('${w1440}', process.env.DONE_DONE_EVIDENCE_ROOT + '/widths-1440.json')" && DD_OUTCOME="the sent message shows at the bottom of the thread at 390 and 1440 wide" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const one = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-1440.json`);
@@ -2787,7 +2913,7 @@ test('a cached coverage pair whose covers do not index its own parts is a miss, 
   const w1440 = join(j.dir, 'widths-1440.json');
   writeFileSync(w390, JSON.stringify({ checks: [{ width: 390, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
   writeFileSync(w1440, JSON.stringify({ checks: [{ width: 1440, frames: [{ name: 'send', newest_message: 'hello', at: 'bottom' }] }] }));
-  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')}`);
+  const r = j.dd('run', '--', `${cp(w390, 'widths-390.json')} && ${cp(w1440, 'widths-1440.json')} && DD_OUTCOME="the sent message shows at the bottom of the thread at 390 and 1440 wide" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const outcome = 'the sent message shows at the bottom of the thread at 390 and 1440 wide';
@@ -2809,7 +2935,7 @@ test('a cached coverage pair whose covers do not index its own parts is a miss, 
 
 test('check judges text evidence too, and a failed plain check stops with its cause, unjudged', () => {
   const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n' });
-  const r = j.dd('run', '--', `node make-shots.mjs \${RUN_ID} && node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.log','saved 3 notes')"`);
+  const r = j.dd('run', '--', `node make-shots.mjs \${RUN_ID} && node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.log','saved 3 notes')" && DD_OUTCOME="three notes are saved" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const ok = j.dd('check', '--outcome', 'three notes are saved', `${mixed}/home.png`, `${mixed}/session.log`);
@@ -2830,7 +2956,7 @@ test('check judges text evidence too, and a failed plain check stops with its ca
 
 test('the judge reads text and JSON captures as text: a wrong count fails with its reason, over-cap text stops with its cause, a re-run is a cache hit', () => {
   const j = judgeSetup(CORRECT);
-  const r = j.dd('run', '--', `node -e "const fs = require('fs'), d = process.env.DONE_DONE_EVIDENCE_ROOT; fs.writeFileSync(d + '/count.json', JSON.stringify({ notes: 3 })); fs.writeFileSync(d + '/sync.log', 'synced 3 notes'); fs.writeFileSync(d + '/big.log', 'x'.repeat(70000))"`);
+  const r = j.dd('run', '--', `node -e "const fs = require('fs'), d = process.env.DONE_DONE_EVIDENCE_ROOT; fs.writeFileSync(d + '/count.json', JSON.stringify({ notes: 3 })); fs.writeFileSync(d + '/sync.log', 'synced 3 notes'); fs.writeFileSync(d + '/big.log', 'x'.repeat(70000))" && DD_OUTCOME="three notes are saved; five notes are saved" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const ev = `.proof/${toon(r).run_id}`;
   const ok = j.dd('check', '--outcome', 'three notes are saved', `${ev}/count.json`, `${ev}/sync.log`);
@@ -2869,7 +2995,7 @@ test('verify and rerun always judge, and the receipt keeps the judge', () => {
 
 test('a capture the judge cannot read stops before the judge and writes no receipt', () => {
   const j = judgeSetup(CORRECT);
-  const r = j.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')"`);
+  const r = j.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')" && DD_OUTCOME="three notes are saved" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const log = `.proof/${toon(r).run_id}/session.bin`;
   const rec = j.dd('receipt', '--outcome', 'three notes are saved', log);
@@ -2881,7 +3007,7 @@ test('a capture the judge cannot read stops before the judge and writes no recei
 
 test('judge with a claude that is not signed in is a config error naming your normal claude sign-in, and writes no receipt', () => {
   const j = judgeSetup(CORRECT, { loggedIn: false });
-  const { files } = j.shots();
+  const { files } = j.shots('the notes list shows three notes');
   const r = j.dd('receipt', '--outcome', 'the notes list shows three notes', files[0]);
   assert.equal(r.code, 2, r.out);
   const e = toon(r);
@@ -2912,7 +3038,7 @@ test('judge with a claude that is not signed in is a config error naming your no
 
 test('the default claude-code judge model is cheap Haiku', () => {
   const j = judgeSetup(CORRECT);
-  const { files } = j.shots();
+  const { files } = j.shots('the notes list shows three notes');
   writeFileSync(join(j.env.DONE_DONE_HOME, 'config.yaml'), readFileSync(join(j.env.DONE_DONE_HOME, 'config.yaml'), 'utf8').replace('  model: claude-test-1\n', ''));
   assert.equal(j.dd('check', '--outcome', 'the notes list shows three notes', files[0]).code, 0);
   assert.equal(j.calls()[0].model, 'claude-haiku-5-5');
@@ -2930,7 +3056,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   };
   const right = agents(CORRECT);
   const verify = (env, outcome, ...more) => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground', ...more], { cwd: t.repo, env, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground', ...more], { cwd: t.repo, env: { ...env, DD_OUTCOME: outcome }, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
   const ok = verify(right.env, 'home and settings render');
@@ -3075,6 +3201,7 @@ const { spawnSync } = require('node:child_process');
 appendFileSync(${JSON.stringify(join(s.bin, 'calls.jsonl'))}, JSON.stringify({ agent: 'claude', argv: process.argv.slice(2), stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), evidence: process.env.DONE_DONE_EVIDENCE_ROOT, tmp: process.env.TMPDIR }) + '\\n');
 if (process.env.DRIVE === 'text') writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/count.json', JSON.stringify({ notes: 1 }));
 else copyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/note.png');
+writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/steps.json', JSON.stringify({ ...${JSON.stringify(STEPS)}, result: process.env.DD_OUTCOME || 'x' }));
 if (process.env.DRIVE === 'edit') appendFileSync('src/app.js', '// changed\\n');
 if (process.env.DRIVE === 'log') writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin', 'ok\\n');
 if (process.env.DRIVE === 'switch') writeFileSync(process.env.DONE_DONE_HOME + '/config.yaml', 'agent: opencode\\njudge:\\n  route: answerer:opencode\\n');
@@ -3090,7 +3217,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
     return s;
   };
   const verify = (env, outcome, ...more) => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', '--outcome', outcome, '--foreground', ...more], { cwd: t.repo, env, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', '--outcome', outcome, '--foreground', ...more], { cwd: t.repo, env: { ...env, DD_OUTCOME: outcome }, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr, o: r.stdout.startsWith('command') ? toon({ out: r.stdout }) : undefined };
   };
   const right = agents(CORRECT);
@@ -3263,7 +3390,7 @@ test('signoff on a rerun that reused its drive sends the captures of the run tha
 test('signoff on a verify run fixed by auto_fix sends the fix pass: its captures, its commit and a repro naming its branch', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\nauto_fix:\n  verify: 1\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
@@ -3274,7 +3401,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
-  const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
+  const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'the home screen shows the title Notes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).result], [1, 'changed'], r.out);
   const id = toon(r).run_id;
   const fix = t.sh('rev-parse', `done-done/verify-${id}`).toString().trim();
@@ -3293,7 +3420,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 test('signoff on a fix-pass gate names the capture file, not the fix pass folder', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\nauto_fix:\n  verify: 1\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/out.txt', 'the notes list shows three notes\\n');\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/out.txt', 'the notes list shows three notes\\n');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
@@ -3377,7 +3504,7 @@ test('verify through pi and gemini: each judges tools-off with the capture attac
     return s;
   };
   const verify = (env, outcome) => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground'], { cwd: t.repo, env, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground'], { cwd: t.repo, env: { ...env, DD_OUTCOME: outcome }, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
   // The user names the judge: a pi author is judged by gemini at its cheap model; a gemini author by pi, each at its configured model.
@@ -3440,7 +3567,7 @@ globalThis.fetch = async (url, init) => {
   const key = 'sk-test-not-a-real-key';
   const withKey = (p) => ({ ...env, OPENAI_API_KEY: key, NODE_OPTIONS: `--import=${pathToFileURL(stub)}`, STUB_VERDICT: typeof p === 'string' ? p : JSON.stringify(p) });
   const verify = (e, outcome) => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground'], { cwd: t.repo, env: e, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', outcome, '--foreground'], { cwd: t.repo, env: { ...e, DD_OUTCOME: outcome }, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
   const requests = () => readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -3501,7 +3628,7 @@ globalThis.fetch = async (url, init) => {
   const key = 'mm-test-not-a-real-key';
   const env = { ...j.env, MINIMAX_API_KEY: key, NODE_OPTIONS: `--import=${pathToFileURL(stub)}` };
   const check = (e, outcome) => {
-    const { files } = j.shots();
+    const { files } = j.shots(outcome);
     const r = spawnSync(process.execPath, [CLI, 'check', '--outcome', outcome, ...files], { cwd: j.repo, env: e, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr };
   };
@@ -4385,7 +4512,7 @@ test('judge.route must name a judge, and judge.model is the judge\'s model', () 
 
 test('a receipt citing nothing the judge reads is no pass and writes no receipt', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n');
-  const r = t.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')"`);
+  const r = t.dd('run', '--', `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin','saved 3 notes')" && DD_OUTCOME="three notes are saved" node steps.mjs`);
   assert.equal(r.code, 0, r.out);
   const log = `.proof/${toon(r).run_id}/session.bin`;
   const rec = t.dd('receipt', '--outcome', 'three notes are saved', log);
@@ -4400,7 +4527,7 @@ evidence:
   root: .proof
 journeys:
   shots:
-    command: node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin', 'saved 3 notes')"
+    command: node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/session.bin', 'saved 3 notes')" && node steps.mjs
 `);
   const r = t.dd('verify', 'shots', '--outcome', 'three notes are saved', '--foreground');
   assert.equal(r.code, 2, r.out);
@@ -6354,7 +6481,7 @@ test(`an unreadied instance (ready ${ready.split(':')[0]}) fails the run with it
 test('verify with auto_fix fixes the product on a done-done branch, and never fixes a dirty checkout or keeps a fix that touches the skill, config or tests', () => {
   const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\nauto_fix:\n  verify: 2\njourneys:\n  shots:\n    command: node shot.mjs\n');
   const e = pathEnv(t.env, []);
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
@@ -6380,7 +6507,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
   ]) {
     writeFileSync(join(e.PATH, 'extra'), extra);
     if (dirty) writeFileSync(join(t.repo, 'docs', 'guide.md'), '# guide, edited\n');
-    const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
+    const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'the home screen shows the title Notes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
     assert.deepEqual([r.code, toon(r).reason?.match(reason)?.[0] !== undefined], [code, true], `${extra || (dirty ? 'dirty' : 'fix')}: ${r.out}`);
     if (dirty) t.sh('checkout', '--', 'docs/guide.md');
     assert.equal(git('worktree', 'list').split('\n').length, 1, 'the done-done worktree is removed');
@@ -6399,7 +6526,7 @@ test('verify with auto_fix copies the ignored files into the fix worktree again 
   writeFileSync(join(t.repo, '.gitignore'), '.proof/\nnode_modules/\n');
   mkdirSync(join(t.repo, 'node_modules', 'dep'), { recursive: true });
   writeFileSync(join(t.repo, 'node_modules', 'dep', 'index.js'), 'export default "dep";\n');
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';\nimport './node_modules/dep/index.js';\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\nif (readFileSync('src/app.js', 'utf8').includes('BUG') && !existsSync('node_modules/dep/cheat')) process.exit(1);\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';\nimport './node_modules/dep/index.js';\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\nif (readFileSync('src/app.js', 'utf8').includes('BUG') && !existsSync('node_modules/dep/cheat')) process.exit(1);\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
@@ -6413,7 +6540,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
-  const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
+  const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'the home screen shows the title Notes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).result], [1, 'changed'], r.out);
   assert.deepEqual(readFileSync(join(e.PATH, 'calls'), 'utf8').trim().split('\n'), ['dep', 'dep'], 'two attempts, each with the ignored dep copied in');
   const git = (...a) => t.sh(...a).toString().trim();
@@ -6446,7 +6573,7 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   const config = (judge) => writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\njudge:\n  ${judge}\n`);
-  const verify = () => doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
+  const verify = () => doctorIn(t.repo, { ...e, DD_OUTCOME: 'the home screen shows the title Notes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   config(`route: answerer:pi\n  model: pi/judge${floor}`);
   const r = verify();
   const m = toon(r);
@@ -6471,7 +6598,7 @@ test('verify with auto_fix drops a fix that un-ignores and edits a copied ignore
   const e = pathEnv(t.env, []);
   writeFileSync(join(t.repo, '.gitignore'), '.proof/\n.env.local\n');
   writeFileSync(join(t.repo, '.env.local'), 'SECRET=real\n');
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
@@ -6485,7 +6612,7 @@ console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stri
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
   const head = t.head();
-  const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
+  const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'the home screen shows the title Notes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.equal(r.code, 1, r.out);
   assert.match(toon(r).reason, /^fix: opencode changed the verify skill, .*a copied ignored file of your checkout/);
   assert.deepEqual([t.head(), t.sh('branch', '--list', 'done-done/*').toString().trim(), readFileSync(join(t.repo, '.env.local'), 'utf8')], [head, '', 'SECRET=real\n']);
@@ -6498,14 +6625,14 @@ test('verify with auto_fix ends blocked, naming the ignored file, when a copied 
   writeFileSync(join(t.repo, '.gitignore'), '.proof/\nsecret.key\n');
   writeFileSync(join(t.repo, 'secret.key'), 'key\n');
   chmodSync(join(t.repo, 'secret.key'), 0o000);
-  writeFileSync(join(t.repo, 'shot.mjs'), `import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
+  writeFileSync(join(t.repo, 'shot.mjs'), `import './steps.mjs';\nimport { copyFileSync, mkdirSync, readFileSync } from 'node:fs';\nif (readFileSync('src/app.js', 'utf8').includes('BUG')) process.exit(1);\nmkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });\ncopyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/home.png');\n`);
   writeFileSync(join(t.repo, 'src', 'app.js'), 'export const title = "BUG";\n');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'a broken title');
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(e.PATH, 'fixer'))}, '');\n`, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
-  const r = doctorIn(t.repo, { ...e, PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
+  const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'the home screen shows the title Notes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'shots', '--outcome', 'the home screen shows the title Notes', '--foreground');
   assert.deepEqual([r.code, toon(r).result, existsSync(join(e.PATH, 'fixer')), toon(r).steps.find((x) => x.name === 'fix').status], [1, 'blocked', false, 'failed'], r.out);
   assert.match(toon(r).reason, /^fix: copy of your ignored secret\.key into the fix worktree failed/);
 });
@@ -6524,7 +6651,8 @@ journeys:
 // A stub journey proving the cell reached it: it refuses without its env, then runs `then`.
 const matrixed = (yaml, needs, then) => {
   const t = setup(yaml);
-  writeFileSync(join(t.repo, 'make-cells.mjs'), `import { copyFileSync, mkdirSync } from 'node:fs';
+  writeFileSync(join(t.repo, 'make-cells.mjs'), `import './steps.mjs';
+import { copyFileSync, mkdirSync } from 'node:fs';
 const root = process.env.DONE_DONE_EVIDENCE_ROOT;
 const { DONE_DONE_THEME: theme, DONE_DONE_WIDTH: width, DONE_DONE_FORM: form, DONE_DONE_CELL: cell } = process.env;
 if (${needs}) { console.error('missing cell env'); process.exit(1); }
@@ -6850,7 +6978,7 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   symlinkSync(process.execPath, join(s.bin, 'node'));
   const verify = () => {
-    const r = spawnSync(process.execPath, [CLI, 'verify', 'cells', '--outcome', 'home shows the new page', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'verify', 'cells', '--outcome', 'home shows the new page', '--foreground'], { cwd: t.repo, env: { ...s.env, DD_OUTCOME: 'home shows the new page' }, encoding: 'utf8' });
     return { code: r.status, out: r.stdout + r.stderr, run: toon({ out: r.stdout }) };
   };
   // Key off: each capture is judged alone and nothing is driven at a base ref.
@@ -6878,7 +7006,7 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
 
 test('base_ref judges a text capture against its base text: identical text fails, changed text passes', () => {
   const j = judgeSetup(CORRECT, { projectYaml: 'app: notes\nevidence:\n  root: .proof\njourneys:\n  count:\n    command: node count.mjs\n' });
-  writeFileSync(join(j.repo, 'count.mjs'), "import { readFileSync, writeFileSync } from 'node:fs';\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/count.json', readFileSync('page.txt'));\n");
+  writeFileSync(join(j.repo, 'count.mjs'), "import './steps.mjs';\nimport { readFileSync, writeFileSync } from 'node:fs';\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/count.json', readFileSync('page.txt'));\n");
   writeFileSync(join(j.repo, 'page.txt'), '{"notes":3}\n');
   j.sh('add', '-A');
   j.sh('commit', '-qm', 'three notes');

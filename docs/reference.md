@@ -97,6 +97,8 @@ journeys:
     command: node scripts/capture-review.mjs --out $DONE_DONE_EVIDENCE_ROOT
 ```
 
+The script saves its captures into that folder and writes `steps.json` beside them: the target version, start state, user steps and end result ([Step record](#step-record)).
+
 Then run it:
 
 ```sh
@@ -255,8 +257,29 @@ A command is **code-only** when every step in it (split on `&&`, `||`, `;`, `|` 
 
 - `init --journey` refuses a code-only command (exit 2, nothing written), and `init`'s verify skill refuses a code-only launch or feature drive.
 - `check` and `receipt` stop before the judge (exit 2) when every journey in `.done-done.yaml` is code-only, naming them, or when every cited capture comes from a code-only run, naming its journey or command. A test log cited beside real captures is fine: they carry the proof.
-- A receipt records the run behind each cited capture (`runs`), so `receipt --verify` and `gate` apply the same rule with no config: a receipt whose runs are all code-only, or one with no `runs` (written before this rule), fails.
+- A receipt records the run behind each cited capture (`runs`), so `receipt --verify` and `gate` apply the same rule with no config (and the [step record](#step-record) rule after it): a receipt whose runs are all code-only, or one with no `runs` (written before this rule), fails.
 - `doctor`'s `real_product` row is `missing` (and doctor exits 2) when every journey is code-only, and a `warning` naming the code-only journeys beside real ones.
+
+### Step record
+
+A capture shows a screen; the **step record** says what a user did to reach it. Every journey (and every agent drive) writes `steps.json` into its run folder, `$DONE_DONE_EVIDENCE_ROOT`, beside the captures:
+
+```json
+{
+  "target": { "version": "0.6.0" },
+  "start": "a fresh host with no paired phone",
+  "steps": ["pair the phone", "open a pane", "type `echo hi`"],
+  "result": "the pane shows hi on its own line"
+}
+```
+
+`target.version` is the version of the app driven, `start` the state it began from (for an upgrade journey: the previous version installed), `steps` the steps a user takes, in order, and `result` what a user can see at the end. All four are required; a file that is not JSON or lacks one is recorded as invalid. `run` and `verify` read the file when the run closes and keep it in the run record (`steps`, with `tool`, the done-done version that recorded the run, and `steps_error` when the file is invalid); it is a record, not a capture, so it is not listed in the run's files and the judge never reads it. A journey writes it as it drives, from what it really did, never from the claim.
+
+The check reads the claim against the record, with no model: at least half of the claim's words (four letters or more, without scaffolding such as `user`, `can`, `now`, `works`) must appear in the record's `start`, `steps` and `result`, matching word beginnings (`attach`, `attaches`, `attached`), and at least one of them in `result`. This runs after the code-only rule, which stays the first filter, and with it:
+
+- `check` and `receipt` stop before the judge (exit 2) when no cited capture comes from a run (not code-only) whose step record covers the claim, naming each run and the words its record never mentions. A log from a wrapper script whose record says `ran the unit suite` cannot satisfy a claim about attaching to a pane; a real CLI transcript whose record names the command and its output still satisfies a claim about that command. A cited run with no step record, or an invalid one, is refused the same way, with the shape to write.
+- A receipt keeps each run's step record (`runs[].steps`), so `receipt --verify` and `gate` apply the same rule to the receipt's claim with no config or evidence: a receipt whose runs have no covering record fails.
+- A run recorded before step records existed (its run record has no `tool`, or a receipt run has none) keeps working: `check`, `receipt`, `receipt --verify` and `gate` still pass, but say so in `warnings` (`gate` prints `WARN: ...` after `PASS`): re-run the journey so it writes `steps.json`.
 
 ### Core journey and release path
 
@@ -333,7 +356,7 @@ A plain check is never a verdict on its own. A cited file that fails one of thes
 
 Files that are in no run record give an inconclusive result when another cited capture is one the judge reads: nothing ties them to a commit. So does a file that more than one run record claims when none of those runs is at the current commit (possible only with records from before each run had its own folder). Byte-identical captures from several runs are fine when one of those runs is at the current commit: that run ties the file to the commit. A file whose path is named in a run record but whose bytes no longer match fails as `changed after run <run-id>` (exit 2, before the judge), not inconclusive: the path ties it to that run, so editing it after the run is tampering, not untied evidence.
 
-A config whose journeys are all code-only, or cited captures that all come from code-only runs, stop the check the same way, before the judge, naming the journeys ([Real-product evidence](#real-product-evidence)).
+A config whose journeys are all code-only, or cited captures that all come from code-only runs, stop the check the same way, before the judge, naming the journeys ([Real-product evidence](#real-product-evidence)). So does a claim that no cited run's step record covers ([Step record](#step-record)).
 
 `evidence: not proven: <cause>` stops the check before its judge is asked, always: exit 2, no result, no receipt. `checks.not_proven` is gone: a config that still sets it is a config error (exit 2) that says to delete the line.
 
@@ -429,7 +452,7 @@ done-done receipt --verify <head>         # read-only: check a recorded receipt
 
 `receipt` takes the same claim inputs as `check` and runs that check. It writes `<root>/.done-done/receipts/<head>.json` only when the check passes on the current HEAD, the tracked tree is clean, and the check cited at least one evidence file; a dirty tracked tree, a failed or inconclusive check, a pass that cited no evidence, or a moved HEAD writes nothing and exits non-zero. The record holds the repo, the head and tree sha, the claim outcome, every cited file with its sha256, the run behind each cited capture (`runs`: run id, journey and command, the command `null` for a run opened by hand or driven by the agent) and a timestamp. Every receipt is schema 2 and holds a `judge` block: the route, model, independence and author, and each judged file's path, sha256 and verdict. A cited file is stored relative to the repo, or as `<evidence root>/<path>` when it is under an evidence root outside the repo, so the receipt still finds it from another checkout or a restored evidence root.
 
-`receipt --verify <head>` changes nothing. The argument may be a full commit sha or a ref (`HEAD`, a branch or a tag), resolved to the commit with `git rev-parse --verify <arg>^{commit}` before the receipt lookup; an unresolvable argument fails with the same missing-receipt shape. It succeeds only when the receipt exists, is PASS, the current HEAD is still that head, and every cited file still hashes to the recorded sha256. A receipt is written only after a judge pass, so it reads schema 2 only: any other receipt (one recorded without the judge, or by an older build that let a run past its gate) fails as malformed, and a schema 2 receipt needs a well-formed `judge` block whose every verdict is `pass` for a cited file with the same sha256, which the result shows, and `runs` that are not all code-only ([Real-product evidence](#real-product-evidence)); a receipt with no `runs`, written before that rule, fails: re-run `receipt` for the head. A receipt from `--from` (or a `verify` run that drove the skill) also records the verify skill that ran as `skill` (for example `done-done-verify-<app>`), which `--verify` and so the merge gate show; an older receipt without it still verifies. A missing or malformed receipt and a hash mismatch are failures (exit 1), not usage errors. When the mismatched path is named in a run record, the failure names it as `changed after run <run-id>`.
+`receipt --verify <head>` changes nothing. The argument may be a full commit sha or a ref (`HEAD`, a branch or a tag), resolved to the commit with `git rev-parse --verify <arg>^{commit}` before the receipt lookup; an unresolvable argument fails with the same missing-receipt shape. It succeeds only when the receipt exists, is PASS, the current HEAD is still that head, and every cited file still hashes to the recorded sha256. A receipt is written only after a judge pass, so it reads schema 2 only: any other receipt (one recorded without the judge, or by an older build that let a run past its gate) fails as malformed, and a schema 2 receipt needs a well-formed `judge` block whose every verdict is `pass` for a cited file with the same sha256, which the result shows, and `runs` that are not all code-only ([Real-product evidence](#real-product-evidence)) and carry a step record covering the claim ([Step record](#step-record); a run recorded before step records passes with a `warnings` entry); a receipt with no `runs`, written before that rule, fails: re-run `receipt` for the head. A receipt from `--from` (or a `verify` run that drove the skill) also records the verify skill that ran as `skill` (for example `done-done-verify-<app>`), which `--verify` and so the merge gate show; an older receipt without it still verifies. A missing or malformed receipt and a hash mismatch are failures (exit 1), not usage errors. When the mismatched path is named in a run record, the failure names it as `changed after run <run-id>`.
 
 ### Verify a change in one run
 
@@ -562,11 +585,11 @@ npx -y done-done-axi gate "$PR_HEAD_SHA"
 
 The receipt is committed in a follow-up commit, because a receipt cannot sit inside the commit it proves (its hash would change). `gate [<head>] [--dir <folder>] [--pushed <time>]` prints `PASS` or `FAIL: <reason>` and exits 0, 1, or 2 on a usage error. It passes when a receipt in `.done-done-receipts/` (or `--dir`):
 
-- is a well-formed pass from a judged run (the same shape `receipt --verify` requires, so its `runs` are not all code-only, see [Real-product evidence](#real-product-evidence)) and is filed as `<its head>.json`;
+- is a well-formed pass from a judged run (the same shape `receipt --verify` requires, so its `runs` are not all code-only, see [Real-product evidence](#real-product-evidence), and carry a step record covering its claim, see [Step record](#step-record)) and is filed as `<its head>.json`;
 - has a head that is `<head>` (default `HEAD`) or an ancestor of it, with every file changed since that head inside the receipts folder, so the proof still covers the code;
 - was made no later than the push (`--pushed`, an ISO time; default the commit time of `<head>`), compared to the second.
 
-`gate` trusts the committed JSON: it does not re-hash the evidence, which only `receipt --verify` can do, on the machine that holds it. It says so by name and does not claim more.
+A receipt whose runs were recorded before step records passes with `WARN: ...` lines after `PASS`. `gate` trusts the committed JSON: it does not re-hash the evidence, which only `receipt --verify` can do, on the machine that holds it. It says so by name and does not claim more.
 
 ### Where proof lives
 
