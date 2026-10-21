@@ -73,7 +73,7 @@ try {
   const agent = stub('agent-opencode', 'process.exit(1);');
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: stub/agent }\njudge:\n  route: answerer:gemini\n  model: stub-judge\nagent_path_override: { opencode: ${JSON.stringify(agent)}, gemini: ${JSON.stringify(judge)} }\n`);
-  writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\njourneys:\n  shots:\n    command: node make-shots.mjs \${RUN_ID}\n${['clipped', 'fixed'].map((p) => `  look-${p}:\n    command: ${JSON.stringify(look(p))}\n`).join('')}`);
+  writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\njourneys:\n  shots:\n    command: node make-shots.mjs \${RUN_ID}\n    core: true\n${['clipped', 'fixed'].map((p) => `  look-${p}:\n    command: ${JSON.stringify(look(p))}\n`).join('')}`);
   // The screen is committed beside the recipe and named relative to it, so the fixture holds no absolute path.
   writeFileSync(join(repo, 'screen.png'), png(3));
   writeFileSync(join(repo, 'make-shots.mjs'),
@@ -95,7 +95,14 @@ try {
   assert.deepEqual(readdirSync(join(old, '.agents', 'skills')), ['done-done-verify-legacy'], 'moved, no duplicate');
   assert.match(readFileSync(join(old, '.agents', 'skills', 'done-done-verify-legacy', 'SKILL.md'), 'utf8'), /name: "done-done-verify-legacy"/);
 
-  dd('doctor');
+  // A config that names no core journey (the one flow a user cannot live without) fails doctor, with the fix command.
+  const named = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
+  writeFileSync(join(repo, '.done-done.yaml'), named.replace('    core: true\n', ''));
+  const noCore = JSON.parse(drive(2, '--json', 'doctor')).checks.find((c) => c.check === 'core_journey');
+  assert.equal(noCore.status, 'missing');
+  assert.match(noCore.fix, /done-done init --journey <name> --core -- /);
+  writeFileSync(join(repo, '.done-done.yaml'), named);
+  assert.equal(JSON.parse(dd('--json', 'doctor')).checks.find((c) => c.check === 'core_journey').detail, 'journey shots is the core user journey');
   const runOut = dd('run', 'shots');
   const runId = /run_id:\s*"?([^\s"]+)"?/.exec(runOut)?.[1];
   if (!runId) throw new Error('could not parse run_id from run output');
@@ -216,13 +223,13 @@ esac
   writeFileSync(join(repo, '.done-done.yaml'), config + checkJourney);
   sh('add', 'package.json', '.done-done.yaml');
   sh('commit', '-qm', 'check journey');
-  assert.equal(JSON.parse(dd('--json', 'doctor')).checks.at(-1).status, 'warning', 'a code-only journey beside real ones is a warning');
+  assert.equal(JSON.parse(dd('--json', 'doctor')).checks.find((c) => c.check === 'real_product').status, 'warning', 'a code-only journey beside real ones is a warning');
   const checkRun = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'check'))[1];
   assert.match(drive(2, 'check', '--outcome', 'pane attach works', join(home, 'evidence', 'fixture', checkRun, 'check.log')), /every cited capture comes from a code-only run \(check\)/);
   // The config that shipped a broken app: only code-only journeys. doctor fails, and check refuses even a real capture.
   writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\njourneys:\n${checkJourney}`);
   sh('commit', '-qam', 'only the check journey');
-  const codeDoctor = JSON.parse(drive(2, '--json', 'doctor')).checks.at(-1);
+  const codeDoctor = JSON.parse(drive(2, '--json', 'doctor')).checks.find((c) => c.check === 'real_product');
   assert.deepEqual([codeDoctor.status, codeDoctor.detail], ['missing', 'every journey in .done-done.yaml is code-only (check): a test, typecheck, lint or build run proves the code checks pass, not that the product works']);
   const adhoc = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', '--', 'node make-shots.mjs'))[1];
   assert.match(drive(2, 'check', '--outcome', 'fixture home renders', join(home, 'evidence', 'fixture', adhoc, 'home.png')), /every journey in \.done-done\.yaml is code-only \(check\)/);
