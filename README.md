@@ -126,7 +126,7 @@ Every answer is an exit code: **0** pass, **1** fail, **2** usage or config erro
 
 done-done works on its own: the CLI and the skill need nothing else. It is one of three tools that each do one job and connect through small written contracts ([Vision](VISION.md)):
 
-- [`sign-off-axi`](https://www.npmjs.com/package/sign-off-axi): the board where agents ask you questions. `done-done signoff` writes a run's gate (when the judge was unsure) or its evidence in sign-off's message format and prints the post command; it never posts. Without sign-off you answer at the terminal with `done-done respond`.
+- [`sign-off-axi`](https://www.npmjs.com/package/sign-off-axi): the board where agents ask you questions. `done-done signoff` writes a run's gate (when the judge was unsure) or its evidence in sign-off's message format and prints the post command; it never posts on its own. With the opt-in (`done-done signoff --post`, or `signoff.post: true` in `.done-done.yaml`) it posts that message to the board through sign-off-axi, records the card on the run, and `done-done signoff --wait` brings the answer back to the same run. Without sign-off you answer at the terminal with `done-done respond`.
 - [`learn-from-mistakes-axi`](https://www.npmjs.com/package/learn-from-mistakes-axi): the retro tool that finds mistakes your agents keep repeating, with evidence. Neither tool needs the other.
 - [`first-draft-axi`](https://www.npmjs.com/package/first-draft-axi): turns a prompt into design mocks. Pass a mock to `done-done design <screen> --mock <screen>=<mock>` to judge a captured screen next to it.
 

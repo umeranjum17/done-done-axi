@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason } from './agents.js';
-import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, UsageError } from './config.js';
+import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, judge, judgeable, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, inWorktree, maintainSteps, named, pathspec, readerProblem, repoState, triage } from './maintain.js';
@@ -60,11 +60,17 @@ const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/ru
   hashed before and after the drive; the check step fails naming each changed, appeared or
   disappeared path (never file contents), and the before/after hash lists go into the run record; no key: unchanged
   gate: a judge fail or unsure (or an agent drive with no judged capture) parks the run as awaiting_approval (exit 4); nothing moves it
-  past the judge: respond --action fix ends it fail, with no receipt (approve and skip answer only a spend gate)
+  past the judge: respond --action fix ends it fail, with no receipt (skip ends it fail too, without the fix; approve answers only a spend gate)
   auto_fix: { verify: <n> } (config; 0, the default, reports only): the judge sorts each wrong screen (fix or ask; an ask, an unsure
   answer or a mixed result parks at the gate), then the agent the user set fixes the product in a done-done worktree with your
   ignored files copied in, and verify runs again there, up to n times. Result: changed (the fix on a done-done/verify-<run-id>
   branch, your HEAD still fails; exit 1) or blocked (dirty checkout, a guard, or every attempt used; exit 1)`;
+const SIGNOFF_TEXT = `sign-off (.done-done.yaml): the board where the person answers. done-done writes the message (contract v1) and, with the opt-in, posts it:
+  signoff.post: true lets every signoff post to the board; --post posts one run. Without it, signoff only writes the message and prints the post command.
+  signoff.board names the board file (default: the nearest .sign-off/ board sign-off-axi finds); --board names it for one run.
+  signoff --wait waits for the answer to the card that run posted (--timeout, default 10m) and feeds it back to that run: a gate's
+  approve, skip or fix ends or resumes the run, exactly as done-done respond does. The card (its key and board) is recorded on the run,
+  so status shows it. The board is sign-off's own: done-done posts through sign-off-axi and never edits a board.`;
 const MAINTAIN_TEXT = `maintain reads the verify skill and the source; HEAD, git status and the content of changed files must be the same before and after.
   locate: the verify skill (.agents/skills/done-done-verify-<app>/SKILL.md); none: blocked, create it with done-done init
   hygiene: every local link in the skill resolves; features/README.md lists each features/*.md file once
@@ -124,8 +130,11 @@ const FLAGS = {
     '--mock <screen>=<mock>': 'judge this screen next to its approved mock (repeat per screen; the screen is judged even when not listed)',
     '--step <name>': 'the step log to show (verify: resolve, drive, check, judge, gate, receipt, report; maintain: locate, hygiene, source-wave, reconcile, triage, fix, report)',
     '--feature <name>': 'with no journey, the author agent drives this feature of the verify skill (features/<name>.md); default: the only feature, else the agent picks the one the outcome is about',
-    '--action <approve|skip|fix>': 'at a spend gate, approve: spend and run the journey; skip: end the run with nothing spent. At the judge gate only fix: end it fail, then fix the product or the verify skill (done-done maintain checks it against the source)',
+    '--action <approve|skip|fix>': 'at a spend gate, approve: spend and run the journey; skip: end the run with nothing spent. At the judge gate only fix or skip: fix ends it fail, then the product or the verify skill is fixed (done-done maintain checks it against the source); skip ends it fail without the fix',
     '--reason "<why>"': 'why (required for approve and skip at a spend gate); kept in the run with who answered',
+    '--post': 'with signoff: post the message to the sign-off board through sign-off-axi and record the card on the run (the opt-in: without it, signoff only writes the message)',
+    '--board <file>': 'with signoff: the board file to post to (default: the nearest .sign-off/ board sign-off-axi finds)',
+    '--timeout <duration>': 'with signoff --wait: how long to wait for the answer (default 10m)',
     '--limit <n>': 'how many past runs to list (default all)',
     '--out <file.png>': 'where look writes the screenshot; its page-check record goes next to it as <file>.dom.json (default: look.png in $DONE_DONE_EVIDENCE_ROOT inside a journey, else in the current folder)',
     '--agent <agent>': 'the coding agent done-done starts (claude, codex, opencode, pi, gemini or acp:<target>), saved as agent in ~/.done-done/config.yaml; without it, init asks in a terminal',
@@ -289,9 +298,13 @@ const COMMANDS = {
         more: [RUNS_TEXT],
     },
     signoff: {
-        usage: [['done-done signoff [--run <run-id>]', "write the run's sign-off message (contract v1): a gate for a run waiting at its gate, evidence for a finished run; it prints the post command and never posts"]],
-        flags: ['--run <run-id>'],
-        more: [RUNS_TEXT],
+        usage: [
+            ['done-done signoff [--run <run-id>]', "write the run's sign-off message (contract v1): a gate for a run waiting at its gate, evidence for a finished run; without the opt-in it prints the post command and never posts"],
+            ['done-done signoff --post [--board <file>]', 'post that message to the sign-off board through sign-off-axi and record the card on the run'],
+            ['done-done signoff --wait [--timeout <duration>]', 'wait for the answer to the card this run posted and feed it back to that run'],
+        ],
+        flags: ['--run <run-id>', '--post', '--board <file>', '--wait', '--timeout <duration>'],
+        more: [RUNS_TEXT, SIGNOFF_TEXT],
     },
     history: {
         usage: [['done-done history [--limit <n>]', 'list past runs, newest first']],
@@ -1949,6 +1962,12 @@ const reapJourney = (dir, run) => {
     if (run.runner?.instance_pgid && createOnce(join(dir, 'instance.killed')))
         killGroup(run.runner.instance_pgid);
 };
+// The exit code a run's state means: 0 pass, 1 fail, 2 stopped, 3 inconclusive, 4 still running or waiting at its gate.
+const runCode = (run, status) => status === 'pending' || status === 'running' || status === 'awaiting_approval' ? WAITING
+    : run.stopped && status === 'failed' ? USAGE
+        : status === 'cancelled' || status === 'failed' || run.result === 'fail' || run.result === 'drift' || (run.kind === 'verify' && (run.result === 'changed' || run.result === 'blocked')) ? FAIL
+            : run.result === 'inconclusive' || run.result === 'blocked' ? INCONCLUSIVE
+                : PASS;
 // One run as status shows it. A run still marked running whose runner is gone is shown as failed at its step.
 // `gone`: the caller saw its runner child exit, which also covers a runner that died before it wrote its pid.
 function showRun(dir, cfg, command, gone = false) {
@@ -1963,7 +1982,7 @@ function showRun(dir, cfg, command, gone = false) {
         reason = `the runner died at step ${at?.name}${run.runner ? ` (pid ${run.runner.pid}, last heartbeat ${beat}s ago)` : ' before it started'}`;
         reapJourney(dir, run);
     }
-    const code = status === 'pending' || status === 'running' || status === 'awaiting_approval' ? WAITING : run.stopped && status === 'failed' ? USAGE : status === 'cancelled' || status === 'failed' || run.result === 'fail' || run.result === 'drift' || (run.kind === 'verify' && (run.result === 'changed' || run.result === 'blocked')) ? FAIL : run.result === 'inconclusive' || run.result === 'blocked' ? INCONCLUSIVE : PASS;
+    const code = runCode(run, status);
     const drive = run.journey ?? (run.feature ? `--feature ${arg(run.feature)}` : '');
     const again = run.kind === 'maintain' ? 'done-done maintain' : `done-done verify ${drive ? `${drive} ` : ''}--outcome ${arg(run.claim)}${run.claim_id ? ` --claim-id ${arg(run.claim_id)}` : ''}`;
     const findings = cap(run.findings ?? []);
@@ -1987,6 +2006,8 @@ function showRun(dir, cfg, command, gone = false) {
         result.response = run.response;
     if (run.spend)
         result.spend = run.spend;
+    if (run.signoff)
+        result.signoff = run.signoff;
     if (ev.items.length)
         result.evidence = ev.items;
     if (ev.omitted)
@@ -2134,7 +2155,8 @@ async function cmdVerify(argv) {
 }
 // Run the steps in this process (--foreground), or in a detached runner with no pipe back to this process, so the
 // runner goes on when this command or its shell ends; --wait (the default) holds this command until the run ends.
-async function launch(dir, cfg, command, how) {
+// Start the run's runner and wait for it to end; the caller shows the run.
+async function startRunner(dir, how) {
     if (how.foreground) {
         const stop = heartbeat(dir);
         try {
@@ -2143,7 +2165,7 @@ async function launch(dir, cfg, command, how) {
         finally {
             stop();
         }
-        return showRun(dir, cfg, command);
+        return { gone: false };
     }
     const fd = openSync(join(dir, 'logs', 'runner.log'), 'a');
     const child = spawn(process.execPath, [CLI_PATH, '__runner', dir], { cwd: loadRun(dir).repo, detached: true, stdio: ['ignore', fd, fd] });
@@ -2151,7 +2173,11 @@ async function launch(dir, cfg, command, how) {
     closeSync(fd);
     if (!how['no-wait'])
         await waitRun(dir, child.pid);
-    return showRun(dir, cfg, command, !alive(child.pid));
+    return { gone: !alive(child.pid) };
+}
+async function launch(dir, cfg, command, how) {
+    const { gone } = await startRunner(dir, how);
+    return showRun(dir, cfg, command, gone);
 }
 async function cmdMaintain(argv) {
     const { values } = parseArgs({ args: argv, options: { wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } } });
@@ -2391,9 +2417,52 @@ function answeredBy(repo) {
     }
 }
 // Answer a run waiting at its gate. At a spend gate, approve runs the journey and skip ends the run with nothing spent. At
-// the judge gate only fix answers: it ends the run fail, since nothing moves a run past its judge and no receipt is ever
-// written without a judge pass. The runner has exited, so this command finishes the run; the respond lock lets only one
-// answer (or an abort) close it.
+// the judge gate only fix and skip answer: fix ends the run fail (the product or the verify skill is fixed next, and the run
+// goes again), skip ends it fail too, without the fix. Nothing moves a run past its judge, so approve never answers it and
+// no receipt is ever written without a judge pass. The runner has exited, so this command finishes the run; the respond
+// lock lets only one answer (or an abort) close it.
+// A sign-off board answer and a terminal answer both come through here, so they change the run the same way.
+async function answerGate(dir, id, action, reason, by) {
+    const notAtGate = (r) => new UsageError(`run ${id} is not waiting at its gate (it is ${r.status === 'awaiting_approval' ? 'being answered' : shownStatus(r)})`, `Read it: done-done status --run ${id}`);
+    if (!createOnce(join(dir, 'respond.lock')))
+        throw notAtGate(loadRun(dir));
+    try {
+        const run = loadRun(dir);
+        if (run.status !== 'awaiting_approval' || !run.gate)
+            throw notAtGate(run);
+        if (run.gate.spend && action === 'fix')
+            throw new UsageError(`run ${id} is at a spend gate, which takes --action approve or skip`, `Run: done-done respond --run ${id} --action approve|skip --reason "<why>"`);
+        if (!run.gate.spend && action === 'approve')
+            throw new UsageError(`run ${id} is at its judge gate, which takes only --action fix or skip: done-done never moves a run past its judge, and writes no receipt without a judge pass`, `Run: done-done respond --run ${id} --action fix, then fix the product or the verify skill's recipe, commit, and run again`);
+        if (action !== 'fix' && !reason)
+            throw new UsageError(`respond --action ${action} needs --reason "<why>": the spend answer is recorded with who and why`, `Run: done-done respond --run ${id} --action ${action} --reason "<why>"`);
+        const gate = run.steps.find((s) => s.name === 'gate');
+        run.response = { action, by, ...(reason && { reason }), at: now() };
+        logEvent(dir, { step: 'gate', response: action, by, ...(reason && { reason }) });
+        // The spend gate: approve runs the journey in a new runner; skip ends the run with nothing spent.
+        if (run.gate.spend) {
+            const drive = run.steps.find((s) => s.name === 'drive');
+            if (action !== 'approve') {
+                setStep(dir, run, drive, 'failed');
+                finishRun(dir, run, 'fail', `gate: ${by} chose ${action}: the journey was not run, so nothing was spent`);
+                return { gone: false };
+            }
+            Object.assign(run, { spend: { by, reason, at: run.response.at }, status: 'pending', gate: undefined, response: undefined, runner: undefined });
+            setStep(dir, run, drive, 'pending');
+            for (const lock of ['runner.lock', 'respond.lock'])
+                rmSync(join(dir, lock));
+            return await startRunner(dir, {});
+        }
+        setStep(dir, run, gate, 'failed');
+        finishRun(dir, run, 'fail', `gate: ${by} chose ${action}: ${reason || run.gate.findings[0].what}`);
+        return { gone: false };
+    }
+    catch (e) {
+        rmSync(join(dir, 'respond.lock'), { force: true });
+        throw e;
+    }
+}
+// Answer a run waiting at its gate, from the terminal.
 async function cmdRespond(argv) {
     const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, action: { type: 'string' }, reason: { type: 'string' } } });
     const action = values.action;
@@ -2405,57 +2474,77 @@ async function cmdRespond(argv) {
     const root = runsRoot(cfg.app);
     const id = pickId(root, repo, 'respond', cfg, values.run);
     const dir = join(root, id);
-    const notAtGate = (r) => new UsageError(`run ${id} is not waiting at its gate (it is ${r.status === 'awaiting_approval' ? 'being answered' : shownStatus(r)})`, `Read it: done-done status --run ${id}`);
-    if (!createOnce(join(dir, 'respond.lock')))
-        throw notAtGate(loadRun(dir));
+    const answered = await answerGate(dir, id, action, reason, answeredBy(repo));
+    return showRun(dir, cfg, 'respond', answered.gone);
+}
+// The sign-off board's own CLI (github.com/umeranjum17/sign-off): done-done posts through it and never edits a board.
+// It prints one document: `field: value` lines, a table and a help list.
+function signoffRun(args, cwd) {
+    const r = spawnSync('sign-off-axi', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    if (r.error?.code === 'ENOENT')
+        throw new UsageError('sign-off-axi is not on PATH, so nothing was posted', 'Install the board CLI: npm install -g sign-off-axi, then run this again');
+    return { code: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+}
+// One field of that document: the value of the first line that starts with `name:`.
+const signoffField = (out, name) => {
+    const line = out.split('\n').find((l) => l.startsWith(`${name}:`));
+    if (!line)
+        return '';
+    const raw = line.slice(name.length + 1).trim();
+    return raw.startsWith('"') && raw.endsWith('"') && raw.length > 1 ? raw.slice(1, -1) : raw;
+};
+// Its help line: the value of the first `help[n]:` line.
+const signoffHelp = (out) => {
+    const line = out.split('\n').find((l) => l.startsWith('help['));
+    if (!line)
+        return '';
+    const raw = line.slice(line.indexOf(':') + 1).trim();
+    return raw.startsWith('"') && raw.endsWith('"') && raw.length > 1 ? raw.slice(1, -1) : raw;
+};
+// Post the message to the board and read back the card it made.
+function postToBoard(cwd, board, kind, file, key) {
+    const { code, out } = signoffRun(['post', ...(board ? [board] : []), '--kind', kind, '--from', file], cwd);
+    if (code !== 0)
+        throw new UsageError(signoffField(out, 'error') || `sign-off-axi post ended with exit ${code}`, signoffHelp(out) || 'Read it: sign-off-axi post --help');
+    const shown = out.split('\n').some((l) => { const t = l.trim(); return t === key || t.startsWith(`${key},`) || t.startsWith(`${key} `); });
+    if (!shown)
+        throw new UsageError(`sign-off-axi posted without the card ${key}, so the run has no sign-off card`, 'Read the board: sign-off-axi list');
+    return { board: signoffField(out, 'board') || board, key };
+}
+// Wait for the answer to a card on the board and read it back.
+function waitForAnswer(cwd, board, key, seconds) {
+    const { code, out } = signoffRun(['wait', ...(board ? [board] : []), '--key', key, '--json', '--timeout', String(seconds)], cwd);
+    if (code !== 0)
+        throw new UsageError(signoffField(out, 'error') || `sign-off-axi wait ended with exit ${code}`, signoffHelp(out) || `Wait again: done-done signoff --wait`);
+    let answers;
     try {
-        const run = loadRun(dir);
-        if (run.status !== 'awaiting_approval' || !run.gate)
-            throw notAtGate(run);
-        if (run.gate.spend && action === 'fix')
-            throw new UsageError(`run ${id} is at a spend gate, which takes --action approve or skip`, `Run: done-done respond --run ${id} --action approve|skip --reason "<why>"`);
-        if (!run.gate.spend && action !== 'fix')
-            throw new UsageError(`run ${id} is at its judge gate, which takes only --action fix: done-done never moves a run past its judge, and writes no receipt without a judge pass`, `Run: done-done respond --run ${id} --action fix, then fix the product or the verify skill's recipe, commit, and run again`);
-        if (action !== 'fix' && !reason)
-            throw new UsageError(`respond --action ${action} needs --reason "<why>": the spend answer is recorded with who and why`, `Run: done-done respond --run ${id} --action ${action} --reason "<why>"`);
-        const gate = run.steps.find((s) => s.name === 'gate');
-        const by = answeredBy(repo);
-        run.response = { action, by, ...(reason && { reason }), at: now() };
-        logEvent(dir, { step: 'gate', response: action, by, ...(reason && { reason }) });
-        // The spend gate: approve runs the journey in a new runner; skip ends the run with nothing spent.
-        if (run.gate.spend) {
-            const drive = run.steps.find((s) => s.name === 'drive');
-            if (action !== 'approve') {
-                setStep(dir, run, drive, 'failed');
-                finishRun(dir, run, 'fail', `gate: ${by} chose ${action}: the journey was not run, so nothing was spent`);
-                return showRun(dir, cfg, 'respond');
-            }
-            Object.assign(run, { spend: { by, reason, at: run.response.at }, status: 'pending', gate: undefined, response: undefined, runner: undefined });
-            setStep(dir, run, drive, 'pending');
-            for (const lock of ['runner.lock', 'respond.lock'])
-                rmSync(join(dir, lock));
-            return launch(dir, cfg, 'respond', {});
-        }
-        setStep(dir, run, gate, 'failed');
-        finishRun(dir, run, 'fail', `gate: ${by} chose fix: ${reason || run.gate.findings[0].what}`);
-        return showRun(dir, cfg, 'respond');
+        answers = JSON.parse(out);
     }
-    catch (e) {
-        rmSync(join(dir, 'respond.lock'), { force: true });
-        throw e;
+    catch {
+        throw new UsageError(`sign-off-axi wait printed no answer for the card ${key}`, `Read it: sign-off-axi answers --key ${key}`);
     }
+    const answer = answers[key];
+    if (!answer)
+        throw new UsageError(`the board card ${key} has no answer`, `Read it: sign-off-axi answers --key ${key}`);
+    return { value: answer.answer, ...(answer.label && { label: answer.label }), ...(answer.at && { at: answer.at }), ...(answer.note && { note: answer.note }) };
 }
 // sign-off's communication contract v1 (github.com/umeranjum17/sign-off, docs/contract.md): done-done sends `gate` and
 // `evidence`, schema 1. Each value is checked against the contract's limits first, so a run that cannot make a valid
-// message writes no file. done-done never posts it: sign-off is the user's choice, so the help line names the post command.
-const GATE_LABELS = { approve: 'Approve the spend', skip: 'Skip the spend', fix: 'Fix first' };
-function cmdSignoff(argv) {
-    const { values } = parseArgs({ args: argv, options: { run: { type: 'string' } } });
+// message writes no file. Without the opt-in done-done never posts it: sign-off is the user's choice, so the help line
+// names the post command. With the opt-in (--post, or signoff.post in .done-done.yaml) done-done posts it through
+// sign-off-axi, records the card on the run and can wait for the answer to feed back to that run.
+// The contract fixes a gate's options: approve (Approve), skip (Skip the judge) and fix (Fix first), and it takes two or
+// three of them. A spend gate answers approve or skip; a judge gate answers fix or skip, never approve: nothing moves a
+// run past its judge.
+const GATE_LABELS = { approve: 'Approve', skip: 'Skip the judge', fix: 'Fix first' };
+async function cmdSignoff(argv) {
+    const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, post: { type: 'boolean' }, board: { type: 'string' }, wait: { type: 'boolean' }, timeout: { type: 'string' } } });
     const repo = repoRoot();
     const cfg = loadConfig(repo);
     const root = runsRoot(cfg.app);
     const id = pickId(root, repo, 'signoff', cfg, values.run);
-    const run = loadRun(join(root, id));
+    const dir = join(root, id);
+    let run = loadRun(dir);
     const refuse = (what, help) => { throw new UsageError(`run ${id} cannot make a valid sign-off message, so no file was written: ${what}`, help); };
     const text = (field, v, max, help = `Read it: done-done status --run ${id}`) => {
         const n = [...v].length;
@@ -2472,6 +2561,44 @@ function cmdSignoff(argv) {
     // names the capture file alone: strip any <evidence root>/<one run folder>/ prefix.
     const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const bare = (s) => s.replaceAll(new RegExp(`${esc(cfg.evidence.root)}${esc(sep)}[^${esc(sep)}]+${esc(sep)}`, 'g'), '');
+    // The board: the one the user names (--board, or signoff.board), else the nearest .sign-off/ board sign-off-axi finds.
+    const boardName = values.board ?? cfg.signoff.board;
+    const board = boardName ? resolve(repo, tilde(boardName)) : '';
+    // The opt-in: --post posts this run, signoff.post in .done-done.yaml posts every run. Without it nothing is posted.
+    const posts = values.post === true || cfg.signoff.post;
+    // Wait for the answer to the card this run posted and feed it back to that run.
+    const awaitCard = async (card) => {
+        const limit = parseDuration(values.timeout ?? '10m');
+        if (limit === null)
+            throw new UsageError(`--timeout ${values.timeout} is not a duration such as 90s, 10m or 1h`, 'Run: done-done signoff --wait --timeout 10m');
+        const answer = waitForAnswer(repo, board || tilde(card.board), card.key, Math.round(limit / 1000));
+        card.answer = { value: answer.value, ...(answer.label && { label: answer.label }), ...(answer.at && { at: answer.at }), ...(answer.note && { note: answer.note }) };
+        run = loadRun(dir);
+        run.signoff = card;
+        saveRun(dir, run);
+        logEvent(dir, { step: 'signoff', answered: card.key, answer: answer.value });
+        if (card.kind === 'gate') {
+            const action = answer.value;
+            if (action !== 'approve' && action !== 'skip' && action !== 'fix')
+                throw new UsageError(`the board card ${card.key} was answered ${action}, which is not an action of done-done respond`, `Read it: done-done status --run ${id}`);
+            const reason = answer.note?.replace(/\s+/g, ' ').trim() || `answered ${action} on the sign-off board card ${card.key}`;
+            await answerGate(dir, id, action, reason, answeredBy(repo));
+        }
+        run = loadRun(dir);
+        emit({
+            command: 'signoff', run_id: id, kind: card.kind, file: card.file, board: card.board,
+            card: { key: card.key, at: card.at }, answer: card.answer,
+            run: { status: shownStatus(run), ...(run.result && { result: run.result }), ...(run.reason && { reason: run.reason }) },
+            help: [`Read the run: done-done status --run ${id}`],
+        });
+        return runCode(run, shownStatus(run));
+    };
+    // Without the opt-in, --wait only reads the card the run already posted; it never posts one.
+    if (values.wait && !posts) {
+        if (!run.signoff)
+            throw new UsageError(`run ${id} has no sign-off card, so there is no answer to wait for`, `Post it first: done-done signoff --post --run ${id}`);
+        return await awaitCard(run.signoff);
+    }
     let msg, file;
     if (run.kind === 'verify' && run.status === 'awaiting_approval' && run.gate) {
         const { findings, spend, head } = run.gate;
@@ -2480,8 +2607,8 @@ function cmdSignoff(argv) {
             contract: 1, kind: 'gate', schema: 1, key: `dd-gate-${id}`, filer: 'done-done',
             title: text('title', spend ? `Spend ${spend} on the ${cfg.app} ${drove} run?` : `End the ${cfg.app} ${drove} run its judge did not pass, to fix it?`, 160),
             about: text('about', `${bare(findings[0].what)}${more}`, 500), run: runRef(head.commit),
-            // A spend gate takes approve or skip; the judge gate only fix, since nothing moves a run past its judge.
-            options: (spend ? ['approve', 'skip'] : ['fix']).map((value) => ({ value, label: GATE_LABELS[value] })),
+            // The contract's gate vocabulary: a spend gate takes approve or skip, a judge gate fix or skip, and nothing else.
+            options: (spend ? ['approve', 'skip'] : ['fix', 'skip']).map((value) => ({ value, label: GATE_LABELS[value] })),
             recommend_value: spend ? 'approve' : 'fix', close: 'done',
         };
         file = join(root, id, 'signoff-gate.json');
@@ -2542,7 +2669,23 @@ function cmdSignoff(argv) {
         return refuse(`it is ${shownStatus(run)}${run.kind === 'verify' ? '' : ` (a ${run.kind} run)`}; signoff writes a gate for a verify run waiting at its gate, or evidence for a finished verify run`, `Read it: done-done status --run ${id}`);
     writeFileSync(file, `${JSON.stringify(msg, null, 2)}\n`);
     const at = citable(repo, file);
-    emit({ command: 'signoff', run_id: id, kind: msg.kind, file: at, help: [`Post it to the sign-off board (done-done never posts): npx -y sign-off-axi post --kind ${msg.kind} --from ${arg(at)}`] });
+    if (!posts) {
+        emit({ command: 'signoff', run_id: id, kind: msg.kind, file: at, help: [`Post it to the sign-off board (done-done never posts): npx -y sign-off-axi post --kind ${msg.kind} --from ${arg(at)}`] });
+        return PASS;
+    }
+    // Post it through the board's own CLI and record the card it made, so the claim traces to the run and its card.
+    const posted = postToBoard(repo, board, String(msg.kind), at, String(msg.key));
+    const card = { key: posted.key, kind: msg.kind, board: posted.board, file: at, at: now() };
+    run.signoff = card;
+    saveRun(dir, run);
+    logEvent(dir, { step: 'signoff', posted: card.key, kind: card.kind });
+    if (values.wait)
+        return await awaitCard(card);
+    emit({
+        command: 'signoff', run_id: id, kind: card.kind, file: at, board: card.board,
+        card: { key: card.key, at: card.at },
+        help: [`Wait for the answer: done-done signoff --wait --run ${id}`, `Read the card: sign-off-axi answers --key ${card.key}`],
+    });
     return PASS;
 }
 function runsOf(repo, cfg) {
@@ -4050,7 +4193,7 @@ async function main(argv) {
         if (cmd === 'history')
             return cmdHistory(rest);
         if (cmd === 'signoff')
-            return cmdSignoff(rest);
+            return await cmdSignoff(rest);
         if (cmd === '__runner') {
             await runSteps(rest[0]);
             return PASS;
