@@ -57,6 +57,14 @@ try {
   const e2e = spawnSync(process.execPath, [join(REPO, 'journeys', 'e2e.mjs')], { cwd: REPO, env: { ...process.env, DONE_DONE_TEST_CLI: cli }, encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] });
   assert.equal(e2e.status, 0, 'the core journey passes on the upgraded install');
   say(`upgrade ${previous} -> ${current} in place, then the core journey (e2e) with ${cli}: pass`);
+  // This run's step record, over the one the core journey wrote: the version upgraded to, and the state it started from.
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
+    target: { version: current },
+    start: `done-done-axi ${previous} installed from npm, with its config and a repo .done-done.yaml written by that version`,
+    steps: [`install this checkout over ${previous} in place`, 'run the core journey with the upgraded binary'],
+    result: `done-done-axi ${current} runs the core journey after the upgrade in place`,
+  }));
   code = 0;
 } catch (e) {
   say(`FAIL: ${e.message}`);

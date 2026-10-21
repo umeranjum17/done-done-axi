@@ -125,11 +125,11 @@ done-done init
 ```yaml
 journeys:
   smoke:
-    command: npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log
+    command: npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log && node record-steps.mjs
     core: true
 ```
 
-The command runs from the repo root with `DONE_DONE_EVIDENCE_ROOT` (a new folder for this run in the evidence root) and `DONE_DONE_RUN_ID` set, and `${RUN_ID}` in it is replaced. A run that writes nothing into its folder fails. A journey that only runs code checks (`npm test`, `yarn run check`, `tsc`, `pytest`, a linter or a build) is code-only: its log says the code checks pass, not that the product works, so `init --journey` refuses it and `check`, `receipt` and `gate` never count it as proof ([the rule](docs/reference.md#real-product-evidence)).
+The command runs from the repo root with `DONE_DONE_EVIDENCE_ROOT` (a new folder for this run in the evidence root) and `DONE_DONE_RUN_ID` set, and `${RUN_ID}` in it is replaced. A run that writes nothing into its folder fails. The command also writes `steps.json` beside its captures: the target version, the state it started from, the steps a user takes and the result a user sees. `check`, `receipt` and `gate` read the claim against that record, so a test log wrapped in a script cannot prove a claim about the product ([the record](docs/reference.md#step-record)). A journey that only runs code checks (`npm test`, `yarn run check`, `tsc`, `pytest`, a linter or a build) is code-only: its log says the code checks pass, not that the product works, so `init --journey` refuses it and `check`, `receipt` and `gate` never count it as proof ([the rule](docs/reference.md#real-product-evidence)).
 
 Name your **core journey** with `core: true`: the one thing a user cannot live without, driven end to end on the real target (for a remote terminal app: pair, open a pane, type, see the output). If your app ships something users install and upgrade (an npm CLI, an Android app, a host service), also record an **upgrade journey** with `upgrade: true` that installs your previous release, upgrades over it in place, then drives the core journey: a fresh install alone is not how users get your release. `doctor` fails until both are named ([the rule](docs/reference.md#core-journey-and-release-path)).
 
@@ -138,7 +138,7 @@ Optional: `done-done init --hook <claude|codex|opencode|gemini|pi>` adds a sessi
 Record the recipe in the repo so anyone can re-run the proof, then commit it (and `.claude/settings.json`, `.codex/hooks.json`, `.gemini/settings.json`, `.opencode/plugins/done-done.js` or `.pi/extensions/done-done.js` if you added a hook):
 
 ```sh
-done-done init --journey smoke --core -- 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log'
+done-done init --journey smoke --core -- 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log && node record-steps.mjs'
 git add .done-done.yaml
 git commit -m "Add done-done"
 ```

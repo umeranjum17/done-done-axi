@@ -3,7 +3,7 @@
 // Runs from the done-done repo root with DONE_DONE_EVIDENCE_ROOT and DONE_DONE_RUN_ID set by `done-done run lint-generated`.
 import { execFileSync, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -44,6 +44,12 @@ try {
   const f = join(tmp, 'page.html');
   writeFileSync(f, `<!doctype html><meta charset=utf-8><body style="margin:0;background:#101418;color:#e6edf3;font:17px/1.5 monospace;padding:20px 6px"><div style="font:bold 22px sans-serif;padding:0 14px 14px">Same PR, run through the real done-done lint: one file, gen/schema.js, 1,100 added lines</div><div style="display:flex">${panels.join('')}</div>`);
   mkdirSync(OUT, { recursive: true });
+  writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
+    target: { version: JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version },
+    start: 'a PR with one 1,100-line generated file, gen/schema.js',
+    steps: ['lint it with checks.generated_paths unset', 'lint it again with checks.generated_paths set to gen/**'],
+    result: 'lint fails the PR as 1,100 added lines before, and passes it once the generated path is set',
+  }));
   execFileSync('chromium', ['--headless', '--no-sandbox', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${join(tmp, 'profile')}`, `--screenshot=${join(OUT, `${RUN_ID}.lint-generated-paths-before-after.png`)}`, '--window-size=1400,420', `file://${f}`], { stdio: 'ignore' });
 } finally {
   rmSync(tmp, { recursive: true, force: true });

@@ -102,6 +102,24 @@ export function configFault(journeys) {
     const code = codeOnlyJourneys(journeys);
     return names.length && code.length === names.length ? `every journey in .done-done.yaml is code-only (${code.join(', ')}): ${RULE}` : null;
 }
+export const STEPS_FILE = 'steps.json';
+export const STEPS_SHAPE = '{"target": {"version": "<version of the app driven>"}, "start": "<the state it started from>", "steps": ["<a step a user takes>", ...], "result": "<what a user can see at the end>"}';
+// Why parsed JSON is not a step record, or null.
+export function stepRecordFault(s) {
+    const r = s;
+    const text = (v) => typeof v === 'string' && v.trim() !== '';
+    if (!r || typeof r !== 'object' || Array.isArray(r))
+        return `it is not a JSON object shaped ${STEPS_SHAPE}`;
+    if (!text(r.target?.version))
+        return 'target.version is missing';
+    if (!text(r.start))
+        return 'start is missing';
+    if (!Array.isArray(r.steps) || !r.steps.length || !r.steps.every(text))
+        return 'steps must be a non-empty list of strings';
+    if (!text(r.result))
+        return 'result is missing';
+    return null;
+}
 // Why these capture runs are no real-product evidence (none recorded, or every one code-only), or null.
 export function runsFault(runs) {
     if (!Array.isArray(runs) || !runs.length)
@@ -111,6 +129,46 @@ export function runsFault(runs) {
     if (!runs.every((r) => codeOnly(r.command)))
         return null;
     return `every cited capture comes from a code-only run (${[...new Set(runs.map((r) => r.journey ?? r.command))].join(', ')}): ${RULE}`;
+}
+// Words that carry no claim: the claim's own scaffolding, not what a user does or sees.
+const GENERIC = new Set('that this with from into when then than have will does your their they them user users able now works work working shows show shown once after before also each every what which while where there here only just more most some such same been being were should would could done proof proves prove outcome correct correctly properly real product the and for are can its'.split(' '));
+const words = (t) => t.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
+// A word of the claim is in the record when the record has a word that starts like it (attach, attaches, attached).
+const same = (a, b) => a.startsWith(b.slice(0, Math.min(5, b.length))) || b.startsWith(a.slice(0, Math.min(5, a.length)));
+// The words of the claim that the step record never mentions, or [] when it covers the claim: at least half of the claim's
+// words are in the record, and one of them in its result. A pure word match, no model: a test log's record ("ran the unit
+// suite") cannot cover a claim about a pane, and a CLI transcript whose record names the command and its output covers a CLI claim.
+export function uncovered(outcome, s) {
+    const terms = [...new Set(words(outcome).filter((w) => w.length >= 4 && !GENERIC.has(w)))];
+    if (!terms.length)
+        return [];
+    const all = words([s.start, ...s.steps, s.result].join(' '));
+    const result = words(s.result);
+    const hit = terms.filter((t) => all.some((w) => same(t, w)));
+    return hit.length * 2 >= terms.length && hit.some((t) => result.some((w) => same(t, w))) ? [] : terms.filter((t) => !hit.includes(t));
+}
+// Whether the runs behind a claim carry a step record covering it. A fault: no real run (one that is not code-only) has one.
+// A warning: a real run was recorded before step records existed, so it keeps working but nothing ties its captures to user steps.
+export function stepsFault(runs, outcome) {
+    const real = runs.filter((r) => !codeOnly(r.command));
+    const why = (r) => {
+        if (r.steps_error)
+            return `run ${r.run_id}'s step record ${STEPS_FILE} is invalid: ${r.steps_error}`;
+        if (!r.steps)
+            return `run ${r.run_id} has no step record (${STEPS_FILE} beside its captures)`;
+        const bad = stepRecordFault(r.steps);
+        if (bad)
+            return `run ${r.run_id}'s step record ${STEPS_FILE} is invalid: ${bad}`;
+        const miss = uncovered(outcome, r.steps);
+        return miss.length ? `run ${r.run_id}'s step record (${r.steps.steps.length} step${r.steps.steps.length > 1 ? 's' : ''}, target ${r.steps.target.version}) never mentions ${miss.join(', ')}` : '';
+    };
+    const reasons = real.map(why);
+    if (!real.length || reasons.some((w) => !w))
+        return { fault: null, warning: null };
+    const old = real.filter((r) => !r.tool);
+    if (old.length)
+        return { fault: null, warning: `run ${old.map((r) => r.run_id).join(', ')} was recorded before step records, so nothing shows the user steps behind its captures; re-run the journey so it writes ${STEPS_FILE}` };
+    return { fault: `no cited capture comes from a run whose step record covers the claim: ${reasons.join('; ')}`, warning: null };
 }
 export const MARK = { core: '(core journey)', upgrade: '(upgrade journey)' };
 // Where the role is named: the journey that carries it and drives the product, else the feature-map entry with its mark, else null.

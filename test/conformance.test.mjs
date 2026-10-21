@@ -53,7 +53,7 @@ function cleanRepo(yaml = 'app: notes\nevidence:\n  root: .proof\njourneys:\n  s
   writeFileSync(join(dir, 'screen.png'), screen());
   stubJudge(dir);
   writeFileSync(join(repo, 'make-shots.mjs'),
-    `import { copyFileSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/home.png');\n`);
+    `import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/home.png');\nwriteFileSync(out + '/steps.json', JSON.stringify({ target: { version: '1.0.0' }, start: 'a fresh notes app', steps: ['open the home screen'], result: 'home renders' }));\n`);
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');
   sh('add', '-A');
@@ -99,11 +99,12 @@ test('the README manual-CLI worked example runs as written: init, journey, run, 
   assert.equal(tests.code, 2, tests.out);
   assert.match(tests.out, /is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works/);
   assert.ok(!existsSync(join(repo, '.done-done.yaml')), 'nothing was written');
-  assert.equal(dd('init', '--journey', 'smoke', '--', 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log').code, 2, 'init records the journey and stops at the agent ask');
+  assert.equal(dd('init', '--journey', 'smoke', '--', 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log && node record-steps.mjs').code, 2, 'init records the journey and stops at the agent ask');
   // The user's answer to the judge ask, saved in the global config.
   stubJudge(dir);
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } }));
   writeFileSync(join(repo, 'app.js'), 'console.log("notes: 1 note");\n');
+  writeFileSync(join(repo, 'record-steps.mjs'), `import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/steps.json', JSON.stringify({ target: { version: '1.0.0' }, start: 'a fresh notes app', steps: ['start the app'], result: 'it starts and prints 1 note' }));\n`);
   sh('add', '-A');
   sh('commit', '-qm', 'Add done-done');
   const run = dd('run', '--json', 'smoke');
