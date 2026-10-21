@@ -74,8 +74,14 @@ try {
   assert.ok((drift.findings ?? []).some((f) => f.kind === 'drift'), 'maintain reported no drift finding');
   writeFileSync(join(repo, '.done-done.yaml'), `${readFileSync(join(repo, '.done-done.yaml'), 'utf8')}auto_fix:\n  maintain: 2\n`);
   git('commit', '-qam', 'Allow maintain two fix attempts');
-  const fixed = dd([0], 'maintain', '--foreground');
-  say(`maintain with auto_fix: ${fixed.result} (${fixed.reason}); fix branch ${fixed.fix?.branch}, files ${fixed.fix?.files?.join(', ')}`);
+  // A hosted model can leave a fix unsure (the judge then asks the user, exit 3): each try is logged, three at most.
+  let fixed;
+  for (let k = 1; k <= 3; k++) {
+    fixed = dd([0, 3], 'maintain', '--foreground');
+    say(`maintain with auto_fix, try ${k}: ${fixed.result} (${fixed.reason})${fixed.fix ? `; fix branch ${fixed.fix.branch}, files ${fixed.fix.files?.join(', ')}` : ''}`);
+    findings(fixed);
+    if (fixed.result === 'changed') break;
+  }
   assert.equal(fixed.result, 'changed');
   git('merge', '-q', '--ff-only', fixed.fix.branch);
   const clean = dd([0], 'maintain', '--foreground');
