@@ -3101,20 +3101,18 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   assert.match(b.findings[0].what, /judge says wrong screen/);
   assert.ok(b.help.some((h) => h.includes(`done-done respond --run ${b.run_id} --action fix`)), bad.out);
   assert.ok(!b.help.some((h) => /--action (approve|skip)/.test(h)), 'nothing moves a run past its judge');
-  // Parked at its gate, the run's sign-off message is a gate whose one answer is fix, since the judge failed a capture.
+  // Parked at its gate, the run's sign-off message is a gate whose answers are fix and skip, since the judge failed a capture.
   const gated = t.dd('signoff');
   assert.equal(gated.code, 0, gated.out);
   assert.deepEqual(JSON.parse(readFileSync(toon(gated).file, 'utf8')), {
     contract: 1, kind: 'gate', schema: 1, key: `dd-gate-${b.run_id}`, filer: 'done-done', title: 'End the notes shots run its judge did not pass, to fix it?',
     about: 'home.png: judge says wrong screen: The list shows the notes. (and 1 more)', run: { run_id: b.run_id, commit: t.head() },
-    options: [{ value: 'fix', label: 'Fix first' }], recommend_value: 'fix', close: 'done',
+    options: [{ value: 'fix', label: 'Fix first' }, { value: 'skip', label: 'Skip the judge' }], recommend_value: 'fix', close: 'done',
   });
-  // Approve and skip never move a run past its judge, with or without a reason: the run stays parked.
-  for (const answer of [['--action', 'approve'], ['--action', 'skip', '--reason', 'dark mode is on in the capture']]) {
-    const refused = t.dd('respond', '--run', b.run_id, ...answer);
-    assert.equal(refused.code, 2, refused.out);
-    assert.match(toon(refused).error, /is at its judge gate, which takes only --action fix: done-done never moves a run past its judge, and writes no receipt without a judge pass/);
-  }
+  // Approve never moves a run past its judge: the run stays parked.
+  const refused = t.dd('respond', '--run', b.run_id, '--action', 'approve');
+  assert.equal(refused.code, 2, refused.out);
+  assert.match(toon(refused).error, /is at its judge gate, which takes only --action fix or skip: done-done never moves a run past its judge, and writes no receipt without a judge pass/);
   assert.equal(toon(t.dd('status', '--run', b.run_id)).status, 'awaiting_approval', 'a refused answer leaves the run parked');
   const runJson = join(t.env.DONE_DONE_HOME, 'runs', 'notes', b.run_id, 'run.json'), saved = readFileSync(runJson, 'utf8');
   writeFileSync(runJson, '{');
@@ -3253,17 +3251,22 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.ok(!judged[0].file.includes('done-done-verify-notes'), 'the judge sees the claim and the capture, not the recipe or the drive');
   assert.equal(JSON.parse(readFileSync(join(runDir, 'agents', 'drive.json'), 'utf8')).ok, true, 'the drive call leaves a record');
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 0);
-  // A wrong claim parks at the gate; skip and approve are refused there, and fix ends the run fail.
+  // A wrong claim parks at the gate; approve never moves it past its judge, fix ends the run fail, and skip ends it fail too.
   const wrong = agents({ correct: 0.04, wrong: 0.93, unclear: 0.03 });
   const bad = verify(wrong.env, 'the note list is sorted by date');
   assert.equal(bad.code, 4, bad.out);
   assert.deepEqual([bad.o.status, bad.o.step, bad.o.findings.length], ['awaiting_approval', 'gate', 1]);
-  const skip = t.dd('respond', '--action', 'skip', '--reason', 'the sort is checked by hand');
-  assert.equal(skip.code, 2, skip.out);
-  assert.match(toon(skip).error, new RegExp(`run ${bad.o.run_id} is at its judge gate, which takes only --action fix`), 'respond answers the newest run by default');
+  const approve = t.dd('respond', '--action', 'approve', '--reason', 'the sort is checked by hand');
+  assert.equal(approve.code, 2, approve.out);
+  assert.match(toon(approve).error, new RegExp(`run ${bad.o.run_id} is at its judge gate, which takes only --action fix or skip`), 'respond answers the newest run by default');
   const fix = t.dd('respond', '--action', 'fix');
   assert.equal(fix.code, 1, fix.out);
   assert.deepEqual([toon(fix).run_id, toon(fix).result, toon(fix).steps.find((x) => x.name === 'gate').status], [bad.o.run_id, 'fail', 'failed']);
+  // skip ends the run fail as well, without the fix.
+  const skipped = verify(wrong.env, 'the note list is sorted by date');
+  const skip = t.dd('respond', '--run', skipped.o.run_id, '--action', 'skip', '--reason', 'the sort is checked by hand');
+  assert.equal(skip.code, 1, skip.out);
+  assert.deepEqual([toon(skip).result, toon(skip).response.action], ['fail', 'skip']);
   // abort cancels a parked run; neither can be answered again.
   const abortRun = verify(wrong.env, 'the note list is sorted by date');
   assert.equal(t.dd('abort', '--run', abortRun.o.run_id).code, 0);
@@ -3436,6 +3439,47 @@ test('signoff on a fix-pass gate names the capture file, not the fix pass folder
   const about = JSON.parse(readFileSync(toon(g).file, 'utf8')).about;
   assert.match(about, /^out\.txt: judge says unsure: /);
   assert.ok(!about.includes('.proof'), 'the finding names the capture file, never its fix pass folder');
+});
+
+// The sign-off handoff: with the opt-in, one claim traces to one run, its captures and its card on the board, and the
+// board's answer comes back to that run. Without the opt-in done-done only writes the message: nothing is posted.
+test('signoff --post puts the run on the sign-off board and feeds the answer back to the run; without the opt-in nothing is posted', { skip: spawnSync('sign-off-axi', ['--version']).error && 'sign-off-axi not installed' }, async () => {
+  const t = setup();
+  // The judge is unsure, so the run parks at its gate: the board card is a gate, and its answer acts on the run.
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), JUDGE_CONFIG(stubJudge(t.dir, { correct: 0.05, wrong: 0.05, unclear: 0.9 })));
+  const run = t.dd('verify', 'shots', '--outcome', 'home and settings render', '--foreground');
+  assert.deepEqual([run.code, toon(run).status], [4, 'awaiting_approval'], run.out);
+  const id = toon(run).run_id;
+  const board = join(t.dir, 'board.json');
+
+  // Without the opt-in the message is written and nothing is posted: there is no board at all.
+  const plain = t.dd('signoff');
+  assert.equal(plain.code, 0, plain.out);
+  assert.match(toon(plain).help[0], /^Post it to the sign-off board \(done-done never posts\)/);
+  assert.equal(existsSync(board), false, 'done-done posted nothing without the opt-in');
+
+  // With the opt-in the card is on the board, and the run records the card it posted.
+  const posted = t.dd('signoff', '--post', '--board', board);
+  assert.equal(posted.code, 0, posted.out);
+  assert.equal(toon(posted).card.key, `dd-gate-${id}`);
+  const items = JSON.parse(readFileSync(board, 'utf8')).items;
+  assert.deepEqual([items.length, items[0].key, items[0].kind], [1, `dd-gate-${id}`, 'gate']);
+  assert.deepEqual(items[0].options.map((o) => o.value), ['fix', 'skip'], 'the card offers the actions respond takes');
+  assert.equal(toon(t.dd('status', '--run', id)).signoff.key, `dd-gate-${id}`, 'the run shows the card it posted');
+
+  // The person answers the card on the board, the way the browser does, and the answer comes back to the same run.
+  const served = serveBoard(board);
+  after(() => served.stop());
+  const answered = await fetch(`${await served.url}api/answers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: `dd-gate-${id}`, answer: 'fix', note: 'the screen is wrong' }) });
+  assert.equal(answered.status, 200);
+  const waited = t.dd('signoff', '--wait', '--run', id);
+  assert.equal(waited.code, 1, waited.out);
+  assert.equal(toon(waited).answer.value, 'fix');
+  const ended = toon(t.dd('status', '--run', id));
+  assert.deepEqual([ended.status, ended.result, ended.response.action], ['completed', 'fail', 'fix'], ended.out);
+  assert.match(ended.reason, /chose fix: the screen is wrong/);
+  assert.equal(ended.signoff.answer.value, 'fix');
+  assert.equal(ended.signoff.key, `dd-gate-${id}`, 'the card the answer came from is on the run');
 });
 
 test('a rerun refused by the judge preflight exits 2 and creates no run folder', () => {
@@ -4100,6 +4144,24 @@ const doctorIn = (cwd, env, ...args) => {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env, encoding: 'utf8' });
   return { code: r.status, out: r.stdout + r.stderr };
 };
+
+// The sign-off board on a temporary file, served the way the person answers it: the same HTTP call the browser makes.
+// The board is never a real one: it lives in the test's own temp folder and dies with the test.
+function serveBoard(board) {
+  const child = spawn('sign-off-axi', ['serve', board, '--port', '0'], { encoding: 'utf8' });
+  const url = new Promise((resolve, reject) => {
+    let out = '';
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = out.match(/^url:\s*"([^"]+)"/m);
+      if (m) resolve(m[1]);
+    });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('error', reject);
+    setTimeout(() => reject(new Error(`the board did not start: ${out}`)), 20000).unref();
+  });
+  return { url, stop: () => child.kill('SIGTERM') };
+}
 
 test('doctor passes in a set-up repo and lists every check', () => {
   const { repo, env } = setup();

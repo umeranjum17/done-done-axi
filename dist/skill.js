@@ -44,7 +44,8 @@ First run \`command -v done-done\`. If it prints a path, run \`done-done\` as sh
 Results are TOON: read \`result\` and follow the \`help\` lines through
 \`init\`, \`doctor\`, \`run\`, \`verify\`, \`check\` and \`receipt\`. \`design\` judges captured screens for visual defects,
 \`maintain\` keeps the repo's verify skill true, and \`signoff\` writes a run's gate or evidence as a sign-off message
-(it prints the post command and never posts). Proof comes from driving the real product (the app, CLI or site the way a user does,
+(it prints the post command and never posts; with \`--post\`, or \`signoff.post: true\` in .done-done.yaml, it posts that message to the
+sign-off board and \`--wait\` brings the answer back to the run). Proof comes from driving the real product (the app, CLI or site the way a user does,
 captured as screenshots, a recording or its transcript), never from a test, typecheck, lint or build run: \`init --journey\` refuses a journey
 that only wraps one (\`npm test\`, \`yarn run check\`, \`tsc\`, \`pytest\`), and \`check\`, \`receipt\` and \`gate\` refuse proof from it. Proof counts only
 from a committed tree: commit the done-done setup (config, capture script) before you capture. \`fail\` or

@@ -39,6 +39,8 @@ export type Config = {
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
+  // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
+  signoff: { post: boolean; board: string };
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
@@ -112,12 +114,14 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'checks.upstream_catch_up': { scope: 'repo', type: 'boolean' },
   'checks.moved_from': { scope: 'repo', type: 'boolean' },
   'checks.generated_paths': { scope: 'repo', type: 'string[]' },
+  'signoff.post': { scope: 'repo', type: 'boolean' },
+  'signoff.board': { scope: 'repo', type: 'string' },
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
   'judge.floor': { scope: 'global', type: 'number' },
   'judge.env_file': { scope: 'global', type: 'string' },
 };
-const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge']);
+const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
@@ -293,6 +297,7 @@ function defaultConfig(repo: string): Config {
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
+    signoff: { post: false, board: '' },
     judge: { route: '', model: '', floor: 0.7, env_file: '' },
     trusted: false,
     from: {},
