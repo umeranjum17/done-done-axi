@@ -15,8 +15,11 @@ wherever this text or the skill says `done-done`. If done-done cannot run, repor
    installs the previous release and upgrades over it in place before it drives the core journey; `done-done doctor`
    fails until both are named. Commit `.done-done.yaml` and the journey script. If `init` says no agent is set, ask the user which agent
    and model to use and run the command it prints; never choose one yourself.
-2. Commit your change, then run `done-done run <journey>` from the repo root. Proof only counts from a clean,
-   committed tree.
+2. Commit your change, then run `done-done affected` from the repo root: it lists the journeys and verify-skill
+   features your diff needs (the core journey when it cannot tell). Run each listed journey with
+   `done-done run <journey>` and drive each listed feature with `done-done verify --feature <name>`. Proof only counts
+   from a clean, committed tree. When it flags files that no feature or journey covers, cite them in the feature file
+   that drives them (or record a journey for them) and commit that too.
 3. Write a Checks block (the shape `done-done --help` prints) that cites the run's files by the paths `run` printed:
    ```
    ## Checks
@@ -37,4 +40,5 @@ wherever this text or the skill says `done-done`. If done-done cannot run, repor
 
 Exit 1 (fail), 2 (stopped before a verdict) or 3 (inconclusive) is never done: fix the proof and re-run, or report what done-done found.
 `evidence: not proven: <cause>` stops `check` with exit 2 before the judge is asked, with no result and no receipt: report the task as not proven, never as done.
-Any commit after the receipt makes the proof stale: run, check and receipt again on the new head.
+Any commit after the receipt makes the proof stale: run, check and receipt again on the new head. Before you report
+done, `done-done affected` must exit 0: the receipt for your head covers every journey the change needs.

@@ -1,6 +1,6 @@
 # Upgrade in place
 
-Part of the done-done verification map. The release path users take: they already have a published done-done-axi and upgrade over it with `npm install -g done-done-axi@latest`; a fresh install alone does not prove that path.
+Part of the done-done verification map. Source: `journeys/upgrade.mjs`, `package.json` and `package-lock.json` (the version users upgrade to). The release path users take: they already have a published done-done-axi and upgrade over it with `npm install -g done-done-axi@latest`; a fresh install alone does not prove that path.
 
 ## How to get to it (user POV)
 

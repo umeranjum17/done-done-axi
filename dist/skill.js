@@ -54,6 +54,9 @@ driven end to end on the real target (for a remote terminal: pair, open a pane, 
 does not show the app works. An app that ships something users install and upgrade (an npm CLI, an Android app, a host service) also
 names an upgrade journey (\`--upgrade\`): install the previous release, upgrade over it in place, then drive the core journey; a fresh
 install alone is not release proof. \`doctor\` fails until both are named.
+To know which journeys a change needs, run \`done-done affected\` after you commit: it maps the diff through the verify skill's feature map
+(the paths each feature cites, the journeys it names), adds the core journey when a changed file is in no feature or journey (never fewer),
+and exits 1 until the receipt for HEAD has a run of each. Cite a file it flags in the feature file that drives it.
 A run waiting at its judge gate (\`awaiting_approval\`) did not pass, and nothing moves it past its judge: show the user
 its findings and captures, and end it with \`done-done respond --action fix\` only when they say so.
 A journey that \`spends\` runs only after the user approves spending: \`done-done run <journey>\` refuses it, so ask the user and use \`verify\`.

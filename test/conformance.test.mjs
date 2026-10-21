@@ -127,8 +127,9 @@ test('the reference init shapes run as written: --agent, --journey and every --h
   }
 });
 
-test('the brief-include contract runs as written: init, run, checks.md, check --from, receipt --from', () => {
+test('the brief-include contract runs as written: init, affected, run, checks.md, check --from, receipt --from, affected exits 0', () => {
   const { dir, repo, sh, dd, head } = cleanRepo();
+  assert.equal(dd('affected').code, 1, 'no receipt yet: affected says the proof is missing');
   const { run_id: id } = toon(dd('run', 'smoke'));
   const h = head();
   const body = `## Checks\noutcome: home renders\nrepro: n/a: no bug\nproof: no verify skill - \`done-done run smoke\`\nevidence: .proof/${id}/home.png\n`;
@@ -136,6 +137,9 @@ test('the brief-include contract runs as written: init, run, checks.md, check --
   assert.equal(dd('check', '--from', join(dir, 'checks.md')).code, 0);
   assert.equal(dd('receipt', '--from', join(dir, 'checks.md')).code, 0);
   assert.equal(dd('receipt', '--verify', h).code, 0);
+  const affected = dd('affected');
+  assert.equal(affected.code, 0, affected.out);
+  assert.equal(toon(affected).result, 'fresh');
   void sh;
 });
 

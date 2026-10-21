@@ -101,8 +101,9 @@ export function configFault(journeys: Record<string, { command: string }>): stri
   return names.length && code.length === names.length ? `every journey in .done-done.yaml is code-only (${code.join(', ')}): ${RULE}` : null;
 }
 
-// The run behind a capture, as a receipt records it: command null for a run opened by hand or driven by an agent.
-export type CaptureRun = { run_id: string; journey: string | null; command: string | null };
+// The run behind a capture, as a receipt records it: command null for a run opened by hand or driven by an agent, and feature
+// the verify skill feature an agent drove.
+export type CaptureRun = { run_id: string; journey: string | null; command: string | null; feature?: string };
 
 // Why these capture runs are no real-product evidence (none recorded, or every one code-only), or null.
 export function runsFault(runs: CaptureRun[] | undefined): string | null {
