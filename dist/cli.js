@@ -21,6 +21,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
+import { codeOnly, codeOnlyJourneys, configFault, RULE, runsFault } from './proof.js';
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
 // The shape of a journey, so a new user or agent can write one without opening the reference.
 // done-done sets DONE_DONE_EVIDENCE_ROOT (the run's own folder) and replaces ${RUN_ID}, so the example works for any evidence root.
@@ -28,6 +29,8 @@ const journeyExample = 'journeys: { smoke: { command: "<drive the real app> > $D
 const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DONE_EVIDENCE_ROOT (this run's own new folder in the evidence
   root) and DONE_DONE_RUN_ID set, and \${RUN_ID} in it is replaced; it must write its files into that folder, e.g.
   ${journeyExample}
+  real product: a journey whose command only runs tests, typecheck, lint or a build (npm test, yarn run check, tsc, pytest) is code-only;
+  init --journey refuses it, and check, receipt and gate refuse proof that comes only from code-only runs or a config of only code-only journeys
   spends (journeys.<name>.spends): what a run spends, e.g. "one live generation"; verify parks the journey until the user approves that run (respond --action approve)
   timeout (journeys.<name>.timeout): how long a verify run may drive the journey, e.g. 90s or 30m (default 30m); past it the journey is killed and the run is inconclusive
   matrix (.done-done.yaml): with theme, width or form axes the journey runs once per required cell with DONE_DONE_THEME, DONE_DONE_WIDTH, DONE_DONE_FORM and DONE_DONE_CELL (the capture name suffix) set; name each capture with its suffix, so every cell is captured or skipped with a reason`;
@@ -307,12 +310,17 @@ function cap(items) {
     return FULL || items.length <= COMPACT_LIST ? { items, omitted: 0 } : { items: items.slice(0, COMPACT_LIST), omitted: items.length - COMPACT_LIST };
 }
 // A hint that names the exact command that moves the work forward, naming the journey when there is one.
+const RECORD_REAL = "done-done init --journey <name> -- '<command that drives the real app and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT>'";
+// A code-only journey is never named: its run is no proof.
 function captureHint(cfg) {
-    const names = Object.keys(cfg.journeys);
+    const code = codeOnlyJourneys(cfg.journeys);
+    const names = Object.keys(cfg.journeys).filter((n) => !code.includes(n));
     if (names.length === 1)
         return `done-done run ${names[0]}`;
     if (names.length > 1)
         return `done-done run <journey> (${names.join(', ')})`;
+    if (code.length)
+        return `${RECORD_REAL} (${code.join(', ')} only run${code.length > 1 ? '' : 's'} code checks), commit, then done-done run <name>`;
     return 'done-done run -- <capture command>';
 }
 // The words after --, as the one shell command string a run executes. One word is already a whole command,
@@ -677,6 +685,8 @@ async function runCheck(argv, run) {
     const hashes = [];
     const cited = [];
     const captures = [];
+    // The run behind each cited capture, for the real-product rule and the receipt.
+    const runs = new Map();
     // base_ref: a capture in <run id>/before/ of a run that drove its base ref pairs with <run id>/<the same name>.
     const pairOf = (inRoot) => {
         const [id, dir, ...rest] = inRoot?.split(sep) ?? [];
@@ -752,6 +762,7 @@ async function runCheck(argv, run) {
             continue;
         }
         const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
+        runs.set(rec.run_id, { run_id: rec.run_id, journey: rec.journey, command: rec.command });
         // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
         const c = { name, bytes, sha256: hash, media: v };
         if (v.status === 'ok' && !record && pair)
@@ -777,6 +788,13 @@ async function runCheck(argv, run) {
     if (hasMatrix(cfg.matrix))
         for (const c of matrixManifest(cfg.matrix, files.filter((f) => (!cfg.dom || !isDomRecord(f)) && !pairOf(under(cfg.evidence.root, cite(f))))).cells.filter((c) => !c.files.length))
             findings.push({ level: 'fail', why: `cell ${c.cell} has no capture: name one file *${c.suffix}* (journeys name captures with DONE_DONE_CELL)` });
+    // Real product: a config of only code-only journeys, or captures that all come from code-only runs, are no proof.
+    const codeConfig = configFault(cfg.journeys);
+    if (codeConfig)
+        findings.push({ level: 'fail', why: codeConfig });
+    const codeRuns = runs.size ? runsFault([...runs.values()]) : null;
+    if (codeRuns)
+        findings.push({ level: 'fail', why: codeRuns });
     // Reuse: fail only when every cited file was already used for a different claim id. The ledger lives in the
     // evidence root next to the run records it guards: one per app (repo), shared by every checkout of it, never in git.
     const ledger = join(cfg.evidence.root, '.done-done', 'ledger');
@@ -837,7 +855,7 @@ async function runCheck(argv, run) {
         mkdirSync(dirname(ledger), { recursive: true });
         appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
     }
-    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, head: now, findings };
+    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings };
 }
 async function cmdCheck(argv) {
     const r = await runCheck(argv);
@@ -862,7 +880,8 @@ function writeReceipt(cfg, rec) {
     renameSync(`${path}.tmp`, path);
     return path;
 }
-// Why a parsed receipt is not a well-formed passing one (a judge block that names its judge and passes only captures the receipt cites), or null.
+// Why a parsed receipt is not a well-formed passing one (a judge block that names its judge and passes only captures the receipt cites,
+// and capture runs that are not all code-only), or null.
 function receiptFault(rec, short) {
     if (!rec || typeof rec !== 'object' || rec.schema !== 2 || rec.result !== 'pass' || !Array.isArray(rec.files) || !rec.files.length)
         return `receipt for ${short} is malformed`;
@@ -871,7 +890,10 @@ function receiptFault(rec, short) {
     const j = rec.judge;
     const badJudge = !j || typeof j !== 'object' || typeof j.route !== 'string' || typeof j.model !== 'string' || !['agent', 'model', 'session-only'].includes(j.independence) || !Array.isArray(j.verdicts) || !j.verdicts.length
         || !j.verdicts.every((v) => v && v.verdict === 'pass' && rec.files.some((f) => f.path === v.path && f.sha256 === v.sha256));
-    return badJudge ? `receipt for ${short} has a malformed judge block` : null;
+    if (badJudge)
+        return `receipt for ${short} has a malformed judge block`;
+    const code = runsFault(rec.runs);
+    return code ? `receipt for ${short} is no real-product proof: ${code}` : null;
 }
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
@@ -960,7 +982,7 @@ function recordReceipt(repo, cfg, r) {
     // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
     if (!r.cited.length)
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, judge: r.judgeBlock };
+    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock };
     const path = writeReceipt(cfg, rec);
     const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, receipt: shown(repo, path) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
@@ -1008,7 +1030,10 @@ function checkHelp(code, findings, files, { cfg, repo, claim, source, citationBa
             ? `${absent} named file${absent > 1 ? 's are' : ' is'} not in this checkout. If the evidence is in another folder, check against it: ${form}`
             : `${absent} named file${absent > 1 ? 's are' : ' is'} not under --citation-base ${arg(citationBase)} either: check the paths in the Checks block`);
     }
-    if (findings.some((f) => f.level === 'fail' && f.missing !== 'checkout'))
+    // Proof refused as code-only needs a journey that drives the product, not a re-capture of the same run.
+    if (findings.some((f) => f.why.endsWith(RULE)))
+        help.push(`Capture the real product: ${captureHint(cfg).startsWith('done-done init') ? captureHint(cfg) : `${captureHint(cfg)}, or ${RECORD_REAL}`}, then cite its files`);
+    else if (findings.some((f) => f.level === 'fail' && f.missing !== 'checkout'))
         help.push(`Commit your change, re-capture with ${capture}, then check the new files`);
     return help;
 }
@@ -2541,6 +2566,7 @@ function scaffoldPrompt(cfg, context, toolless) {
     return `You write the verify skill for the app ${cfg.app}, which \`done-done init\` saves at ${cfg.skill}: how an agent launches this repo's app safely, drives it the way a user does, and captures proof that it works. Do not edit, create or delete any file, and do not run the app or any command.
 ${toolless ? "You have no tools: the repo's tracked file list and the text of its key files are below, and they are all you can read." : 'The repository is your working directory: read the files below first, then any other file you need.'} Use only what the repo shows: never invent a command, path, flag, route or label. Never open a secret-looking file: a .env or .env.* file, a path whose name contains secret, credential, token or password, or a *.pem, *.key or *.p12 file. Never write a secret value into steps or why; name the environment variable instead.
 
+A proof drives the running product the way a user does: a test suite, typecheck, lint or build (npm test, yarn run check, tsc, pytest, go test) only checks the code, so it is never a launch, a drive or the proof, even when the repo's own checks use it.
 - launch: how to start the app for a proof. Prefer the repo's own proof path: a verify, e2e, smoke or demo script, or a journey in .done-done.yaml, that runs the app with a stub, fake or demo engine and its own state (a temporary HOME or data folder), the way the repo proves itself; copy its exact command and environment flags. {steps: the exact command on one line, with every environment flag, whose first command runs source (or passes it to an interpreter such as bash, node or npx tsx), source: the repo file they come from (for a .done-done.yaml journey, the script or file that journey runs, never .done-done.yaml itself), safe: true only when these steps use a stub or demo mode or isolated state, so no real account, paid service or the owner's own state is touched, why: what makes it safe, or when safe is false what it would touch}. When the repo has no such path, give the closest launch with safe false; never present a command that uses real accounts or the owner's own state (for example a start script that runs the real engine) as safe.
 - surface: what a user drives: web UI, CLI, API/service, desktop app or other.
 - ready: the check that shows the launched app is ready to drive (a URL that answers, a line it prints, an exit code).
@@ -2573,6 +2599,8 @@ function scaffoldProblem(a, tracked, shown) {
     const launchCite = cited(s.launch.source) ? citation(s.launch.source) : '';
     if (launchCite)
         return `the launch ${launchCite}`;
+    if (codeOnly(s.launch.steps))
+        return `the launch ${s.launch.steps.trim()} is code-only: ${RULE}`;
     if (!Array.isArray(s.features) || !s.features.length)
         return 'has no features';
     for (const f of s.features) {
@@ -2581,6 +2609,8 @@ function scaffoldProblem(a, tracked, shown) {
         const why = citation(f.source);
         if (why)
             return `the feature "${f.title}" ${why}`;
+        if (codeOnly(f.drive))
+            return `the feature "${f.title}" drive ${f.drive.trim()} is code-only: ${RULE}`;
     }
     return '';
 }
@@ -3109,6 +3139,8 @@ async function cmdInit(argv) {
         throw new UsageError(`init --journey ${journey} needs a command after --`);
     if (journey !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(journey))
         throw new UsageError(`invalid journey name ${journey}; use letters, digits, - or _`);
+    if (journey !== null && codeOnly(commandOf(parts)))
+        throw new UsageError(`init --journey ${journey}: ${commandOf(parts)} is code-only: ${RULE}, so check and gate never count its run as proof; nothing was written`, `Record a command that drives the real app, CLI or site the way a user does and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT: done-done init --journey ${journey} -- '<that command>'`);
     // Only the judge named: that is a machine setting, so it changes the global config alone, in any directory.
     if (values.judge !== undefined && values.agent === undefined && values.hook === undefined && journey === null) {
         const cfg = loadConfig(process.cwd());
@@ -3477,7 +3509,19 @@ async function cmdDoctor(argv) {
     }
     if (agent)
         checks.push({ check: 'agent_settings', status: 'ok', detail: agentSettings(agentCfg, agent.agent), fix: '' });
-    const required = ['git', 'config', 'evidence_root', 'agent', 'judge', ...(values.probe ? ['probe'] : [])];
+    // Real product: a journey that only runs code checks is no proof, so a config of only those can never pass check or gate.
+    if (!cfg || !repo) {
+        checks.push(unknownRow('real_product'));
+    }
+    else {
+        const names = Object.keys(cfg.journeys);
+        const code = codeOnlyJourneys(cfg.journeys);
+        const fix = `Record a journey that drives the real app and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT: done-done init --journey <name> -- '<command>'; then delete ${code.join(', ')} from .done-done.yaml`;
+        checks.push(configFault(cfg.journeys) ? { check: 'real_product', status: 'missing', detail: configFault(cfg.journeys), fix }
+            : code.length ? { check: 'real_product', status: 'warning', detail: `${code.join(', ')} ${code.length > 1 ? 'are' : 'is'} code-only (${RULE}): proof only from ${code.length > 1 ? 'them' : 'it'} is refused; ${names.filter((n) => !code.includes(n)).join(', ')} drive${names.length - code.length > 1 ? '' : 's'} the product`, fix: `Cite captures from the journeys that drive the product; delete ${code.join(', ')} from .done-done.yaml if it is not needed` }
+                : { check: 'real_product', status: 'ok', detail: names.length ? `${names.join(', ')} drive${names.length > 1 ? '' : 's'} the product` : 'no journeys: verify has the agent drive the verify skill\'s features', fix: '' });
+    }
+    const required = ['git', 'config', 'evidence_root', 'real_product', 'agent', 'judge', ...(values.probe ? ['probe'] : [])];
     const missingRequired = checks.filter((c) => c.status === 'missing' && required.includes(c.check));
     const result = { command: 'doctor', result: missingRequired.length ? 'fail' : 'pass', checks };
     // Several missing items can share one fix (set up the config once); name each fix only once.

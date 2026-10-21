@@ -2,7 +2,7 @@
 // Runs from the done-done repo root with DONE_DONE_EVIDENCE_ROOT and
 // DONE_DONE_RUN_ID set by `done-done run e2e`. Follows the repo's own
 // integrations/firstmate/brief-include.md contract: init, run, check, receipt.
-// Writes e2e.log plus the fixture's captures into DONE_DONE_EVIDENCE_ROOT.
+// Writes e2e.log, the real-product rule's transcript plus the fixture's captures into DONE_DONE_EVIDENCE_ROOT.
 // Node stdlib only, plus Chrome or Chromium on PATH for the look journeys; exits nonzero on the first failure.
 import { execFileSync, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -190,10 +190,49 @@ esac
   assert.match(bigPr('checks:\n  generated_paths: ["gen/**"]\n', 1), /^FAIL: 1100 added non-generated lines/);
   writeFileSync(join(repo, '.done-done.yaml'), config);
 
+  // The real-product rule: a test, typecheck or lint run proves the code checks pass, not that the product works.
+  const realStart = log.length;
+  // gate: the receipt keeps the run behind each capture, so gate refuses code-only proof from git objects alone.
+  const receipt = JSON.parse(readFileSync(join(home, 'evidence', 'fixture', '.done-done', 'receipts', `${head}.json`), 'utf8'));
+  say(`receipt runs: ${JSON.stringify(receipt.runs)}`);
+  sh('checkout', '-q', '-b', 'gate', head);
+  const gateOn = (rec) => {
+    mkdirSync(join(repo, '.done-done-receipts'), { recursive: true });
+    writeFileSync(join(repo, '.done-done-receipts', `${head}.json`), JSON.stringify(rec, null, 2));
+    sh('add', '.done-done-receipts');
+    sh('commit', '-qm', 'receipt');
+  };
+  gateOn(receipt);
+  assert.equal(drive(0, 'gate').trim(), 'PASS');
+  gateOn({ ...receipt, runs: receipt.runs.map((r) => ({ ...r, journey: 'check', command: 'yarn run check > check.log' })) });
+  assert.match(drive(1, 'gate'), /^FAIL: receipt for .* is no real-product proof: every cited capture comes from a code-only run \(check\)/);
+  sh('checkout', '-q', 'main');
+  // init refuses a journey that only wraps the test script, and writes nothing.
+  assert.match(drive(2, 'init', '--journey', 'check', '--', 'yarn run check > $DONE_DONE_EVIDENCE_ROOT/check.log'), /is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works/);
+  assert.equal(readFileSync(join(repo, '.done-done.yaml'), 'utf8'), config, 'init wrote nothing');
+  // A hand-written check journey still runs, but its log alone is no proof, and doctor flags it.
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { check: 'echo all 42 tests passed' } }));
+  const checkJourney = '  check:\n    command: npm run check > $DONE_DONE_EVIDENCE_ROOT/check.log 2>&1\n';
+  writeFileSync(join(repo, '.done-done.yaml'), config + checkJourney);
+  sh('add', 'package.json', '.done-done.yaml');
+  sh('commit', '-qm', 'check journey');
+  assert.equal(JSON.parse(dd('--json', 'doctor')).checks.at(-1).status, 'warning', 'a code-only journey beside real ones is a warning');
+  const checkRun = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'check'))[1];
+  assert.match(drive(2, 'check', '--outcome', 'pane attach works', join(home, 'evidence', 'fixture', checkRun, 'check.log')), /every cited capture comes from a code-only run \(check\)/);
+  // The config that shipped a broken app: only code-only journeys. doctor fails, and check refuses even a real capture.
+  writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\njourneys:\n${checkJourney}`);
+  sh('commit', '-qam', 'only the check journey');
+  const codeDoctor = JSON.parse(drive(2, '--json', 'doctor')).checks.at(-1);
+  assert.deepEqual([codeDoctor.status, codeDoctor.detail], ['missing', 'every journey in .done-done.yaml is code-only (check): a test, typecheck, lint or build run proves the code checks pass, not that the product works']);
+  const adhoc = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', '--', 'node make-shots.mjs'))[1];
+  assert.match(drive(2, 'check', '--outcome', 'fixture home renders', join(home, 'evidence', 'fixture', adhoc, 'home.png')), /every journey in \.done-done\.yaml is code-only \(check\)/);
+  const realProduct = log.slice(realStart);
+
   // Proof for the outer run: transcript plus the fixture's own captures.
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, `${RUN_ID}.log`), log.join('\n') + '\n');
   copyFileSync(shot, join(OUT, `${RUN_ID}.home.png`));
+  writeFileSync(join(OUT, `${RUN_ID}.real-product.log`), realProduct.join('\n') + '\n');
   for (const [page, r] of [['clipped', clipped], ['fixed', fixed]]) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
   const names = readdirSync(OUT).sort();
   say(`evidence: ${names.join(', ')}`);
