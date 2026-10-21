@@ -36,6 +36,11 @@ captured as screenshots, a recording or its transcript), never from a test, type
 that only wraps one (`npm test`, `yarn run check`, `tsc`, `pytest`), and `check`, `receipt` and `gate` refuse proof from it. Proof counts only
 from a committed tree: commit the done-done setup (config, capture script) before you capture. `fail` or
 `inconclusive` is not done: fix the cause and re-run, or tell the user exactly what is still unproven.
+Every app names its core journey (`core: true` on a journey, or `init --journey <name> --core`): the one thing a user cannot live without,
+driven end to end on the real target (for a remote terminal: pair, open a pane, type, see the output); a proof of some other feature
+does not show the app works. An app that ships something users install and upgrade (an npm CLI, an Android app, a host service) also
+names an upgrade journey (`--upgrade`): install the previous release, upgrade over it in place, then drive the core journey; a fresh
+install alone is not release proof. `doctor` fails until both are named.
 A run waiting at its judge gate (`awaiting_approval`) did not pass, and nothing moves it past its judge: show the user
 its findings and captures, and end it with `done-done respond --action fix` only when they say so.
 A journey that `spends` runs only after the user approves spending: `done-done run <journey>` refuses it, so ask the user and use `verify`.

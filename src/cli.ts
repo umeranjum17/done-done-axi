@@ -21,19 +21,25 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
-import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, RULE, runsFault } from './proof.js';
+import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault } from './proof.js';
 
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
 
 // The shape of a journey, so a new user or agent can write one without opening the reference.
 // done-done sets DONE_DONE_EVIDENCE_ROOT (the run's own folder) and replaces ${RUN_ID}, so the example works for any evidence root.
-const journeyExample = 'journeys: { smoke: { command: "<drive the real app> > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log" } }';
+const journeyExample = 'journeys: { smoke: { command: "<drive the core user journey on the real app> > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log", core: true } }';
 
 const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DONE_EVIDENCE_ROOT (this run's own new folder in the evidence
   root) and DONE_DONE_RUN_ID set, and \${RUN_ID} in it is replaced; it must write its files into that folder, e.g.
   ${journeyExample}
-  real product: a journey whose command only runs tests, typecheck, lint or a build (npm test, yarn run check, tsc, pytest) is code-only;
+  real product: a journey whose command only runs tests, typecheck, lint or a build (npm test, yarn run check, tsc, pytest, or a test or guard
+  script such as bash tests/x.test.sh or node scripts/floor-guard.mjs) is code-only;
   init --journey refuses it, and check, receipt and gate refuse proof that comes only from code-only runs or a config of only code-only journeys
+  core (journeys.<name>.core: true): the core user journey, the one thing a user cannot live without, driven end to end on the real target
+  (for a remote terminal: pair, open a pane, type, see the output); doctor requires one, here or as a "(core journey)" entry in the verify skill's feature map
+  upgrade (journeys.<name>.upgrade: true): the release path users take: install the previous shipped version, upgrade over it in place, then drive the
+  core journey; doctor requires one when a tracked file shows the app ships an installable artifact (an npm package with a bin, an Expo or Android app,
+  Python console scripts, a Rust [[bin]], goreleaser, a systemd service), since a fresh install alone is no release proof
   spends (journeys.<name>.spends): what a run spends, e.g. "one live generation"; verify parks the journey until the user approves that run (respond --action approve)
   timeout (journeys.<name>.timeout): how long a verify run may drive the journey, e.g. 90s or 30m (default 30m); past it the journey is killed and the run is inconclusive
   matrix (.done-done.yaml): with theme, width or form axes the journey runs once per required cell with DONE_DONE_THEME, DONE_DONE_WIDTH, DONE_DONE_FORM and DONE_DONE_CELL (the capture name suffix) set; name each capture with its suffix, so every cell is captured or skipped with a reason`;
@@ -78,7 +84,9 @@ const DOCTOR_TEXT = `doctor changes nothing except the --probe call record (the 
   set and its model; missing when none is set, with the command that saves the user's choice), judge (the judge route is ready:
   for claude-code an executable claude binary and the judge kit, for answerer:<agent> that agent's CLI and the
   kit, for a key route (openai:key, minimax:key) its API key and the kit; doctor does not call the model; missing when none is set, with the command
-  that saves the user's choice).
+  that saves the user's choice),
+  core_journey (a journey with core: true that drives the product, or a "(core journey)" entry in the verify skill's features/README.md),
+  upgrade_journey (when a tracked file shows the app ships an installable artifact, a journey with upgrade: true or an "(upgrade journey)" entry).
   also listed: verify_skill (.agents/skills/done-done-verify-<app>/), agent_settings (agent, model, effort,
   args, path and agent_timeout, each with the file it came from: the global config, .done-done.yaml or default),
   judge_choice (the judge, and how far it is from the author: another agent, another model, or session-only), ffprobe (video evidence only).
@@ -96,6 +104,8 @@ const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME mo
 const FLAGS: Record<string, string> = {
   '-- <command...>': 'run this command instead of a journey; ${RUN_ID} in it becomes the run id',
   '--journey <name>': 'record this command as a journey in .done-done.yaml; ${RUN_ID} in it becomes the run id',
+  '--core': 'with --journey: mark it the core user journey (core: true), the one thing a user cannot live without, driven end to end on the real target',
+  '--upgrade': 'with --journey: mark it the upgrade journey (upgrade: true): install the previous shipped version, upgrade over it in place, then drive the core journey',
   '--open': 'open a run for a hand- or agent-driven proof; prints its id and folder',
   '--close <run-id>': 'seal an open run and record the files in its folder',
   '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
@@ -138,8 +148,10 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done init --hook pi', 'also add this repo\'s done-done state to the first prompt of each pi session'],
       ['done-done init --hook gemini', 'also show this repo\'s done-done state at each Gemini CLI session start'],
       ['done-done init --journey <name> -- <command...>', "record a journey's capture recipe in .done-done.yaml"],
+      ['done-done init --journey <name> --core -- <command...>', 'record the core user journey: the one thing a user cannot live without, end to end on the real target'],
+      ['done-done init --journey upgrade --upgrade -- <command...>', 'record the release path: install the previous shipped version, upgrade over it in place, drive the core journey'],
     ],
-    flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--journey <name>', '-- <command...>'],
+    flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--journey <name>', '--core', '--upgrade', '-- <command...>'],
     more: [JOURNEYS_TEXT, CONFIG_TEXT],
   },
   doctor: {
@@ -325,6 +337,20 @@ function cap<T>(items: T[]): { items: T[]; omitted: number } {
 
 // A hint that names the exact command that moves the work forward, naming the journey when there is one.
 const RECORD_REAL = "done-done init --journey <name> -- '<command that drives the real app and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT>'";
+const CORE_FIX = "Name the core user journey, the one thing a user cannot live without, driven end to end on the real target: done-done init --journey <name> --core -- '<command that drives it and saves its captures into $DONE_DONE_EVIDENCE_ROOT>'";
+const UPGRADE_FIX = "Record the release path users take: done-done init --journey upgrade --upgrade -- '<command that installs the previous shipped version, upgrades over it in place, then drives the core journey>'";
+// The verify skill's feature map, where a journey-less repo names its core and upgrade journeys; '' when there is none.
+const featureMap = (repo: string, cfg: Config) => repoText(join(repo, cfg.skill, 'features', 'README.md')) ?? '';
+// What shows this repo ships an installable or upgradable artifact (src/proof.ts releaseArtifacts), from its tracked files.
+function shipped(repo: string): string[] {
+  const files = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] }).split('\0').filter(Boolean);
+  return releaseArtifacts(files, (f) => repoText(join(repo, f)));
+}
+// The fixes for a core or upgrade journey this repo does not name yet, as doctor's rows ask for them.
+const journeyAsks = (repo: string, cfg: Config) => {
+  const map = featureMap(repo, cfg);
+  return [...(namedJourney('core', cfg.journeys, map) ? [] : [CORE_FIX]), ...(namedJourney('upgrade', cfg.journeys, map) || !shipped(repo).length ? [] : [UPGRADE_FIX])];
+};
 // A code-only journey is never named: its run is no proof.
 function captureHint(cfg: Config): string {
   const code = codeOnlyJourneys(cfg.journeys);
@@ -2366,7 +2392,7 @@ type Scaffold = {
   harness: string;
   observe: string;
   isolate: string;
-  features: { title: string; reach: string; drive: string; source: string; capture: 'screenshot' | 'text' }[];
+  features: { title: string; reach: string; drive: string; source: string; capture: 'screenshot' | 'text'; core: boolean; upgrade: boolean }[];
 };
 type Feature = Scaffold['features'][number] & { slug: string };
 
@@ -2380,7 +2406,7 @@ const SCAFFOLD_SCHEMA = {
     harness: STR,
     observe: STR,
     isolate: STR,
-    features: { type: 'array', minItems: 1, items: { type: 'object', properties: { title: STR, reach: STR, drive: STR, source: STR, capture: { type: 'string', enum: ['screenshot', 'text'] } }, required: ['title', 'reach', 'drive', 'source', 'capture'], additionalProperties: false } },
+    features: { type: 'array', minItems: 1, items: { type: 'object', properties: { title: STR, reach: STR, drive: STR, source: STR, capture: { type: 'string', enum: ['screenshot', 'text'] }, core: { type: 'boolean' }, upgrade: { type: 'boolean' } }, required: ['title', 'reach', 'drive', 'source', 'capture', 'core', 'upgrade'], additionalProperties: false } },
   },
   required: ['surface', 'launch', 'ready', 'harness', 'observe', 'isolate', 'features'],
   additionalProperties: false,
@@ -2447,7 +2473,7 @@ function repoContext(repo: string, skill: string): { files: Set<string>; read: S
   return { files: new Set(files), read, text: `${list}\n\n${parts.join('\n\n')}${out}` };
 }
 
-function scaffoldPrompt(cfg: Config, context: string, toolless: boolean): string {
+function scaffoldPrompt(cfg: Config, context: string, toolless: boolean, ships: string[]): string {
   return `You write the verify skill for the app ${cfg.app}, which \`done-done init\` saves at ${cfg.skill}: how an agent launches this repo's app safely, drives it the way a user does, and captures proof that it works. Do not edit, create or delete any file, and do not run the app or any command.
 ${toolless ? "You have no tools: the repo's tracked file list and the text of its key files are below, and they are all you can read." : 'The repository is your working directory: read the files below first, then any other file you need.'} Use only what the repo shows: never invent a command, path, flag, route or label. Never open a secret-looking file: a .env or .env.* file, a path whose name contains secret, credential, token or password, or a *.pem, *.key or *.p12 file. Never write a secret value into steps or why; name the environment variable instead.
 
@@ -2458,7 +2484,9 @@ A proof drives the running product the way a user does: a test suite, typecheck,
 - harness: what drives it: a browser tool, a terminal (tmux or PTY), curl, or a shell.
 - observe: the proof to capture: screenshots of the resulting state, terminal transcripts and exit codes, response bodies, files written.
 - isolate: how each run keeps its own instance and state, and never drives a session or account the user owns.
-- features: up to ${MAX_FEATURES} things a user does with the app, the most important first, each {title, reach: how a user gets there, drive: the concrete steps through the repo's real handles (the command and its arguments, the route, the page label, the journey name), source: the repo file that shows the feature, capture: screenshot for a screen, text for output}.
+- features: up to ${MAX_FEATURES} things a user does with the app, the most important first, each {title, reach: how a user gets there, drive: the concrete steps through the repo's real handles (the command and its arguments, the route, the page label, the journey name), source: the repo file that shows the feature, capture: screenshot for a screen, text for output, core, upgrade}.
+- core: true on exactly one feature, listed first: the core user journey, the one thing a user cannot live without, driven end to end on the real target the way a user does it (for a remote terminal app: pair, open a pane, type, see the output), never a part of it or a setting. Every other feature has core false.
+${ships.length ? `- upgrade: this app ships an installable or upgradable artifact (${ships.slice(0, 3).join('; ')}), so users get each release by upgrading over the version they have. Set upgrade true on one feature whose drive installs the previous shipped version, upgrades over it in place the way a user does (install the new APK over the old one, update the host or CLI package in place), then drives the core journey; a fresh install alone is no release proof. It may be the core feature itself when its drive does all of that.` : '- upgrade: false on every feature: no tracked file shows the app ships an installable or upgradable artifact.'}
 Each source is one path exactly as the tracked file list spells it, with no other words (scripts/verify/drive.sh, never a list or a note); launch.source may be empty only when safe is false.
 
 ${context}`;
@@ -2466,7 +2494,7 @@ ${context}`;
 
 // Why an answer cannot be rendered into the skill, or '' when it can. A citation must be a tracked file the agent was
 // shown: shown is every tracked file for claude, which reads the repo itself, and the text plain code gave a tool-less agent.
-function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown: Set<string>): string {
+function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown: Set<string>, ships: string[]): string {
   const s = a as Scaffold;
   const text = (v: unknown) => typeof v === 'string' && clause(v) !== '';
   const citation = (p: string) => {
@@ -2482,22 +2510,30 @@ function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown
   if (codeOnly(s.launch.steps)) return `the launch ${s.launch.steps.trim()} is code-only: ${RULE}`;
   if (!Array.isArray(s.features) || !s.features.length) return 'has no features';
   for (const f of s.features) {
-    if (!f || typeof f !== 'object' || !text(f.title) || !text(f.reach) || !text(f.drive) || !text(f.source) || !['screenshot', 'text'].includes(f.capture)) return 'has a feature without a title, reach, drive, source or capture';
+    if (!f || typeof f !== 'object' || !text(f.title) || !text(f.reach) || !text(f.drive) || !text(f.source) || !['screenshot', 'text'].includes(f.capture) || typeof f.core !== 'boolean' || typeof f.upgrade !== 'boolean') return 'has a feature without a title, reach, drive, source, capture, core or upgrade';
     const why = citation(f.source);
     if (why) return `the feature "${f.title}" ${why}`;
     if (codeOnly(f.drive)) return `the feature "${f.title}" drive ${f.drive.trim()} is code-only: ${RULE}`;
   }
+  // The skill lists the first MAX_FEATURES, so the core and upgrade features must be among them.
+  const kept = s.features.slice(0, MAX_FEATURES);
+  const cores = kept.filter((f) => f.core).length;
+  if (cores !== 1) return `names ${cores} core journeys among its first ${MAX_FEATURES} features, and the skill needs exactly one: the one thing a user cannot live without, end to end on the real target`;
+  if (ships.length && !kept.some((f) => f.upgrade)) return `names no upgrade journey, and the app ships an installable artifact (${ships.slice(0, 3).join('; ')}): a fresh install alone is no release proof`;
   return '';
 }
 
-function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolean, features: Feature[], omitted: number): string {
+function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolean, features: Feature[], omitted: number, ships: string[]): string {
   const name = `done-done-verify-${app}`;
   const source = cited(s.launch.source);
   const launch = isolated
     ? `${s.launch.steps.trim()}\n\nSafe: ${clause(s.launch.why)} (from \`${source}\`).`
     : `Not isolated: ${clause(s.launch.why)}. The launch below is not shown to use a stub or demo engine with its own state, so it may use real accounts or the owner's own state. ${NO_EDIT}.\n\n${s.launch.steps.trim()}${source ? `\n\nFrom \`${source}\`.` : ''}`;
+  const core = features.find((f) => f.core)!;
+  const upgrade = features.find((f) => f.upgrade);
+  const link = (f: Feature) => `[${f.title}](features/${f.slug}.md)`;
   const found = [
-    ...features.map((f) => `- [${f.title}](features/${f.slug}.md): ${clause(f.reach)} (\`${cited(f.source)}\`)`),
+    ...features.map((f) => `- [${f.title}](features/${f.slug}.md)${marks(f)}: ${clause(f.reach)} (\`${cited(f.source)}\`)`),
     ...(omitted ? [`- ${omitted} more found and not listed; add them by hand or run maintain later.`] : []),
   ];
   return `---
@@ -2523,6 +2559,10 @@ Harness: ${clause(s.harness)}. Drive through the repo's real handles that each f
 
 ${found.join('\n')}
 
+## Core journey
+
+${link(core)} is the core user journey: the one thing a user cannot live without. A proof that the app works drives it end to end on the real target; a proof of another feature alone does not show the app works.
+${ships.length ? `\n## Release proof\n\nThis app ships an installable artifact (${ships.slice(0, 3).join('; ')}), and users get a release by upgrading over the version they have. ${link(upgrade!)} is the release proof: install the previous shipped version, upgrade over it in place, then drive the core journey. A fresh install alone is no release proof.\n` : ''}
 ## Evidence
 
 What to capture: ${clause(s.observe)}. Exercise the real user path, not internal setters; done-done's judge checks every capture in the run folder against the outcome, so save only captures of the resulting state there and keep any of earlier steps outside it; verify side effects alongside what is visible. Evidence goes to the run folder \`done-done run\` prints.
@@ -2539,8 +2579,11 @@ function verifyFeatureMd(app: string, s: Scaffold, f: Feature): string {
   return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n${NO_EDIT}.\n`;
 }
 
+// An entry's role marks, the text doctor reads (src/proof.ts namedJourney).
+const marks = (f: Feature) => `${f.core ? ` ${MARK.core}` : ''}${f.upgrade ? ` ${MARK.upgrade}` : ''}`;
+
 function verifyFeaturesMd(app: string, features: Feature[], omitted: number): string {
-  const index = features.map((f) => `- [${f.title}](${f.slug}.md): ${clause(f.reach)}`).join('\n');
+  const index = features.map((f) => `- [${f.title}](${f.slug}.md)${marks(f)}: ${clause(f.reach)}`).join('\n');
   const more = omitted ? `\n\n${omitted} more found and not listed; add them by hand or run maintain later.` : '';
   return `# ${app} features\n\nThe repo's maintained verification map; a proof that drives one entry point is incomplete when this lists others.\n\n${index}${more}\n`;
 }
@@ -2600,10 +2643,11 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   // Every schema-valid answer cites tracked files, so with none there is nothing to ask for.
   if (!context.files.size) return { status: "not written: the repo has no tracked files to cite; commit the repo's files, then re-run init", failed: true };
   const record = join(home(), 'agents', `init-${new Date().toISOString().replace(/[:.]/g, '-')}-${agent.agent.replace(/[^\w-]/g, '-')}.json`);
-  const a = await askAgent({ ...agent, prompt: scaffoldPrompt(cfg, context.text, toolless), schema: SCAFFOLD_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record });
+  const ships = shipped(repo);
+  const a = await askAgent({ ...agent, prompt: scaffoldPrompt(cfg, context.text, toolless, ships), schema: SCAFFOLD_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record });
   const where = a.record ? `; record ${a.record}` : a.recordError ? `; the call record could not be written: ${a.recordError}` : '';
   if (!a.ok) return { status: `not written: ${agent.agent} did not answer: ${a.error}; done-done doctor --probe checks the agent${where}`, failed: true };
-  const problem = scaffoldProblem(a.answer as Record<string, unknown>, context.files, toolless ? context.read : context.files);
+  const problem = scaffoldProblem(a.answer as Record<string, unknown>, context.files, toolless ? context.read : context.files, ships);
   if (problem) return { status: `not written: ${agent.agent}'s answer is unusable: ${problem}${where}`, failed: true };
   const s = a.answer as Scaffold;
   const source = cited(s.launch.source);
@@ -2617,7 +2661,7 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const omitted = s.features.length - features.length;
   const files = new Map<string, string>([[join('features', 'README.md'), verifyFeaturesMd(cfg.app, features, omitted)]]);
   for (const f of features) files.set(join('features', `${f.slug}.md`), verifyFeatureMd(cfg.app, s, f));
-  files.set('SKILL.md', verifySkillMd(cfg.app, agent.agent, s, isolated, features, omitted));
+  files.set('SKILL.md', verifySkillMd(cfg.app, agent.agent, s, isolated, features, omitted, ships));
   const targets = [...files].map(([rel, body]) => ({ rel, p: join(dir, rel), body }));
   link = linked(targets.map(({ p }) => p));
   if (link !== undefined) return skipLink(link);
@@ -2957,7 +3001,7 @@ async function cmdInit(argv: string[]): Promise<number> {
   const dash = argv.indexOf('--');
   const { values } = parseArgs({
     args: dash < 0 ? argv : argv.slice(0, dash),
-    options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, journey: { type: 'string' } },
+    options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' } },
     allowPositionals: false,
   });
   const parts = dash < 0 ? [] : argv.slice(dash + 1);
@@ -2968,6 +3012,7 @@ async function cmdInit(argv: string[]): Promise<number> {
   if (values.agent !== undefined) checkChoice(values.agent, values.model ?? '');
   if (values['judge-model'] !== undefined && values.judge === undefined) throw new UsageError('--judge-model needs --judge', `Run: done-done init --judge <agent> --judge-model ${values['judge-model']}`);
   if (journey === null && parts.length) throw new UsageError('init needs --journey <name> to record a command after --');
+  if (journey === null && (values.core || values.upgrade)) throw new UsageError(`--${values.core ? 'core' : 'upgrade'} marks the journey init records, so it needs --journey <name> and a command after --`, `Run: done-done init --journey <name> --${values.core ? 'core' : 'upgrade'} -- '<command>'`);
   if (journey !== null && !parts.some((p) => p.trim())) throw new UsageError(`init --journey ${journey} needs a command after --`);
   if (journey !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(journey)) throw new UsageError(`invalid journey name ${journey}; use letters, digits, - or _`);
   if (journey !== null && codeOnly(commandOf(parts))) throw new UsageError(`init --journey ${journey}: ${commandOf(parts)} is code-only: ${RULE}, so check and gate never count its run as proof; nothing was written`, `Record a command that drives the real app, CLI or site the way a user does and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT: done-done init --journey ${journey} -- '<that command>'`);
@@ -3031,6 +3076,7 @@ async function cmdInit(argv: string[]): Promise<number> {
     if (typeof journeys !== 'object' || Array.isArray(journeys)) throw new UsageError(`${file}: journeys must be a mapping`);
     if (top.journeys == null) doc.set('journeys', doc.createNode({}));
     doc.setIn(['journeys', journey, 'command'], command);
+    for (const role of ['core', 'upgrade'] as const) if (values[role]) doc.setIn(['journeys', journey, role], true);
     writeFileSync(`${file}.tmp`, doc.toString({ lineWidth: 0 }));
     renameSync(`${file}.tmp`, file);
     const fresh = loadConfig(repo);
@@ -3058,7 +3104,7 @@ async function cmdInit(argv: string[]): Promise<number> {
       ...(renamed && { skill_renamed: renamed }),
       verify_skill: verify.status,
       ...agentHook.out,
-      help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...agentHook.help, ...ag.help, ...jg.help, ...(verify.failed ? [SCAFFOLD_HELP] : []), `Commit ${commitFirst(fresh.skill)}`],
+      help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...journeyAsks(repo, fresh), ...agentHook.help, ...ag.help, ...jg.help, ...(verify.failed ? [SCAFFOLD_HELP] : []), `Commit ${commitFirst(fresh.skill)}`],
     });
     return code;
   }
@@ -3102,6 +3148,7 @@ app: ${JSON.stringify(cfg.app)}
       ...(Object.keys(cfg.journeys).length
         ? [`Capture proof: ${captureHint(cfg)}, then: ${check}`]
         : [`Add a journey that drives the real app and saves proof under $DONE_DONE_EVIDENCE_ROOT (each run's own folder in ${root}), e.g. ${journeyExample}`, `Then commit, run \`done-done run smoke\`, and: ${check}`]),
+      ...journeyAsks(repo, loadConfig(repo)),
       ...agentHook.help,
       ...ag.help,
       ...jg.help,
@@ -3325,7 +3372,24 @@ async function cmdDoctor(argv: string[]): Promise<number> {
       : { check: 'real_product', status: 'ok', detail: names.length ? `${names.join(', ')} drive${names.length > 1 ? '' : 's'} the product` : 'no journeys: verify has the agent drive the verify skill\'s features', fix: '' },
     );
   }
-  const required = ['git', 'config', 'evidence_root', 'real_product', 'agent', 'judge', ...(values.probe ? ['probe'] : [])];
+  // The core journey and, for an app that ships an installable artifact, the upgrade-in-place journey: named in config or the feature map.
+  if (!cfg || !repo) {
+    checks.push(unknownRow('core_journey'), unknownRow('upgrade_journey'));
+  } else {
+    const map = featureMap(repo, cfg);
+    const core = namedJourney('core', cfg.journeys, map);
+    checks.push(core
+      ? { check: 'core_journey', status: 'ok', detail: `${core} is the core user journey`, fix: '' }
+      : { check: 'core_journey', status: 'missing', detail: `no core user journey is named: a journey with core: true that drives the product, or a ${MARK.core} entry in ${cfg.skill}/features/README.md`, fix: CORE_FIX });
+    const ships = shipped(repo);
+    const upgrade = namedJourney('upgrade', cfg.journeys, map);
+    checks.push(!ships.length
+      ? { check: 'upgrade_journey', status: 'ok', detail: 'no tracked file shows an installable or upgradable artifact, so no upgrade journey is needed', fix: '' }
+      : upgrade
+        ? { check: 'upgrade_journey', status: 'ok', detail: `${upgrade} upgrades in place (the app ships ${ships.slice(0, 3).join('; ')})`, fix: '' }
+        : { check: 'upgrade_journey', status: 'missing', detail: `the app ships an installable artifact (${ships.slice(0, 3).join('; ')}${ships.length > 3 ? `; +${ships.length - 3} more` : ''}) and no upgrade journey is named: a fresh install alone is no release proof`, fix: UPGRADE_FIX });
+  }
+  const required = ['git', 'config', 'evidence_root', 'real_product', 'core_journey', 'upgrade_journey', 'agent', 'judge', ...(values.probe ? ['probe'] : [])];
   const missingRequired = checks.filter((c) => c.status === 'missing' && required.includes(c.check));
   const result: Record<string, unknown> = { command: 'doctor', result: missingRequired.length ? 'fail' : 'pass', checks };
   // Several missing items can share one fix (set up the config once); name each fix only once.

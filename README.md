@@ -126,23 +126,26 @@ done-done init
 journeys:
   smoke:
     command: npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log
+    core: true
 ```
 
 The command runs from the repo root with `DONE_DONE_EVIDENCE_ROOT` (a new folder for this run in the evidence root) and `DONE_DONE_RUN_ID` set, and `${RUN_ID}` in it is replaced. A run that writes nothing into its folder fails. A journey that only runs code checks (`npm test`, `yarn run check`, `tsc`, `pytest`, a linter or a build) is code-only: its log says the code checks pass, not that the product works, so `init --journey` refuses it and `check`, `receipt` and `gate` never count it as proof ([the rule](docs/reference.md#real-product-evidence)).
+
+Name your **core journey** with `core: true`: the one thing a user cannot live without, driven end to end on the real target (for a remote terminal app: pair, open a pane, type, see the output). If your app ships something users install and upgrade (an npm CLI, an Android app, a host service), also record an **upgrade journey** with `upgrade: true` that installs your previous release, upgrades over it in place, then drives the core journey: a fresh install alone is not how users get your release. `doctor` fails until both are named ([the rule](docs/reference.md#core-journey-and-release-path)).
 
 Optional: `done-done init --hook <claude|codex|opencode|gemini|pi>` adds a session hook or plugin to the repo that shows each session the bare `done-done` state. Each agent's file and behavior are in the [reference](docs/reference.md#set-up-a-repo).
 
 Record the recipe in the repo so anyone can re-run the proof, then commit it (and `.claude/settings.json`, `.codex/hooks.json`, `.gemini/settings.json`, `.opencode/plugins/done-done.js` or `.pi/extensions/done-done.js` if you added a hook):
 
 ```sh
-done-done init --journey smoke -- 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log'
+done-done init --journey smoke --core -- 'npm start > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log'
 git add .done-done.yaml
 git commit -m "Add done-done"
 ```
 
 A `run -- <command>` whose command matches no recorded journey still runs, but its result hints that the recipe is not in the repo. For a proof you drive by hand or by your agent instead of a journey, `done-done run --open` prints a run id and a folder to capture into, and `done-done run --close <run-id>` seals it ([how](docs/reference.md#run-a-journey)).
 
-At any point, `done-done doctor` checks the setup and changes nothing except the `--probe` call record. Each item reports `ok`, `warning` or `missing` with the exact fix command; an agent you have not set yet is `missing`, with the command that saves your choice, and so is a config whose journeys only run code checks. `done-done doctor --probe` also asks the agent one question to prove it answers; on a new machine that probe fails until the agent is signed in (for pi, run `pi` and then `/login`). The quick start above never calls the coding agent, so `run` and `check` work before it is signed in; `check` does call the judge, so set one first. The items are listed in the [reference](docs/reference.md#check-the-setup).
+At any point, `done-done doctor` checks the setup and changes nothing except the `--probe` call record. Each item reports `ok`, `warning` or `missing` with the exact fix command; an agent you have not set yet is `missing`, with the command that saves your choice, and so is a config whose journeys only run code checks, one that names no core journey, or an app that ships an installable artifact with no upgrade journey. `done-done doctor --probe` also asks the agent one question to prove it answers; on a new machine that probe fails until the agent is signed in (for pi, run `pi` and then `/login`). The quick start above never calls the coding agent, so `run` and `check` work before it is signed in; `check` does call the judge, so set one first. The items are listed in the [reference](docs/reference.md#check-the-setup).
 
 `done-done maintain` keeps the verify skill true: it checks the skill's links and feature index, checks that every `file:line` it cites exists, and has your coding agent read the source for each feature, read-only, to report drift. It ends `clean`, `drift` with the findings to fix, or `blocked`. It never runs without that reader: an agent that is not set asks, and one that cannot start or cannot read without tools stops it before the run (exit 2). With `auto_fix: { maintain: <n> }` (as in no-mistakes; 0, the default, reports only), your judge first sorts each drift finding (a skill out of date, or a product that may be wrong, which stops and asks you), then your agent fixes the skill folder only, in a done-done worktree, and maintain runs again, up to n times. A clean end is `changed`: one commit on a `done-done/maintain-<run-id>` branch, your branch untouched ([reference](docs/reference.md#keep-the-verify-skill-true)).
 
@@ -173,6 +176,7 @@ Run `done-done` with no arguments to see the current config and the next step.
 ## What it checks
 
 - 🧪 **The real product, not code checks**: Proof must come from driving the app, CLI or site the way a user does. A config whose journeys only run tests, typecheck, lint or a build, or proof whose captures all come from such runs, is refused by `check`, `receipt` and `gate`, and `doctor` flags it ([rule](docs/reference.md#real-product-evidence)).
+- 🎯 **The core journey and the upgrade users take**: Each app names the one flow a user cannot live without, driven end to end on the real target, and an app that ships an installable artifact also names the upgrade over its previous release. `doctor` and the verify skill `init` writes require both ([rule](docs/reference.md#core-journey-and-release-path)).
 - 🔗 **Tied to a commit**: Every run records the commit, and whether there were uncommitted changes.
 - 🖼️ **Real media**: Empty, cut-off, blank or tiny screenshots fail. Videos must hold real frames (needs `ffprobe`).
 - ⏱️ **Fresh**: Proof from an older commit fails. Commits that only touch docs can be set to keep it fresh.

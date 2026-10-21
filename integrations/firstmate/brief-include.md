@@ -9,7 +9,11 @@ wherever this text or the skill says `done-done`. If done-done cannot run, repor
    site the way a user does and writes its screenshots, recordings or transcript into `$DONE_DONE_EVIDENCE_ROOT`
    (done-done sets it to the run's own folder): `done-done init --journey <name> -- <command>`, so the recipe lives in
    the repo and anyone can re-run the proof. Never record a test, typecheck, lint or build run (`npm test`,
-   `yarn run check`, `tsc`): it is code-only, `init` refuses it, and `check`, `receipt` and the gate refuse its proof. Commit `.done-done.yaml` and the journey script. If `init` says no agent is set, ask the user which agent
+   `yarn run check`, `tsc`): it is code-only, `init` refuses it, and `check`, `receipt` and the gate refuse its proof.
+   Record the app's core journey with `--core` (the one thing a user cannot live without, driven end to end on the
+   real target) and, when the app ships something users install and upgrade, a release journey with `--upgrade` that
+   installs the previous release and upgrades over it in place before it drives the core journey; `done-done doctor`
+   fails until both are named. Commit `.done-done.yaml` and the journey script. If `init` says no agent is set, ask the user which agent
    and model to use and run the command it prints; never choose one yourself.
 2. Commit your change, then run `done-done run <journey>` from the repo root. Proof only counts from a clean,
    committed tree.

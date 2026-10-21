@@ -4,6 +4,10 @@ app: "done-done"
 journeys:
   e2e:
     command: node journeys/e2e.mjs
+    core: true
+  upgrade:
+    command: node journeys/upgrade.mjs
+    upgrade: true
   lint-journey-warn:
     command: node journeys/lint-journey-warn.mjs
   lint-generated:

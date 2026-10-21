@@ -43,7 +43,7 @@ function png(w, h, pixel, colour = 2) {
 const screen = (seed = 0) => png(200, 120, (x, y) => [(x * 3 + seed) % 256, (y * 5) % 256, (x + y) % 256]);
 const blank = () => png(200, 120, () => [250, 250, 250]);
 
-const JUDGED = 'app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n';
+const JUDGED = 'app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n    core: true\n';
 // done-done gives no result without its judge, so every repo starts with a stub judge (never a model): a gemini stub
 // through agent_path_override that says each capture shows the outcome. A test about the judge writes its own config,
 // and judgeYaml(env) adds the stub back; a gemini-agent test names it through pi, so the agent stays its own binary.
@@ -105,6 +105,41 @@ function setup(projectYaml = JUDGED) {
   };
   return { dir, repo, env, sh, dd, ddin, head, shots };
 }
+
+// The 0.5.0 audit: fleet configs wrapped their test files in bash or node, and the rule read those as product drives.
+test('init refuses a journey that only runs a test or guard script by its file name or folder, and keeps real drives', () => {
+  const { repo, env } = setup();
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\n${judgeYaml(env)}`);
+  keepSkill(repo, 'notes');
+  const stubs = pathEnv(env, ['claude']);
+  const wrappers = [
+    'bash tests/fm-control-relaunch.test.sh > "$DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log" 2>&1',
+    'bash fleet-pulse/tests/chat-tsv.test.sh > "$DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log" 2>&1',
+    'node scripts/floor-guard.mjs --base origin/main > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log 2>&1 && npm run typecheck >> $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log 2>&1',
+    'timeout -k 10 300 node scripts/test.mjs test/google-emulator.test.ts > "$DONE_DONE_EVIDENCE_ROOT/google-emulator.log" 2>&1',
+    'npm run build > /dev/null && node --test --test-name-pattern="one page scroll" test/design.test.mjs > "$DONE_DONE_EVIDENCE_ROOT/d.log" 2>&1',
+    './tests/smoke.test.sh', 'python3 tests/test_pair.py', 'node src/app.spec.mjs', 'go run ./cmd/pair_test.go', 'bash scripts/lint.sh',
+  ];
+  const before = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
+  for (const [i, c] of wrappers.entries()) {
+    const r = doctorIn(repo, stubs, 'init', '--journey', `w${i}`, '--', c);
+    assert.equal(r.code, 2, `${c}: ${r.out}`);
+    assert.match(r.out, /is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works/, c);
+  }
+  assert.equal(readFileSync(join(repo, '.done-done.yaml'), 'utf8'), before, 'init wrote none of them');
+  const drives = [
+    'node scripts/verify/stub-drive.mjs --out $DONE_DONE_EVIDENCE_ROOT', './app', 'adb -s emulator-5554 exec-out screencap -p > $DONE_DONE_EVIDENCE_ROOT/a.png',
+    'npx playwright screenshot http://127.0.0.1:3000 $DONE_DONE_EVIDENCE_ROOT/a.png', 'done-done look http://127.0.0.1:3000 --out $DONE_DONE_EVIDENCE_ROOT/a.png',
+    'node journeys/lint-generated.mjs', 'node dist/cli.js look test/fixtures/look/clipped.html --out $DONE_DONE_EVIDENCE_ROOT/c.png',
+    'node --test test/design.test.mjs > $DONE_DONE_EVIDENCE_ROOT/d.log && node scripts/verify/document-shots.mjs $DONE_DONE_EVIDENCE_ROOT',
+  ];
+  for (const [i, c] of drives.entries()) assert.equal(doctorIn(repo, stubs, 'init', '--journey', `d${i}`, '--', c).code, 0, `${c} drives the product`);
+  // A config whose only journey wraps a test file is the code-only config doctor refuses.
+  writeFileSync(join(repo, '.done-done.yaml'), `app: notes\njourneys:\n  relaunch:\n    command: ${wrappers[0]}\n    core: true\n`);
+  const d = JSON.parse(doctorIn(repo, stubs, 'doctor', '--json').out).checks;
+  assert.match(d.find((c) => c.check === 'real_product').detail, /^every journey in \.done-done\.yaml is code-only \(relaunch\)/);
+  assert.equal(d.find((c) => c.check === 'core_journey').status, 'missing', 'a code-only core journey is no core journey');
+});
 
 test('check and receipt refuse proof from code-only journeys: a test, typecheck or lint log is not the product', () => {
   // The config that shipped a broken app: a journey that wraps the repo's check script, whose log says the code checks pass.
@@ -1267,7 +1302,8 @@ function shapeRepo(kind, name) {
     writeFileSync(join(repo, '.done-done.yaml'), `app: ${name}\njourneys:\n  add:\n    command: scripts/verify/drive.sh add milk > $DONE_DONE_EVIDENCE_ROOT/\${RUN_ID}.log\n`);
     writeFileSync(join(repo, 'README.md'), `# ${name}\n\nnpm start runs the engine on your own account.\n`);
   } else {
-    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, bin: { [name]: 'bin/cli.js' }, dependencies: { commander: '^12.0.0' } }));
+    // private: an unpublished CLI, so it ships no installable artifact and needs no upgrade journey (kind 'shipped' publishes it).
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, ...(kind !== 'shipped' && { private: true }), bin: { [name]: 'bin/cli.js' }, dependencies: { commander: '^12.0.0' } }));
     mkdirSync(join(repo, 'bin'));
     writeFileSync(join(repo, 'bin', 'cli.js'), `#!/usr/bin/env node\nprogram.command('add').command('list');\n`);
     writeFileSync(join(repo, 'README.md'), '# notes\n');
@@ -1284,7 +1320,8 @@ function shapeRepo(kind, name) {
 }
 
 // The stub agent's answer for init's scaffold call. It also carries maintain's keys, so one stub answers both.
-const scaffoldAnswer = (over = {}) => JSON.stringify({
+// A feature without core or upgrade gets core on the first one only and upgrade on none, as the schema requires both.
+const scaffoldAnswer = (over = {}) => JSON.stringify(withRoles({
   surface: 'CLI',
   launch: { steps: 'ENGINE=stub ENGINE_HOME="$(mktemp -d)" scripts/verify/drive.sh up', source: 'scripts/verify/drive.sh', safe: true, why: 'the stub engine with a throwaway ENGINE_HOME, as scripts/verify/drive.sh runs it.' },
   ready: 'the command exits 0',
@@ -1294,7 +1331,8 @@ const scaffoldAnswer = (over = {}) => JSON.stringify({
   features: [{ title: 'Add a note', reach: 'the add command', drive: 'run scripts/verify/drive.sh add milk', source: 'scripts/verify/drive.sh', capture: 'text' }],
   drift: [], recipe: 'run it', recipes: [], missing: [],
   ...over,
-});
+}));
+const withRoles = (a) => (Array.isArray(a.features) ? { ...a, features: a.features.map((f, i) => (f && typeof f === 'object' ? { core: i === 0, upgrade: false, ...f } : f)) } : a);
 
 const featureFiles = (skillDir) => readdirSync(join(skillDir, 'features')).sort();
 // A hand-written verify skill, so an init test about config never asks the agent to write one.
@@ -1317,7 +1355,10 @@ test("init has the agent write the verify skill from the repo's own proof path, 
   const body = readFileSync(join(dir, 'SKILL.md'), 'utf8');
   assert.match(body, /^## Launch\n\nENGINE=stub ENGINE_HOME="\$\(mktemp -d\)" scripts\/verify\/drive\.sh up\n\nSafe: the stub engine .* runs it \(from `scripts\/verify\/drive\.sh`\)\.$/m, 'Launch is the stub engine with its own state');
   assert.doesNotMatch(body, /npm start/, 'never the start script that runs the real engine');
-  assert.match(body, /^- \[Add a note\]\(features\/add-a-note\.md\): the add command \(`scripts\/verify\/drive\.sh`\)$/m, 'Drive names the real handle');
+  assert.match(body, /^- \[Add a note\]\(features\/add-a-note\.md\) \(core journey\): the add command \(`scripts\/verify\/drive\.sh`\)$/m, 'Drive names the real handle and marks the core journey');
+  assert.match(body, /^## Core journey\n\n\[Add a note\]\(features\/add-a-note\.md\) is the core user journey: the one thing a user cannot live without\./m, 'the skill names the core journey');
+  assert.doesNotMatch(body, /## Release proof/, 'a repo that ships no installable artifact needs no upgrade journey');
+  assert.match(call.stdin, /core: true on exactly one feature, listed first: the core user journey/, 'the init prompt asks for the core journey');
   assert.deepEqual(featureFiles(dir), ['README.md', 'add-a-note.md']);
   assert.match(readFileSync(join(dir, 'features', 'add-a-note.md'), 'utf8'), /^2\. Run scripts\/verify\/drive\.sh add milk\.\n3\. Capture: save the output and exit status to \$DONE_DONE_EVIDENCE_ROOT\/add-a-note\.txt,/m);
   const before = body;
@@ -1341,6 +1382,40 @@ test('init says the launch is not isolated when the repo shows no safe proof pat
   assert.equal(toon(r).verify_skill, 'written by claude; its launch is not isolated, so read Launch before a drive');
   const body = readFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'SKILL.md'), 'utf8');
   assert.match(body, /^## Launch\n\nNot isolated: bin\/cli\.js keeps its notes in your own HOME\. .*may use real accounts or the owner's own state\. The drive changes no repo file/m);
+});
+
+test('init has the agent name the core journey and, for a CLI users install, an upgrade-in-place journey, and refuses an answer without them', () => {
+  const { repo, env } = shapeRepo('shipped', 'notes');
+  const launch = { steps: 'node bin/cli.js add milk', source: '', safe: false, why: 'bin/cli.js keeps its notes in your own HOME' };
+  const add = { title: 'Add a note', reach: 'the add command', drive: 'run node bin/cli.js add milk', source: 'bin/cli.js', capture: 'text' };
+  const list = { title: 'List notes', reach: 'the list command', drive: 'run node bin/cli.js list', source: 'bin/cli.js', capture: 'text' };
+  const tryInit = (features) => {
+    const s = stubAgents(env, scaffoldAnswer({ launch, features }));
+    const r = doctorIn(repo, s.env, 'init');
+    return { r, prompt: s.calls()[0].stdin };
+  };
+  // A fresh install alone is no release proof: an answer with no upgrade journey writes no skill.
+  const fresh = tryInit([add, list]);
+  assert.equal(fresh.r.code, 1, fresh.r.out);
+  assert.equal(toon(fresh.r).verify_skill.split('; record ')[0], "not written: claude's answer is unusable: names no upgrade journey, and the app ships an installable artifact (package.json: an npm package with a bin users install): a fresh install alone is no release proof");
+  assert.match(fresh.prompt, /- upgrade: this app ships an installable or upgradable artifact \(package\.json: an npm package with a bin users install\), so users get each release by upgrading over the version they have\. Set upgrade true on one feature whose drive installs the previous shipped version, upgrades over it in place/, 'the init prompt requires the upgrade journey');
+  assert.match(toon(fresh.r).help.join('\n'), /done-done init --journey upgrade --upgrade -- /, 'init asks for the upgrade journey too');
+  // Exactly one core journey: none, or two, is refused.
+  assert.match(toon(tryInit([{ ...add, core: false, upgrade: true }, list]).r).verify_skill, /unusable: names 0 core journeys among its first 5 features, and the skill needs exactly one: the one thing a user cannot live without, end to end on the real target/);
+  assert.match(toon(tryInit([add, { ...list, core: true, upgrade: true }]).r).verify_skill, /unusable: names 2 core journeys/);
+  const upgrade = { title: 'Upgrade in place', reach: 'npm install -g over the last release', drive: 'install the previous release with npm install -g notes@previous, then npm install -g . over it, then run node bin/cli.js add milk', source: 'bin/cli.js', capture: 'text', upgrade: true };
+  const ok = tryInit([add, list, upgrade]);
+  assert.equal(ok.r.code, 0, ok.r.out);
+  const dir = join(repo, '.agents', 'skills', 'done-done-verify-notes');
+  const body = readFileSync(join(dir, 'SKILL.md'), 'utf8');
+  assert.match(body, /^## Release proof\n\nThis app ships an installable artifact \(package\.json: an npm package with a bin users install\), and users get a release by upgrading over the version they have\. \[Upgrade in place\]\(features\/upgrade-in-place\.md\) is the release proof: install the previous shipped version, upgrade over it in place, then drive the core journey\. A fresh install alone is no release proof\.$/m);
+  const map = readFileSync(join(dir, 'features', 'README.md'), 'utf8');
+  assert.match(map, /^- \[Add a note\]\(add-a-note\.md\) \(core journey\): the add command$/m);
+  assert.match(map, /^- \[Upgrade in place\]\(upgrade-in-place\.md\) \(upgrade journey\): npm install -g over the last release$/m);
+  // doctor reads the marks init wrote: both journeys are named, no config change needed.
+  const d = toon(doctorIn(repo, ok.r.env ?? env, 'doctor'));
+  assert.equal(d.checks.find((c) => c.check === 'core_journey').detail, 'feature map entry [Add a note](add-a-note.md) is the core user journey');
+  assert.match(d.checks.find((c) => c.check === 'upgrade_journey').detail, /^feature map entry \[Upgrade in place\]\(upgrade-in-place\.md\) upgrades in place/);
 });
 
 test('init with a tool-less agent writes no verify skill that cites a file its prompt left out', () => {
@@ -1629,7 +1704,7 @@ test('init refuses a feature drive that is only a period, instead of crashing', 
   const r = doctorIn(repo, s.env, 'init');
   assert.equal(r.code, 1, r.out);
   assert.doesNotMatch(r.out, /TypeError/, 'no uncaught error');
-  assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: has a feature without a title, reach, drive, source or capture; record /);
+  assert.match(toon(r).verify_skill, /^not written: claude's answer is unusable: has a feature without a title, reach, drive, source, capture, core or upgrade; record /);
   assert.equal(existsSync(join(repo, '.agents', 'skills', 'done-done-verify-notes')), false, 'no skill from an empty drive');
 });
 
@@ -1790,7 +1865,7 @@ test('a repo set up by init captures, checks and receipts real evidence that out
   const init = dd('init');
   assert.equal(init.code, 2);
   // Follow init's hint as printed: its example journey, placeholder filled in, becomes the config.
-  const example = toon(init).help[0].match(/journeys: \{.*\} \}/)[0].replace('<drive the real app>', 'echo added: milk');
+  const example = toon(init).help[0].match(/journeys: \{.*\} \}/)[0].replace('<drive the core user journey on the real app>', 'echo added: milk');
   appendFileSync(join(repo, '.done-done.yaml'), `${example}\n`);
   sh('add', '-A');
   sh('commit', '-qm', 'config');
@@ -3904,8 +3979,10 @@ test('doctor passes in a set-up repo and lists every check', () => {
   assert.equal(r.code, 0, r.out);
   const d = toon(r);
   assert.equal(d.result, 'pass');
-  assert.deepEqual(d.checks.map((c) => c.check), ['git', 'config', 'evidence_root', 'verify_skill', 'agent', 'judge', 'ffprobe', 'judge_choice', 'agent_settings', 'real_product']);
-  assert.deepEqual(d.checks.at(-1), { check: 'real_product', status: 'ok', detail: 'shots drives the product', fix: '' });
+  assert.deepEqual(d.checks.map((c) => c.check), ['git', 'config', 'evidence_root', 'verify_skill', 'agent', 'judge', 'ffprobe', 'judge_choice', 'agent_settings', 'real_product', 'core_journey', 'upgrade_journey']);
+  assert.deepEqual(d.checks.at(-3), { check: 'real_product', status: 'ok', detail: 'shots drives the product', fix: '' });
+  assert.deepEqual(d.checks.at(-2), { check: 'core_journey', status: 'ok', detail: 'journey shots is the core user journey', fix: '' });
+  assert.equal(d.checks.at(-1).status, 'ok', 'an app that ships no installable artifact needs no upgrade journey');
   assert.deepEqual(d.checks.slice(0, 3).map((c) => c.status), ['ok', 'ok', 'ok']);
   assert.match(d.checks[1].detail, /app notes/);
   assert.equal(d.checks[3].status, 'missing', 'no verify skill yet, and that is optional');
@@ -3913,23 +3990,89 @@ test('doctor passes in a set-up repo and lists every check', () => {
   assert.ok(d.help.length >= 1);
   const j = json(doctorIn(repo, stubs, 'doctor', '--json'));
   assert.equal(j.result, 'pass');
-  assert.equal(j.checks.length, 10);
+  assert.equal(j.checks.length, 12);
   // A code-only journey beside a real one is a warning: doctor still passes.
   const check = '\n  check:\n    command: yarn run check > $DONE_DONE_EVIDENCE_ROOT/check.log 2>&1\n';
   writeFileSync(join(repo, '.done-done.yaml'), `${JUDGED}${check}`);
   const mixed = json(doctorIn(repo, stubs, 'doctor', '--json'));
   assert.equal(mixed.result, 'pass');
-  assert.equal(mixed.checks.at(-1).status, 'warning');
-  assert.match(mixed.checks.at(-1).detail, /^check is code-only .*; shots drives the product$/);
-  assert.equal(mixed.checks.at(-1).fix, 'Cite captures from the journeys that drive the product; delete check from .done-done.yaml if it is not needed');
+  assert.equal(mixed.checks.at(-3).status, 'warning');
+  assert.match(mixed.checks.at(-3).detail, /^check is code-only .*; shots drives the product$/);
+  assert.equal(mixed.checks.at(-3).fix, 'Cite captures from the journeys that drive the product; delete check from .done-done.yaml if it is not needed');
   // Only code-only journeys (the shipped-broken-APK config): the row is missing and doctor fails with the fix command.
   writeFileSync(join(repo, '.done-done.yaml'), `app: notes\njourneys:${check}  types:\n    command: npx tsc --noEmit && npm test\n`);
   const code = doctorIn(repo, stubs, 'doctor', '--json');
   assert.equal(code.code, 2, code.out);
-  const row = JSON.parse(code.out).checks.at(-1);
+  const row = JSON.parse(code.out).checks.at(-3);
   assert.equal(row.status, 'missing');
   assert.match(row.detail, /every journey in \.done-done\.yaml is code-only \(check, types\)/);
   assert.match(row.fix, /done-done init --journey <name> -- '<command>'; then delete check, types from \.done-done\.yaml/);
+});
+
+// The muxr miss: a config whose proof never drove the one flow users need (pair, open a pane, type, see output), and a release
+// proven only by a fresh install while users upgrade over the version they have. doctor names both gaps with the fix command.
+test('doctor requires a named core journey and, for an app that ships an installable artifact, an upgrade-in-place journey', () => {
+  const { repo, env, sh } = setup(JUDGED.replace('    core: true\n', ''));
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\n${judgeYaml(env)}`);
+  keepSkill(repo, 'notes');
+  const stubs = pathEnv(env, ['claude']);
+  const doctor = () => {
+    const r = doctorIn(repo, stubs, 'doctor', '--json');
+    return { code: r.code, row: (n) => JSON.parse(r.out).checks.find((c) => c.check === n), help: JSON.parse(r.out).help };
+  };
+  const commit = (m) => { sh('add', '-A'); sh('commit', '-qm', m); };
+  commit('skill');
+  let d = doctor();
+  assert.equal(d.code, 2, 'a config that names no core journey fails doctor');
+  assert.equal(d.row('core_journey').status, 'missing');
+  assert.match(d.row('core_journey').detail, /^no core user journey is named: a journey with core: true that drives the product, or a \(core journey\) entry in \.agents\/skills\/done-done-verify-notes\/features\/README\.md$/);
+  assert.match(d.row('core_journey').fix, /done-done init --journey <name> --core -- '<command that drives it/);
+  assert.deepEqual(d.help, [d.row('core_journey').fix], 'the only fix is the core journey');
+  assert.equal(d.row('upgrade_journey').status, 'ok', 'no tracked file ships an artifact yet');
+  // A code-only journey marked core is no core journey: its run never drives the product.
+  appendFileSync(join(repo, '.done-done.yaml'), '  check:\n    command: npm test > $DONE_DONE_EVIDENCE_ROOT/t.log\n    core: true\n');
+  assert.equal(doctor().row('core_journey').status, 'missing', 'a code-only core journey does not count');
+  // --core and --upgrade mark only a journey init records.
+  const bare = doctorIn(repo, stubs, 'init', '--core');
+  assert.equal(bare.code, 2, bare.out);
+  assert.match(bare.out, /--core marks the journey init records, so it needs --journey <name> and a command after --/);
+  const marked = doctorIn(repo, stubs, 'init', '--journey', 'shots', '--core', '--', 'node', 'make-shots.mjs', '${RUN_ID}');
+  assert.equal(marked.code, 0, marked.out);
+  assert.match(readFileSync(join(repo, '.done-done.yaml'), 'utf8'), / {2}shots:\n {4}command: node make-shots\.mjs '\$\{RUN_ID\}'\n {4}core: true\n/, 'init records the core flag on the journey');
+  commit('core');
+  d = doctor();
+  assert.equal(d.code, 0, JSON.stringify(d.row('core_journey')));
+  assert.equal(d.row('core_journey').detail, 'journey shots is the core user journey');
+  // A CLI users install from npm upgrades over the version they have: a fresh install alone is no release proof.
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'notes', bin: { notes: 'src/app.js' } }));
+  mkdirSync(join(repo, 'android', 'app', 'src', 'main'), { recursive: true });
+  writeFileSync(join(repo, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), '<manifest package="dev.notes"/>\n');
+  commit('ship');
+  d = doctor();
+  assert.equal(d.code, 2, 'an app that ships an artifact with no upgrade journey fails doctor');
+  assert.equal(d.row('upgrade_journey').status, 'missing');
+  assert.equal(d.row('upgrade_journey').detail, 'the app ships an installable artifact (android/app/src/main/AndroidManifest.xml: an Android app; package.json: an npm package with a bin users install) and no upgrade journey is named: a fresh install alone is no release proof');
+  assert.match(d.row('upgrade_journey').fix, /done-done init --journey upgrade --upgrade -- '<command that installs the previous shipped version, upgrades over it in place, then drives the core journey>'/);
+  const up = doctorIn(repo, stubs, 'init', '--journey', 'upgrade', '--upgrade', '--', 'node', 'make-shots.mjs', '${RUN_ID}');
+  assert.equal(up.code, 0, up.out);
+  assert.match(readFileSync(join(repo, '.done-done.yaml'), 'utf8'), / {2}upgrade:\n {4}command: node make-shots\.mjs '\$\{RUN_ID\}'\n {4}upgrade: true\n/);
+  commit('upgrade');
+  d = doctor();
+  assert.equal(d.code, 0);
+  assert.match(d.row('upgrade_journey').detail, /^journey upgrade upgrades in place \(the app ships android\/app\/src\/main\/AndroidManifest\.xml: an Android app; package\.json: an npm package with a bin users install\)$/);
+  // A journey-less repo names both in its verify skill's feature map; a private package ships nothing.
+  writeFileSync(join(repo, '.done-done.yaml'), 'app: notes\n');
+  rmSync(join(repo, 'android'), { recursive: true });
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'notes', private: true, bin: { notes: 'src/app.js' } }));
+  mkdirSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'features'));
+  writeFileSync(join(repo, '.agents', 'skills', 'done-done-verify-notes', 'features', 'README.md'), '# notes features\n\n- [Add a note](add-a-note.md) (core journey): the add command\n');
+  commit('map');
+  d = doctor();
+  assert.equal(d.row('core_journey').detail, 'feature map entry [Add a note](add-a-note.md) is the core user journey');
+  assert.equal(d.row('upgrade_journey').status, 'ok', 'a private package is not shipped');
+  // A non-boolean mark is a config error, never a silent no.
+  writeFileSync(join(repo, '.done-done.yaml'), 'app: notes\njourneys:\n  shots:\n    command: node make-shots.mjs\n    core: yes please\n');
+  assert.match(doctorIn(repo, stubs, 'doctor').out, /journeys must be a map of name: \{command: <string>.*core: <true for the core user journey>/);
 });
 
 test('doctor does not send a repo with a malformed global config to init', () => {
@@ -4192,7 +4335,7 @@ test('doctor finds agent, judge and ffprobe binaries from PATH; a missing ffprob
   const none = doctorIn(repo, pathEnv(env, []), 'doctor');
   assert.equal(none.code, 2, 'an agent or judge that cannot start fails doctor');
   const n = toon(none);
-  assert.deepEqual(n.checks.slice(4).map((c) => c.status), ['missing', 'missing', 'missing', 'ok', 'ok', 'ok']);
+  assert.deepEqual(n.checks.slice(4).map((c) => c.status), ['missing', 'missing', 'missing', 'ok', 'ok', 'ok', 'ok', 'ok']);
   assert.match(n.checks[4].fix, /^Install claude, or ask the user which agent to use/, 'a missing agent is never swapped for an installed one');
   assert.match(n.checks[5].fix, /^Install opencode, or ask the user for another judge and save it: done-done init --judge/);
   assert.match(n.checks[6].fix, /ffprobe/);
