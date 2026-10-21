@@ -3105,6 +3105,11 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual([ok.o.result, ok.o.journey, ok.o.feature, ok.o.author], ['pass', null, 'add-note', 'claude (model claude-haiku-5-5)']);
   assert.deepEqual(ok.o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
+  // The receipt keeps the feature the agent drove, so affected counts it as that feature's proof (no journey, no core: every feature).
+  assert.equal(JSON.parse(readFileSync(join(t.repo, '.proof', '.done-done', 'receipts', `${t.head()}.json`), 'utf8')).runs[0].feature, 'add-note');
+  const covered = t.dd('--json', 'affected');
+  assert.equal(covered.code, 0, covered.out);
+  assert.deepEqual(json(covered).features.map((f) => f.name), ['add-note']);
   const [drive, ...judged] = right.calls();
   assert.equal(drive.agent, 'claude');
   assert.equal(drive.cwd, t.repo, 'the drive runs in the repo');
@@ -6996,6 +7001,73 @@ esac
   assert.deepEqual(lintWith('checks:\n  generated_paths: ["lib/**"]\n'), { code: 0, out: 'PASS\n' }, 'a repo glob makes its own generated files not count');
   assert.match(lintWith('checks:\n  generated_paths: ["gen/**"]\n').out, over, 'a glob that misses changes nothing');
   assert.equal(lintWith('checks:\n  moved_from: yes please\n').code, 2, 'a key that is not a boolean is a config error');
+});
+
+test('affected maps a diff to journeys and features through the feature map, falls back to the core journey, and exits 1 until a receipt covers them', () => {
+  const unit = '  unit:\n    command: node --test test/unit.test.mjs\n';
+  const { repo, sh, dd, shots } = setup(`${JUDGED}  export:\n    command: node export.mjs \${RUN_ID}\n${unit}`);
+  const features = join(repo, '.agents', 'skills', 'done-done-verify-notes', 'features');
+  mkdirSync(features, { recursive: true });
+  writeFileSync(join(features, 'README.md'), '# notes features\n\n- [Home](home.md) (core journey): the home screen\n- [Settings](settings.md): the settings screen\n');
+  writeFileSync(join(features, 'home.md'), '# Home\n\nSource: `src/app.js`. Drive: `done-done run shots`.\n');
+  writeFileSync(join(features, 'settings.md'), '# Settings\n\nSource: [the screen](../../../../src/settings.js). Your agent drives it.\n');
+  writeFileSync(join(repo, 'src', 'settings.js'), 'export const settings = 1;\n');
+  writeFileSync(join(repo, 'export.mjs'), '// export\n');
+  mkdirSync(join(repo, 'test'));
+  writeFileSync(join(repo, 'test', 'unit.test.mjs'), '// unit\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'features');
+  sh('checkout', '-qb', 'feat');
+  const affected = (code, ...args) => {
+    const r = dd('--json', 'affected', ...args);
+    assert.equal(r.code, code, r.out);
+    return json(r);
+  };
+  const commit = (file, text) => {
+    writeFileSync(join(repo, file), text);
+    sh('add', file);
+    sh('commit', '-qm', file);
+  };
+  // ignore_paths keep proof fresh, so a docs change needs no journey; with no receipt the proof is still missing.
+  commit('docs/guide.md', '# guide v2\n');
+  let a = affected(1);
+  assert.deepEqual([a.result, a.changed, a.journeys], ['missing', [], []]);
+  assert.match(a.base, /\(the merge base with main\)$/);
+  assert.match(a.help[0], /No journey needs a new run/);
+  // A journey whose command runs the changed file; a feature that cites it through a markdown link and names no journey.
+  commit('export.mjs', '// export v2\n');
+  commit('src/settings.js', 'export const settings = 2;\n');
+  a = affected(1);
+  assert.deepEqual(a.journeys, [{ name: 'export', why: 'its command runs export.mjs' }]);
+  assert.deepEqual(a.features, [{ name: 'settings', drive: 'verify --feature', why: 'feature settings cites src/settings.js' }]);
+  assert.match(a.help[0], /done-done run export && done-done verify --feature settings --outcome/);
+  // A code-only journey is never needed: its test file is in no feature, so it is uncertain and the core journey runs.
+  commit('test/unit.test.mjs', '// unit v2\n');
+  a = affected(1);
+  assert.deepEqual(a.journeys.map((j) => j.name), ['export', 'shots']);
+  assert.deepEqual(a.unmapped, ['test/unit.test.mjs']);
+  assert.equal(a.fallback, 'uncertain: 1 changed file is in no feature or journey, so the core journey runs too');
+  assert.match(a.help.at(-1), /^Flag the gap: test\/unit\.test\.mjs is in no feature or journey/);
+  // A receipt for HEAD that ran only shots misses the other journey and the feature.
+  const { files } = shots();
+  assert.equal(dd('receipt', '--outcome', 'home and settings render', ...files).code, 0);
+  a = affected(1);
+  assert.equal(a.proof, 'stale: the receipt for HEAD has no run of export, feature settings');
+  assert.match(a.help[0], /^Capture fresh proof: done-done run export && done-done verify --feature settings/);
+  // From HEAD itself nothing changed, so the receipt covers it.
+  a = affected(0, 'HEAD');
+  assert.deepEqual([a.result, a.journeys, a.help], ['fresh', [], ['The receipt for HEAD covers every journey this change needs (none)']]);
+  assert.equal(affected(2, 'nope').error, 'affected: nope is not a commit in this checkout');
+  // An uncommitted change is stale proof; with no core journey named, the uncertain change needs every real journey.
+  writeFileSync(join(repo, '.done-done.yaml'), `${JUDGED.replace('    core: true\n', '')}  export:\n    command: node export.mjs \${RUN_ID}\n${unit}`);
+  writeFileSync(join(features, 'README.md'), '# notes features\n\n- [Home](home.md): the home screen\n- [Settings](settings.md): the settings screen\n');
+  a = affected(1, 'HEAD');
+  assert.match(a.proof, /^stale: uncommitted changes \(\.agents\/skills\/done-done-verify-notes\/features\/README\.md, \.done-done\.yaml\)/);
+  assert.deepEqual(a.journeys.map((j) => [j.name, j.why]), [
+    ['shots', 'every feature follows .agents/skills/done-done-verify-notes/features/README.md; uncertain: 1 changed file is in no feature or journey, and no core journey is named'],
+    ['export', 'uncertain: 1 changed file is in no feature or journey, and no core journey is named'],
+  ]);
+  assert.equal(a.help[0], 'Commit the change first: proof counts only from a commit');
 });
 
 test('gate vouches for a committed receipt with no judge, config or evidence, and refuses a missing, moved-on, wrong-head or late one', () => {

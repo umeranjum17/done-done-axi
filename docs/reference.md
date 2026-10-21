@@ -1,6 +1,6 @@
 # done-done reference
 
-Everything `init`, `doctor`, `run`, `check`, `receipt` and the config files do. For the overview and quick start, see the [README](../README.md).
+Everything `init`, `doctor`, `run`, `affected`, `check`, `receipt` and the config files do. For the overview and quick start, see the [README](../README.md).
 
 ## Install
 
@@ -276,6 +276,22 @@ journeys:
     upgrade: true
 ```
 
+### Affected journeys
+
+```sh
+done-done affected            # the change since the last receipt, else since the default branch
+done-done affected origin/main
+```
+
+`affected [<base>]` says which journeys a change needs and whether HEAD's proof covers them. It is model-free and reads git, `.done-done.yaml` and the verify skill only.
+
+- **The change.** The files that differ from `<base>`, else from the newest receipt whose head is before HEAD (the commits since the last proof), else from the merge base with the default branch (`origin/HEAD`, `origin/main`, `origin/master`, then the local `main` or `master`, the order the [Firstmate merge gate](../README.md#use-with-firstmate-or-another-agent-fleet) uses), plus uncommitted changes to tracked files. Untracked files are not part of the change until added. A file that matches `evidence.ignore_paths`, or a committed receipt under `.done-done-receipts/` ([CI gate](#ci-gate)), needs nothing.
+- **The mapping.** A journey is needed when its command runs the changed file (`node journeys/e2e.mjs` runs `journeys/e2e.mjs`). A feature of the verify skill (`features/<name>.md`) is needed when its file cites the changed file: a repo path, a markdown link (read from the feature's folder), a folder written with a slash (`src/` covers every file under it) or a bare file name, which matches each tracked file of that name as `maintain` reads one; or when the feature file itself changed. The skill's `SKILL.md` and `features/README.md` are what every feature follows, so a change to them needs every feature. A needed feature brings each journey it names (`run <journey>` or `verify <journey>` in its text, or a file the journey's command runs that it cites too); a feature that names no journey is driven by your agent: `done-done verify --feature <name>`. A code-only journey ([Real-product evidence](#real-product-evidence)) is never needed.
+- **Uncertain means more, never less.** A changed file that no feature or journey covers, or no base to diff against, makes the mapping uncertain: the core journey ([Core journey and release path](#core-journey-and-release-path)) is needed too, or the feature the feature map marks `(core journey)`, or every journey when none is named. Each such file is listed under `unmapped` and flagged in `help`: add it to the feature file that drives it (`done-done maintain` reports recent files no feature covers), or record a journey for it.
+- **The proof.** `fresh` (exit 0) when the receipt for HEAD verifies ([Record a receipt](#record-a-receipt)), its `runs` include a run of every needed journey (by name, or by the journey's command) and every needed feature (a `verify --feature` drive, which the receipt records as the run's `feature`), and no tracked file has an uncommitted change. Otherwise exit 1: `stale` when the newest receipt is for an earlier commit (it names that commit and the journeys the new commits need), when the receipt for HEAD misses a needed journey or feature, or when there are uncommitted changes; `missing` when there is no receipt at all. `help` gives the commands that capture the missing proof (`done-done run <journey>`, `done-done verify --feature <name>`), then the receipt step.
+
+The result lists the base and where it came from, the changed files (`--full` for more than five), each needed journey and feature with why (the first three reasons; `--full` for all), the unmapped files and the fallback. Bare `done-done` adds an `affected` block with the proof and the journeys still needed whenever the proof is not fresh, so every [session hook](#set-up-a-repo) shows them with no extra call. A `<base>` that is not a commit is a usage error (exit 2).
+
 ### Check a claim
 
 ```sh
@@ -503,7 +519,7 @@ The result is `clean` (no findings but notices, exit 0), `drift` (findings to fi
 
 Every command prints one machine-readable result on stdout. By default it is [TOON](https://github.com/toon-format/spec) in the AXI convention (the shape `no-mistakes axi status` uses): scalar `key: value` lines, tabular arrays, and a `help` list that names the exact next command. `--json` prints the same result as JSON. `--full` lists every evidence file or finding; without it, lists longer than five rows are truncated and the count of dropped rows is reported (`evidence_omitted`, `findings_omitted`, `history_omitted` or `log_omitted`). `doctor` always lists every check: its rows (eight checks, nine with --probe, plus `tool_gate` when the agent is pi or codex) never truncate.
 
-Running `done-done` with no subcommand prints the repo's config state (`config: present | missing | none`), its journeys, its run count (the runs `history` lists), whether `HEAD` has a valid receipt (`receipt: valid for HEAD <sha>`, or why not), and the next step; with a valid receipt the next step is to prove the next commit. `done-done --version` prints the version. Usage and config errors also print one result: the `command` that failed, an `error` field and a `help` line with the recovery command (for example `done-done init` when no config exists, or the command's valid flags after an unknown one).
+Running `done-done` with no subcommand prints the repo's config state (`config: present | missing | none`), its journeys, its run count (the runs `history` lists), whether `HEAD` has a valid receipt (`receipt: valid for HEAD <sha>`, or why not), when the proof is not fresh the journeys the change still needs (`affected`, see [Affected journeys](#affected-journeys)), and the next step; with a valid receipt that covers them the next step is to prove the next commit. `done-done --version` prints the version. Usage and config errors also print one result: the `command` that failed, an `error` field and a `help` line with the recovery command (for example `done-done init` when no config exists, or the command's valid flags after an unknown one).
 
 `done-done --help` lists every command. `done-done <command> --help` (or `-h`) prints that command's usage lines and flags in the same shape for every command (plus the journey format for `init` and `run`, and the Checks block for `check` and `receipt`), and exits 0.
 

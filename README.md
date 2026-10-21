@@ -158,6 +158,8 @@ done-done check --outcome "it starts" ~/.done-done/evidence/your-app/*/*.log
 
 Each command prints one machine-readable result. By default it is [TOON](https://github.com/toon-format/spec) (the compact AXI convention). `run` shows `result: recorded`: it captured evidence, and says nothing about whether it proves the claim. `check` starts your judge on each capture, and only a check the judge passes shows `result: pass`; with no judge set it asks for one, and a judge that fails stops with the cause (exit 2), never a result. Add `--json` for JSON, or `--full` to list every evidence file or finding instead of the first few. After later runs, use the `run_id` the result prints in place of the first `*`.
 
+Not sure which journeys a change touches? `done-done affected` lists them from the verify skill's feature map and the paths each feature cites (the core journey when it cannot tell, never fewer), and exits 1 until a receipt for HEAD covers them. Bare `done-done`, which the session hooks run, names them too.
+
 When a check passes, save a receipt and re-verify it later:
 
 ```sh
@@ -177,6 +179,7 @@ Run `done-done` with no arguments to see the current config and the next step.
 
 - 🧪 **The real product, not code checks**: Proof must come from driving the app, CLI or site the way a user does. A config whose journeys only run tests, typecheck, lint or a build, or proof whose captures all come from such runs, is refused by `check`, `receipt` and `gate`, and `doctor` flags it ([rule](docs/reference.md#real-product-evidence)).
 - 🎯 **The core journey and the upgrade users take**: Each app names the one flow a user cannot live without, driven end to end on the real target, and an app that ships an installable artifact also names the upgrade over its previous release. `doctor` and the verify skill `init` writes require both ([rule](docs/reference.md#core-journey-and-release-path)).
+- 🧭 **The journeys your change needs**: `done-done affected [<base>]` reads the diff since the last receipt (or the default branch), maps each changed file to the journeys whose command runs it and the verify skill features whose file cites it, adds the core journey when a file is in no feature or journey, and exits 1 until a receipt for HEAD has a run of each. It flags the files no feature covers, so the feature map grows with the code ([how](docs/reference.md#affected-journeys)).
 - 🔗 **Tied to a commit**: Every run records the commit, and whether there were uncommitted changes.
 - 🖼️ **Real media**: Empty, cut-off, blank or tiny screenshots fail. Videos must hold real frames (needs `ffprobe`).
 - ⏱️ **Fresh**: Proof from an older commit fails. Commits that only touch docs can be set to keep it fresh.
@@ -216,7 +219,7 @@ cat "$(npm root -g)/done-done-axi/integrations/firstmate/brief-include.md" >> "$
 cp "$(npm root -g)/done-done-axi/integrations/firstmate/merge-gate" "$FM_HOME/config/merge-gate"
 ```
 
-- **`brief-include.md`**: Firstmate adds `config/brief-include.md` to every worker brief. It tells the worker to set up done-done, run a journey on its committed change, write a `## Checks` block, pass `check`, and record a `receipt`. The evidence and receipt stay in `~/.done-done/evidence/<app>` after teardown deletes the worktree.
+- **`brief-include.md`**: Firstmate adds `config/brief-include.md` to every worker brief. It tells the worker to set up done-done, run the journeys `done-done affected` lists for its committed change, write a `## Checks` block, pass `check`, record a `receipt`, and see `affected` exit 0. The evidence and receipt stay in `~/.done-done/evidence/<app>` after teardown deletes the worktree.
 - **`merge-gate`** (optional): `merge-gate <task-id> <worktree|-> <head> <pr-url|->`. In the worktree, it refuses a PR whose head is not `<head>`, then runs `done-done check --from <PR URL or $FM_HOME/data/<task-id>/checks.md> --trusted-ref <default branch>` (`origin/HEAD`, else `origin/main` or `origin/master`, else the local `main` or `master` in a repo with no remote), then `done-done receipt --verify <head>`. Both paths read done-done's rules from your default branch, never from the task's own branch, so merge `.done-done.yaml` there before you rely on it. The gate does not fetch: it reads the local `origin` refs, so run `git fetch origin` before you run it. It needs `done-done` on PATH (the `npm install` line above). A nonzero exit refuses the merge, and done-done's output says why. A worktree of `-` means the task recorded none, so there is no repo to check: the gate refuses (exit 2) rather than check whatever folder it was called from. Its `check` always starts the judge the user set, which must pass each capture; with none set, the gate refuses (exit 2). Upstream Firstmate does not call a merge gate yet, so this file has no effect until it does; you can run it by hand before a merge.
 
 Another fleet works the same way: add the include text to whatever your workers read first, and run `merge-gate` before each merge, with `FM_HOME` set to the folder that holds `data/<task-id>/checks.md` for local-only tasks.
@@ -230,7 +233,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 ## What's next
 
-So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
+So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `affected` (the journeys a diff needs), `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
 
 ## Develop
 

@@ -2,7 +2,7 @@
 // Runs from the done-done repo root with DONE_DONE_EVIDENCE_ROOT and
 // DONE_DONE_RUN_ID set by `done-done run e2e`. Follows the repo's own
 // integrations/firstmate/brief-include.md contract: init, run, check, receipt.
-// Writes e2e.log, the real-product rule's transcript plus the fixture's captures into DONE_DONE_EVIDENCE_ROOT.
+// Writes e2e.log, the real-product rule's and affected's transcripts plus the fixture's captures into DONE_DONE_EVIDENCE_ROOT.
 // Node stdlib only, plus Chrome or Chromium on PATH for the look journeys; exits nonzero on the first failure.
 import { execFileSync, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -143,6 +143,45 @@ try {
     follow(remote, body);
   }
 
+  // affected: the journeys a change needs, from the verify skill's feature map, and exit 1 until a receipt for HEAD covers them.
+  const affectedStart = log.length;
+  const affected = (code, ...args) => JSON.parse(drive(code, '--json', 'affected', ...args));
+  // HEAD's receipt runs shots, the core journey: with no earlier proof to diff from, the core journey is what HEAD needs.
+  assert.equal(affected(0).result, 'fresh');
+  sh('checkout', '-q', '-b', 'affected');
+  const features = join(repo, '.agents', 'skills', 'done-done-verify-fixture', 'features');
+  mkdirSync(features, { recursive: true });
+  writeFileSync(join(features, 'README.md'), '# fixture features\n\n- [Home](home.md) (core journey): the home screen\n');
+  writeFileSync(join(features, 'home.md'), '# Home\n\nSource: `src/app.js`. Drive: `done-done run shots`.\n');
+  writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
+  sh('add', '.agents', 'src'); sh('commit', '-qm', 'home feature');
+  const stale = affected(1);
+  assert.equal(stale.result, 'stale', 'the receipt is for the commit before');
+  assert.match(stale.base, /the last receipt/);
+  assert.deepEqual(stale.journeys.map((j) => j.name), ['shots']);
+  assert.match(stale.journeys[0].why, /feature home cites src\/app\.js/);
+  assert.equal(stale.unmapped, undefined, 'every change is mapped');
+  // A file no feature cites is uncertain: the core journey runs and the file is flagged for the feature map.
+  writeFileSync(join(repo, 'src', 'billing.js'), 'export const bill = 1;\n');
+  sh('add', 'src'); sh('commit', '-qm', 'billing');
+  const unsure = affected(1);
+  assert.deepEqual(unsure.unmapped, ['src/billing.js']);
+  assert.match(unsure.fallback, /^uncertain: 1 changed file is in no feature or journey/);
+  assert.match(unsure.help.at(-1), /Flag the gap: src\/billing\.js is in no feature or journey/);
+  assert.match(drive(0), /This change needs fresh proof: done-done run shots/, 'bare done-done, what the session hooks run, names the journeys');
+  // A fresh run of the journey it named, checked and receipted for the same claim, makes HEAD's proof fresh again.
+  const again = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'shots'))[1];
+  const againBody = join(tmp, 'affected-checks.md');
+  writeFileSync(againBody, `## Checks\noutcome: fixture home renders\nrepro: n/a: no bug\nproof: done-done-verify-fixture - done-done run shots\nevidence: ${join(home, 'evidence', 'fixture', again, 'home.png')}\n`);
+  dd('receipt', '--from', againBody, '--claim-id', 'main');
+  const fresh = affected(0);
+  assert.equal(fresh.result, 'fresh');
+  assert.match(fresh.help.at(-1), /Flag the gap: src\/billing\.js/, 'a fresh receipt still flags the file no feature covers');
+  // An explicit base reads the whole branch.
+  assert.deepEqual(affected(0, 'main').journeys.map((j) => j.name), ['shots']);
+  sh('checkout', '-q', 'main');
+  const affectedLog = log.slice(affectedStart);
+
   // A look hit fails the journey that calls it, naming the element, kind and text; the fixed page passes.
   const lookRun = (page, code) => {
     const out = drive(code, 'run', `look-${page}`);
@@ -240,6 +279,7 @@ esac
   writeFileSync(join(OUT, `${RUN_ID}.log`), log.join('\n') + '\n');
   copyFileSync(shot, join(OUT, `${RUN_ID}.home.png`));
   writeFileSync(join(OUT, `${RUN_ID}.real-product.log`), realProduct.join('\n') + '\n');
+  writeFileSync(join(OUT, `${RUN_ID}.affected.log`), affectedLog.join('\n') + '\n');
   for (const [page, r] of [['clipped', clipped], ['fixed', fixed]]) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
   const names = readdirSync(OUT).sort();
   say(`evidence: ${names.join(', ')}`);

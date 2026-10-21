@@ -21,6 +21,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
+import { mapChange } from './affected.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault } from './proof.js';
 
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
@@ -242,6 +243,19 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   checks.generated_paths: ["gen/**", "*.snap"] adds your own globs to the generated files above; the default is none.
   Every run is appended to lint.log next to the store. Exit 0 PASS or WARN, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
   },
+  affected: {
+    usage: [['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"]],
+    flags: [],
+    more: [`affected: model-free. The change is the diff from <base>, else from the newest receipt before HEAD (the commits since the last proof),
+  else from the merge base with the default branch (origin/HEAD, origin/main, origin/master, main, master), plus uncommitted changes to tracked files;
+  evidence.ignore_paths and .done-done-receipts/ need nothing. A journey is needed when its command runs a changed file; a feature
+  (features/<name>.md) when it cites a changed file (a repo path, a markdown link, a folder written with a slash such as src/, or a bare
+  file name) or is the changed file, and then each journey it names (run <journey>, or a file the journey's command runs); a feature
+  that names no journey is driven by your agent (verify --feature <name>). A changed file nothing covers, or no base, is uncertain:
+  the core journey is needed too (every journey when none is core), never less, and the file is flagged for the feature map.
+  Result: fresh (exit 0) when the receipt for HEAD has a run of every needed journey and feature and nothing is uncommitted;
+  stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1`],
+  },
   status: {
     usage: [['done-done status [--run <run-id>]', "show a run's steps, result, findings and next step"]],
     flags: ['--run <run-id>'],
@@ -380,6 +394,7 @@ type RunRecord = {
   exit: number | null;
   files: { path: string; sha256: string; bytes: number }[];
   author?: { agent: string; model: string }; // the agent that drove the run, when no journey did
+  feature?: string; // the verify skill feature that agent drove
   matrix?: ReturnType<typeof matrixManifest>; // the capture-matrix manifest, when a matrix block is set
   base?: { ref: string; commit: string; error?: string }; // the base_ref drive, whose captures are in the run folder's before/
 };
@@ -795,7 +810,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
       continue;
     }
     const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
-    runs.set(rec.run_id, { run_id: rec.run_id, journey: rec.journey, command: rec.command });
+    runs.set(rec.run_id, { run_id: rec.run_id, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }) });
     // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
     const c: Capture = { name, bytes, sha256: hash, media: v };
     if (v.status === 'ok' && !record && pair) befores.set(pair, c);
@@ -1494,10 +1509,11 @@ async function runSteps(dir: string): Promise<void> {
           const b = await drive(where, evidence, env, cfg.base_ref);
           return b.ok ? String((b.answer as { blocker?: unknown })?.blocker ?? '').trim() : `${author.agent} did not finish the drive: ${b.error}`;
         });
-      const sealed = closeRun(at, cfg, rec);
-      if (!fix) run.record = join(recordsDir(cfg), `${rec.run_id}.json`);
       const picked = typeof answer?.feature === 'string' ? answer.feature.replace(/^.*features\//, '').replace(/\.md$/, '') : '';
       if (skillFeatures(at, cfg).includes(picked)) run.feature ??= picked;
+      if (run.feature) rec.feature = run.feature;
+      const sealed = closeRun(at, cfg, rec);
+      if (!fix) run.record = join(recordsDir(cfg), `${rec.run_id}.json`);
       log('drive', { agent: author.agent, model: author.model, feature: run.feature ?? 'none', ...(a.ok ? { captures: answer?.captures, blocker } : { error: a.error }), record: a.record ?? a.recordError });
       const why = !a.ok ? `${author.agent} did not finish the drive: ${a.error}${a.record ? `; call record ${a.record}` : ''}`
         : blocker ? `${author.agent} could not drive the feature: ${blocker}`
@@ -3546,6 +3562,121 @@ async function cmdDesign(argv: string[]): Promise<number> {
   return code;
 }
 
+// The receipts in the evidence root that are well-formed passes filed under their own head, by head.
+function receiptsByHead(cfg: Config): Map<string, Receipt> {
+  const dir = receiptsDir(cfg);
+  const found = new Map<string, Receipt>();
+  for (const name of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith('.json')) : []) {
+    try {
+      const rec: Receipt = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      if (!receiptFault(rec, name) && name === `${rec.head}.json`) found.set(rec.head, rec);
+    } catch {
+      // A receipt that cannot be read vouches for nothing; receipt --verify names its fault.
+    }
+  }
+  return found;
+}
+
+// The default branch to diff a change against, as the Firstmate merge gate picks it: origin/HEAD, else origin/main or
+// origin/master, else the local main or master. '' when there is none.
+function defaultBranch(repo: string): string {
+  try {
+    return git(repo, 'symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD');
+  } catch {
+    return ['origin/main', 'origin/master', 'main', 'master'].find((r) => spawnSync('git', ['rev-parse', '-q', '--verify', `${r}^{commit}`], { cwd: repo, stdio: 'ignore' }).status === 0) ?? '';
+  }
+}
+
+const isAncestor = (repo: string, a: string, b: string) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: repo, stdio: 'ignore' }).status === 0;
+
+// Which journeys the change needs (src/affected.ts) and whether HEAD's proof covers them. The change is read from `baseArg`,
+// else from the newest receipt before HEAD (the commits since the last proof), else from the merge base with the default
+// branch; with none, the mapping is uncertain and the core journey is needed.
+function affectedOf(repo: string, cfg: Config, baseArg?: string) {
+  const now = head(repo);
+  const receipts = receiptsByHead(cfg);
+  let base: { commit: string; from: string } | null = null;
+  if (baseArg !== undefined) {
+    try {
+      base = { commit: git(repo, 'rev-parse', '--verify', `${baseArg}^{commit}`), from: baseArg };
+    } catch {
+      throw new UsageError(`affected: ${baseArg} is not a commit in this checkout`, 'Pass a branch, tag or commit: done-done affected [<base>]');
+    }
+  } else {
+    // ponytail: one git call per receipt to find the ones before HEAD; index receipts by commit when a repo keeps thousands.
+    const older = [...receipts.keys()].filter((h) => h !== now.commit && isAncestor(repo, h, now.commit));
+    const nearest = older.find((h) => older.every((o) => isAncestor(repo, o, h)));
+    const ref = nearest ? '' : defaultBranch(repo);
+    const mb = ref ? spawnSync('git', ['merge-base', ref, 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim() : '';
+    if (nearest) base = { commit: nearest, from: `the last receipt, for ${nearest.slice(0, 12)}` };
+    else if (mb && mb !== now.commit) base = { commit: mb, from: `the merge base with ${ref}` };
+  }
+  const list = (...a: string[]) => git(repo, ...a).split('\0').filter(Boolean);
+  const tracked = list('ls-files', '-z');
+  // ignore_paths and committed gate receipts need no journey.
+  const counts = (p: string) => !p.startsWith(`${GATE_DIR}/`) && !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g));
+  // Untracked files are no part of the change until added, as everywhere else in done-done.
+  const uncommitted = list('diff', '--name-only', '--no-renames', '-z', 'HEAD').filter(counts);
+  const changed = [...new Set([...(base ? list('diff', '--name-only', '--no-renames', '-z', base.commit, 'HEAD').filter(counts) : []), ...uncommitted])];
+  const featDir = join(repo, cfg.skill, 'features');
+  const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
+  const coreLine = featureMap(repo, cfg).split('\n').find((l) => /^\s*[-*] /.test(l) && l.includes(MARK.core));
+  const m = mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase: base ? undefined : 'no receipt before HEAD and no default branch to diff against' });
+  const needed = [...m.journeys.map((j) => j.name), ...m.features.map((f) => `feature ${f.name}`)];
+  // Proof: a valid receipt for HEAD whose runs include every journey and feature the change needs, with nothing uncommitted.
+  const verified = verifyReceipt(repo, cfg, 'HEAD');
+  const runs = verified.code === PASS ? receipts.get(now.commit)?.runs ?? [] : [];
+  const covered = (n: string) => n.startsWith('feature ') ? runs.some((r) => r.feature === n.slice(8)) : runs.some((r) => r.journey === n || r.command === cfg.journeys[n].command.replaceAll('${RUN_ID}', r.run_id));
+  const missing = verified.code === PASS && !uncommitted.length ? needed.filter((n) => !covered(n)) : needed;
+  const stale = base && receipts.has(base.commit) ? base.commit : null;
+  const proof = verified.code !== PASS ? stale ? `stale: the receipt is for ${stale.slice(0, 12)}, and HEAD is ${now.commit.slice(0, 12)}` : `missing: ${verified.result.reason}`
+    : uncommitted.length ? `stale: uncommitted changes (${named(uncommitted)}); proof counts only from a commit`
+    : missing.length ? `stale: the receipt for HEAD has no run of ${missing.join(', ')}`
+    : 'fresh';
+  return { now, base, changed, m, proof, missing };
+}
+
+// `done-done affected [<base>]`: the journeys a change needs, and exit 1 until a receipt for HEAD covers them.
+function cmdAffected(argv: string[]): number {
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  if (positionals.length > 1) throw new UsageError('affected takes at most one base', 'Re-run as: done-done affected [<base>]');
+  const repo = repoRoot();
+  const cfg = loadConfig(repo);
+  const a = affectedOf(repo, cfg, positionals[0]);
+  const fresh = a.proof === 'fresh';
+  const changed = cap(a.changed);
+  const why = (w: string[]) => (FULL || w.length <= 3 ? w.join('; ') : `${w.slice(0, 3).join('; ')}; +${w.length - 3} more (--full lists them)`);
+  const drive = [
+    ...a.m.journeys.filter((j) => a.missing.includes(j.name)).map((j) => `done-done run ${j.name}`),
+    ...a.m.features.filter((f) => a.missing.includes(`feature ${f.name}`)).map((f) => `done-done verify --feature ${f.name} --outcome "<what a user can now do>"`),
+  ];
+  emit({
+    command: 'affected',
+    result: fresh ? 'fresh' : a.proof.split(':')[0],
+    head: a.now.commit,
+    base: a.base ? `${a.base.commit.slice(0, 12)} (${a.base.from})` : 'none',
+    proof: a.proof,
+    changed: changed.items,
+    ...(changed.omitted && { changed_omitted: changed.omitted }),
+    journeys: a.m.journeys.map((j) => ({ name: j.name, why: why(j.why) })),
+    ...(a.m.features.length && { features: a.m.features.map((f) => ({ name: f.name, drive: 'verify --feature', why: why(f.why) })) }),
+    ...(a.m.unmapped.length && { unmapped: a.m.unmapped }),
+    ...(a.m.fallback && { fallback: `${a.m.fallback}, so the core journey runs too` }),
+    help: [
+      ...(fresh
+        ? [`The receipt for HEAD covers every journey this change needs (${[...a.m.journeys.map((j) => j.name), ...a.m.features.map((f) => f.name)].join(', ') || 'none'})`]
+        : [
+            ...(a.proof.startsWith('stale: uncommitted') ? ['Commit the change first: proof counts only from a commit'] : []),
+            ...(drive.length ? [`Capture fresh proof: ${drive.join(' && ')}`] : ['No journey needs a new run: re-run check and receipt for HEAD citing the evidence that still counts']),
+            'Then check it and record the receipt: done-done receipt --from <the PR URL or checks.md>',
+          ]),
+      // A fresh receipt does not close the gap: the feature map still misses these files.
+      ...(a.m.unmapped.length ? [`Flag the gap: ${named(a.m.unmapped)} ${a.m.unmapped.length === 1 ? 'is' : 'are'} in no feature or journey; add ${a.m.unmapped.length === 1 ? 'it' : 'them'} to the feature file that drives ${a.m.unmapped.length === 1 ? 'it' : 'them'} in ${cfg.skill}/features (done-done maintain reports what no feature covers), or record a journey: done-done init --journey <name> -- <command>`] : []),
+    ],
+  });
+  return fresh ? PASS : FAIL;
+}
+
 // Bare `done-done`: orient a new user or agent with the config state and the next step.
 function cmdBare(): number {
   let repo: string;
@@ -3572,7 +3703,21 @@ function cmdBare(): number {
   const check = '`done-done check --outcome "<what you proved>" <files it recorded>`';
   const receipt = verifyReceipt(repo, cfg, 'HEAD');
   result.receipt = receipt.code === PASS ? `valid for HEAD ${String(receipt.result.head).slice(0, 12)}` : receipt.result.reason ?? receipt.result.result;
-  result.help = receipt.code === PASS
+  // The journeys this change still needs (done-done affected), so a session hook shows them with no extra call.
+  let needs: string[] = [];
+  try {
+    const a = affectedOf(repo, cfg);
+    if (a.proof !== 'fresh') {
+      needs = a.missing;
+      result.affected = { proof: a.proof, needs };
+    }
+  } catch (e) {
+    result.affected = `not read: ${((e as { stderr?: string }).stderr || (e as Error).message).trim()}`;
+  }
+  const runs = needs.filter((n) => !n.startsWith('feature ')).map((n) => `done-done run ${n}`);
+  result.help = runs.length
+    ? [`This change needs fresh proof: ${runs.join(' && ')} (done-done affected says why), then check it with ${check}`]
+    : receipt.code === PASS
     ? [`HEAD has a valid receipt for "${receipt.result.claim}"; prove the next commit with done-done verify --outcome "<what a user can now do>"`]
     : journeys.length
     ? [`Capture proof with \`done-done run ${journeys[0]}\`, then check it with ${check}`]
@@ -3609,6 +3754,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'look') return await cmdLook(rest);
     if (cmd === 'lint') return cmdLint(rest);
     if (cmd === 'gate') return cmdGate(rest);
+    if (cmd === 'affected') return cmdAffected(rest);
     if (cmd === 'status') return cmdStatus(rest);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);
