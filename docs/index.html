@@ -3,87 +3,116 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>done-done: no proof, no "done"</title>
-<meta name="description" content="done-done won't accept &quot;done&quot; without real, fresh proof from your product, captured at the exact commit being called done.">
-<meta property="og:title" content="done-done">
-<meta property="og:description" content="No proof, no &quot;done&quot;.">
+<title>done-done — prove your app really works</title>
+<meta name="description" content="Prove your app really works before you call it done. A command-line check of real screenshots, recordings and output, for developers using coding agents.">
+<meta property="og:title" content="done-done — prove your app really works">
+<meta property="og:description" content="Tests pass. Your agent says done. The app is still broken. Ask for proof from the product.">
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <meta name="theme-color" content="#F5F5F7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <style>
-  /* The same Spacious tokens as sign-off's page: grey grouped page and white tiles by day, black and #161617 by night. */
-  :root { color-scheme: light dark; --page: #F5F5F7; --tile: #FFFFFF; --sunk: #E8E8ED; --line: #D2D2D7; --text: #1D1D1F; --muted: #6E6E73; --accent: #0066CC; --action: #0071E3; --code: #1D1D1F; --code-text: #F5F5F7; }
-  @media (prefers-color-scheme: dark) { :root { --page: #000000; --tile: #161617; --sunk: #2C2C2E; --line: #424245; --text: #F5F5F7; --muted: #86868B; --accent: #2997FF; --code: #161617; --code-text: #F5F5F7; } }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; }
-  body { margin: 0; background: var(--page); color: var(--text); overflow-wrap: anywhere; -webkit-font-smoothing: antialiased;
-    font: 1.0625rem/1.4706 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif; letter-spacing: -0.022em; }
-  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
-  :focus-visible { outline: 3px solid var(--action); outline-offset: 2px; border-radius: 0.5rem; }
-  img, picture { display: block; max-width: 100%; height: auto; }
-  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; }
-  .wrap { max-width: 68rem; margin: 0 auto; padding: 0 max(1.25rem, env(safe-area-inset-left)) 0 max(1.25rem, env(safe-area-inset-right)); }
-  nav { display: flex; align-items: center; gap: 1rem; padding: 1.25rem 0; }
-  nav .brand { display: flex; align-items: center; gap: 0.625rem; font-weight: 600; color: var(--text); }
-  nav .brand img { width: 2rem; height: 2rem; border-radius: 0.5rem; }
-  nav .links { margin-left: auto; display: flex; gap: 1.25rem; font-size: 0.9375rem; }
-  nav .links a.gh { display: none; }
-  h1 { font-size: clamp(2.25rem, 7vw, 4rem); line-height: 1.05; letter-spacing: -0.03em; margin: 0 0 1rem; font-weight: 700; }
-  h2 { font-size: clamp(1.625rem, 4.5vw, 2.5rem); line-height: 1.1; letter-spacing: -0.028em; margin: 0 0 0.75rem; font-weight: 700; }
-  h3 { font-size: 1.25rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
-  p { margin: 0 0 1rem; } .lead { font-size: 1.25rem; line-height: 1.4; color: var(--muted); max-width: 38rem; }
-  section { padding: 3rem 0; }
-  .hero { padding: 2rem 0 1rem; text-align: center; } .hero .lead { margin: 0 auto 1.5rem; }
-  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-bottom: 2.5rem; }
-  .btn { display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 1.375rem; border-radius: 999px; background: var(--action); color: #fff; font-weight: 600; }
-  .btn:hover { text-decoration: none; filter: brightness(1.08); }
-  .btn.quiet { background: var(--sunk); color: var(--text); }
-  .shot { border-radius: 1rem; border: 1px solid var(--line); overflow: hidden; background: var(--tile); }
-  .hero .shot { max-width: 44rem; margin: 0 auto; }
-  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr; }
-  .tile { background: var(--tile); border-radius: 1.25rem; padding: 1.5rem; }
-  .step { counter-increment: step; } .step::before { content: counter(step); display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: var(--action); color: #fff; font-weight: 600; font-size: 0.9375rem; margin-bottom: 0.75rem; }
-  .steps { counter-reset: step; }
-  pre { margin: 0.5rem 0 0; padding: 0.75rem 1rem; border-radius: 0.75rem; background: var(--code); color: var(--code-text); overflow-x: auto; font: 0.875rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; white-space: pre; }
-  .tile p.note { margin: 0.75rem 0 0; color: var(--muted); }
-  .figs { display: grid; gap: 1rem; grid-template-columns: 1fr; }
-  .figs figure { margin: 0; } .figs figcaption { margin-top: 0.5rem; font-size: 0.9375rem; color: var(--muted); } .figs b { color: var(--text); display: block; }
-  .figs .shot { background: transparent; }
-  ul.plain { padding-left: 1.25rem; margin: 0 0 1rem; } ul.plain li { margin-bottom: 0.5rem; }
-  .sibs { display: grid; gap: 1rem; grid-template-columns: 1fr; }
-  .tile p.what { margin: 0; color: var(--muted); }
-  footer { padding: 2.5rem 0 3rem; color: var(--muted); font-size: 0.9375rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; }
-  @media (min-width: 48rem) {
-    nav .links a.gh { display: inline; }
-    .grid.three { grid-template-columns: repeat(3, 1fr); } .figs { grid-template-columns: repeat(2, 1fr); }
-    .sibs { grid-template-columns: repeat(2, 1fr); } section { padding: 4.5rem 0; }
+  :root { color-scheme: light dark; --page:#fafbfe; --tile:#fff; --sunk:#eceef7; --line:#dadde9; --text:#1b2031; --muted:#555e73; --accent:#4846c9; --action:#4846c9; --code:#11131c; --code-text:#eef0fb; }
+  @media (prefers-color-scheme:dark) { :root { --page:#0d1017; --tile:#151a25; --sunk:#232a3c; --line:#30384b; --text:#eff1fa; --muted:#a7b0c7; --accent:#b2b0ff; --action:#b2b0ff; } }
+  * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+  body { margin:0; background:var(--page); color:var(--text); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; overflow-wrap:anywhere; }
+  a { color:var(--accent); text-underline-offset:3px; } a:hover { text-decoration-thickness:2px; }
+  :focus-visible { outline:3px solid var(--accent); outline-offset:5px; }
+  .skip { position:absolute; left:1rem; top:-5rem; background:var(--tile); padding:1rem; z-index:2; } .skip:focus { top:1rem; }
+  img,picture { display:block; max-width:100%; height:auto; }
+  .wrap { max-width:1000px; margin:auto; padding:0 max(20px,env(safe-area-inset-left)) 0 max(20px,env(safe-area-inset-right)); }
+  nav { display:flex; align-items:center; gap:1rem; min-height:72px; border-bottom:1px solid var(--line); }
+  nav a { text-decoration:none; }
+  .brand { display:flex; align-items:center; gap:10px; color:var(--text); font-size:18px; font-weight:650; }
+  .brand img { width:28px; height:28px; }
+  .links { margin-left:auto; display:flex; gap:24px; font-size:14px; }
+  h1,h2,h3 { line-height:1.12; letter-spacing:-.035em; text-wrap:balance; }
+  h1 { max-width:960px; font-size:clamp(36px,5.3vw,68px); margin:0 auto 16px; font-weight:650; }
+  h2 { max-width:680px; font-size:clamp(26px,3.5vw,36px); margin:0 0 20px; font-weight:650; }
+  h3 { font-size:20px; margin:10px 0 12px; }
+  p { margin:0 0 16px; max-width:760px; }
+  .hero { padding:48px 0 40px; text-align:center; }
+  .definition { color:var(--muted); font-size:18px; margin:0 auto 8px; }
+  .audience { font-weight:600; font-size:15px; margin:0 auto 4px; }
+  .problem { color:var(--muted); font-size:16px; margin:0 auto 20px; }
+  .actions { display:flex; justify-content:center; align-items:center; gap:12px; margin:0 0 24px; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:0 20px; background:var(--action); color:var(--page); border:1px solid var(--action); border-radius:9px; font-weight:600; font-size:14px; text-decoration:none; }
+  .btn.quiet { background:transparent; color:var(--text); border-color:var(--line); }
+  .actions .github { font-size:14px; }
+  .start { max-width:720px; margin:auto; }
+  figure { margin:0 auto 16px; max-width:560px; }
+  .quickstart .eyebrow { margin-bottom:6px; }
+  .quickstart pre { max-width:560px; margin:0 auto 12px; text-align:left; }
+  .shot { border:1px solid #393b4c; border-radius:12px; overflow:hidden; background:#11131c; }
+  figcaption { font-size:12px; color:var(--muted); margin-top:8px; line-height:1.4; }
+  .eyebrow { display:block; color:var(--accent); font-size:11px; font-weight:700; letter-spacing:.07em; margin:0 0 10px; }
+  code { font: .9em ui-monospace,SFMono-Regular,Consolas,monospace; }
+  pre { margin:0 0 16px; padding:16px; background:var(--code); color:var(--code-text); border:1px solid #393b4c; border-radius:10px; overflow:auto; font:13px/1.65 ui-monospace,monospace; }
+  pre code { font:inherit; }
+  section { padding:48px 0; border-top:1px solid var(--line); }
+  .lead { max-width:760px; color:var(--muted); font-size:18px; }
+  .grid,.sibs { display:grid; gap:16px; margin:24px 0; }
+  .grid.three { grid-template-columns:repeat(3,1fr); }
+  .tile { padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--tile); }
+  .tile p { margin:0; color:var(--muted); font-size:15px; }
+  .sibs { grid-template-columns:repeat(2,1fr); }
+  .plain { padding-left:20px; max-width:800px; } .plain li { margin:0 0 12px; }
+  .note { color:var(--muted); font-size:14px; }
+  footer { border-top:1px solid var(--line); display:flex; flex-wrap:wrap; gap:12px 24px; padding:28px 0; color:var(--muted); font-size:13px; }
+  @media (max-width:720px) {
+    nav { min-height:60px; } .links { gap:18px; } .links .gh,.links a:last-child { display:none; }
+    .hero { padding:24px 0; } h1 { font-size:36px; line-height:1.08; margin-bottom:12px; }
+    .definition { font-size:14px; line-height:1.4; } .audience { font-size:13px; }
+    .problem { font-size:14px; line-height:1.4; margin-bottom:14px; }
+    .actions { gap:10px; margin-bottom:16px; } .btn { font-size:12px; min-height:40px; padding:0 12px; } .actions .github { font-size:12px; }
+    figure { max-width:360px; } figcaption { font-size:11px; margin-top:6px; }
+    .quickstart { max-width:400px; margin:auto; } .eyebrow { margin-bottom:6px; }
+    pre { padding:12px; font-size:12px; margin-bottom:12px; }
+    section { padding:32px 0; } .grid.three,.sibs { grid-template-columns:1fr; }
   }
-  @media (min-width: 64rem) { .sibs { grid-template-columns: repeat(4, 1fr); } }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <div class="wrap">
   <nav aria-label="Main">
     <a class="brand" href="./"><img src="logo.svg" alt="" width="32" height="32">done-done</a>
     <div class="links"><a href="#install">Install</a><a href="#see">See it work</a><a class="gh" href="https://github.com/umeranjum17/done-done-axi">GitHub</a><a href="https://www.npmjs.com/package/done-done-axi">npm</a></div>
   </nav>
 
+  <main id="main">
   <header class="hero">
-    <h1>No proof, no &ldquo;done&rdquo;.</h1>
-    <p class="lead">done-done won't accept &ldquo;done&rdquo; without real, fresh proof from your product, captured at the exact commit being called done.</p>
-    <div class="actions"><a class="btn" href="#install">Install in 3 steps</a><a class="btn quiet" href="#see">See it work</a></div>
-    <div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/flow-dark.svg"><img src="media/flow-light.svg" width="710" height="270" alt="How it works: capture your real app, tie every file to the exact commit, then check: pass with exit 0 or fail with exit 1."></picture></div>
+    <h1>Prove your app really works.</h1>
+    <p class="definition">A command-line check of real screenshots, recordings and output.</p>
+    <p class="audience">For developers using coding agents.</p>
+    <p class="problem">Tests pass. Your agent says &ldquo;done&rdquo;. The app is still broken.</p>
+    <div class="actions"><a class="btn" href="#install">Install in 3 steps</a><a class="btn quiet" href="#see">See it work</a><a class="github" href="https://github.com/umeranjum17/done-done-axi">GitHub ↗</a></div>
+    <div class="start">
+      <figure id="see">
+        <div class="shot"><img src="media/demo.png" width="800" height="460" alt="Real sample app: Release checklist shows Capture the real app checked and Done. The actual claude-haiku-5-5 judge passes that screenshot at sample commit 08d635e46a98."></div>
+        <figcaption>Real sample app · live judge · captured commit</figcaption>
+      </figure>
+      <div id="install" class="quickstart">
+        <p class="eyebrow">START HERE · NODE 22.18+ + GIT</p>
+        <pre><code>npm install -g done-done-axi
+cd your-app &amp;&amp; done-done init
+done-done doctor</code></pre>
+      </div>
+    </div>
   </header>
 
-  <section id="install">
-    <h2>Install in 3 steps</h2>
-    <p class="lead">From npm, with Node 22.18 or newer and git.</p>
-    <div class="grid three steps">
-      <div class="tile step"><h3>Install</h3><pre>npm install -g done-done-axi</pre><p class="note">Puts <code>done-done</code> on your PATH.</p></div>
-      <div class="tile step"><h3>Set up your repo</h3><pre>cd your-app &amp;&amp; done-done init</pre><p class="note">Writes a minimal <code>.done-done.yaml</code> and asks which coding agent and which judge to use. It never picks either for you.</p></div>
-      <div class="tile step"><h3>Check the setup</h3><pre>done-done doctor</pre><p class="note">Changes nothing and names each missing piece with the command that fixes it.</p></div>
+  <section class="setup">
+    <h2>How it works</h2>
+    <div class="grid three">
+      <div class="tile"><span class="eyebrow">01 / CAPTURE</span><h3>Drive the real product.</h3><p>Your agent follows the recipe and saves screenshots or output, tied to the exact commit.</p></div>
+      <div class="tile"><span class="eyebrow">02 / CHECK</span><h3>Show the claim is true.</h3><p>A fresh judge reads each capture. Wrong output fails; uncertainty never becomes a pass.</p></div>
+      <div class="tile"><span class="eyebrow">03 / KEEP</span><h3>Save a receipt.</h3><p>A pass records the commit and file hashes. No judge pass, no receipt.</p></div>
     </div>
-    <p style="margin-top:1rem;color:var(--muted)">Then prove something: <code>done-done verify --outcome "&lt;what a user can now do&gt;"</code>. Or give your agent the skill with <code>npx skills add umeranjum17/done-done-axi --skill done-done -a &lt;agent&gt; -y</code> and ask &ldquo;is this really done?&rdquo;</p>
+    <p><code>init</code> asks which coding agent and which judge to use, then writes your repo&rsquo;s setup and a capture recipe. You choose both agents and models. <code>doctor</code> checks setup, not the product: it names missing pieces and how to fix them.</p>
+    <p>Review and commit the recipe and verify skill, then describe what a user should be able to do:</p>
+    <pre><code>done-done verify --outcome "&lt;what a user can now do&gt;"</code></pre>
+    <p class="note">Bring your own signed-in agent or API key. Captures go to the judge&rsquo;s provider on your plan or key. Need no-sudo installation, non-interactive flags or a manual capture? Read the <a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/manual-cli.md">manual walkthrough</a>.</p>
+    <p>Prefer to ask your agent &ldquo;is this really done?&rdquo; Install the <a href="https://github.com/umeranjum17/done-done-axi#use-it-from-your-agent">agent skill</a>: <code>npx skills add umeranjum17/done-done-axi --skill done-done -a &lt;agent&gt; -y</code>.</p>
   </section>
 
   <section>
@@ -92,15 +121,9 @@
     <p class="lead" style="margin-top:-0.25rem">done-done runs your capture and ties every screenshot, recording and log it saves to the exact commit. When someone says &ldquo;done&rdquo;, it checks the proof they point to: is it really there, is it a real picture or video, is it from this commit, and is it new? If not, the check fails. If it can't tell, it says so instead of passing.</p>
   </section>
 
-  <section id="see">
-    <h2>See it work</h2>
-    <p class="lead">Four moments from a demo notes app. Every picture is real output from the current build; the demo's judge is a stub, so no model runs.</p>
-    <div class="figs">
-      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/run-dark.svg"><img src="media/run-light.svg" width="505" height="478" loading="lazy" alt="done-done run sync records one screenshot for the current commit."></picture></div><figcaption><b>Record a run</b>One screenshot, tied to the current commit.</figcaption></figure>
-      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/pass-dark.svg"><img src="media/pass-light.svg" width="505" height="838" loading="lazy" alt="A Checks block cites the new screenshot, the judge passes it, and done-done check passes."></picture></div><figcaption><b>Fresh proof passes</b>The judge sees the right screen; the check exits 0.</figcaption></figure>
-      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/reasons-dark.svg"><img src="media/reasons-light.svg" width="505" height="406" loading="lazy" alt="done-done check fails: one screenshot is from an older commit, one file is empty, one is a blank frame."></picture></div><figcaption><b>Weak proof is blocked</b>Older commit, empty file, blank frame: each named.</figcaption></figure>
-      <figure><div class="shot"><picture><source media="(prefers-color-scheme: dark)" srcset="media/config-dark.svg"><img src="media/config-light.svg" width="505" height="166" loading="lazy" alt="done-done run stops with exit 2 because the config has an unknown key."></picture></div><figcaption><b>Mistakes stop early</b>A config typo exits 2 before anything runs.</figcaption></figure>
-    </div>
+  <section>
+    <h2>No proof, no &ldquo;done&rdquo;.</h2>
+    <p>Want to see what passes and what stops? The <a href="https://github.com/umeranjum17/done-done-axi#see-it-work">worked demo</a> shows recording, a judged pass, stale or empty evidence, blank frames and a config typo. Its judge is a disclosed stub, not a live model. The first-screen capture above is different: a real browser-app screenshot and its live <code>claude-haiku-5-5</code> verdict, tied to the displayed sample-app commit.</p>
   </section>
 
   <section>
@@ -122,7 +145,7 @@
 
   <section>
     <h2>Alone, and with the other tools</h2>
-    <p class="lead">done-done works on its own: the CLI and the skill need nothing else. It is one of four tools that each do one job and connect through small written contracts. Neither needs the others.</p>
+    <p class="lead">done-done works on its own: neither the CLI nor the skill needs another tool in this family. Each tool does one job and connects through small written contracts.</p>
     <div class="sibs">
       <div class="tile"><h3>done-done</h3><p class="what">Verification. This page.</p></div>
       <div class="tile"><h3><a href="https://www.npmjs.com/package/sign-off-axi">sign-off</a></h3><p class="what">The board where agents ask you questions. <code>done-done signoff</code> writes a run's gate or evidence in its format; it never posts.</p></div>
@@ -131,13 +154,14 @@
     </div>
   </section>
 
-  <section>
+  <section id="firstmate">
     <h2>Inside Firstmate, or outside</h2>
     <p class="lead">done-done behaves the same with or without <a href="https://github.com/kunchenguid/firstmate">Firstmate</a>. Nothing here is needed to use it.</p>
-    <p class="lead">Inside a Firstmate home, <code>integrations/firstmate/</code> ships a brief include that tells each worker to run a journey, write a <code>## Checks</code> block, pass <code>check</code> and record a <code>receipt</code>, and an optional merge gate that refuses a merge without it. A lone agent in a terminal skips all of that.</p>
+    <p class="lead">Inside a Firstmate home, <code>integrations/firstmate/</code> ships a brief include that tells each worker to run a journey, write a <code>## Checks</code> block, pass <code>check</code> and record a <code>receipt</code>, and an optional merge gate that refuses a merge without it. A lone agent in a terminal skips all of that. Upstream Firstmate does not call the merge gate yet; run it by hand if you want it to enforce the check. <a href="https://github.com/umeranjum17/done-done-axi#use-with-firstmate-or-another-agent-fleet">Integration instructions</a>.</p>
   </section>
 
-  <footer><span>done-done · Apache-2.0</span><a href="https://github.com/umeranjum17/done-done-axi">GitHub</a><a href="https://www.npmjs.com/package/done-done-axi">npm</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/reference.md">Reference</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/VISION.md">Vision</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/example-cli.md">Worked example</a></footer>
+  </main>
+  <footer><span>done-done · Apache-2.0 · early preview</span><a href="https://github.com/umeranjum17/done-done-axi">GitHub</a><a href="https://www.npmjs.com/package/done-done-axi">npm</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/reference.md">Reference</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/VISION.md">Vision</a><a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/example-cli.md">Worked example</a></footer>
 </div>
 </body>
 </html>
