@@ -1,0 +1,14 @@
+{
+  "name": "pocket-notes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A tiny notes web app: add a note and see it in the list.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}

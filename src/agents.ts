@@ -51,6 +51,24 @@ function errorLine(text: string): string {
 }
 // A provider's rate limit (HTTP 429, a usage limit with its reset time). The CLI may retry it for many minutes, so the call stops at the first line that says so.
 const RATE_LIMIT = /\b429\b|rate[ -]?limit|usage limit|too many requests/i;
+// A JSON event line (pi --mode json) that mentions a limit: the readable text inside it, not the event. The first string
+// that says so, and the provider's own message when that string is `429: {"message":"..."}`; any other line as it is.
+const limitText = (line: string) => {
+  const found = (v: unknown): string | undefined => {
+    if (typeof v === 'string') return RATE_LIMIT.test(v) ? v : undefined;
+    if (v && typeof v === 'object') for (const x of Object.values(v)) { const f = found(x); if (f) return f; }
+  };
+  let text: string | undefined;
+  try {
+    text = found(JSON.parse(line));
+  } catch {}
+  const body = text?.match(/^\d+: (\{.*\})$/s)?.[1];
+  try {
+    return (body && JSON.parse(body).message) || text || line;
+  } catch {
+    return text ?? line;
+  }
+};
 const isRejectedRateLimit = (l: string) => {
   try {
     const e = JSON.parse(l);
@@ -407,6 +425,7 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
         line = text.slice(0, end).split('\n').find(isRejectedRateLimit);
       } else {
         line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+        if (line) line = limitText(line);
       }
       if (!line || error) return;
       error = new Error(`${c.agent} hit a rate limit and stopped: ${line.trim().slice(0, 200)}`);

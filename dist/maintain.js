@@ -76,6 +76,9 @@ const localTarget = (t) => (/^[a-z][\w+.-]*:/i.test(t) ? '' : t.split('#')[0]);
 // of the tracked files', so host:port text is never read as a citation.
 // ponytail: a file name after a / may open with one bracket or paren group (pages/[id].tsx); [[...rest]].tsx is not a citation, add when a repo cites one.
 const CITE = /(?<![\w/.-])((?:(?:[\w.-]+|\([\w.-]+\)|\[[\w.-]+\])\/)*(?:[\w-][\w.-]*|(?<=\/)(?:\[[\w.-]+\]|\([\w.-]+\))[\w.-]*)\.[A-Za-z]\w*):(\d+)(?:-(\d+))?\b/g;
+// A file name in running text, with or without a line: a repo path or a bare name with an extension. Only the names that
+// citedFiles finds among the tracked files count, so ordinary words and URLs are ignored.
+const NAMED = /(?<![\w/.:-])(?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z]\w*(?![\w/-])/g;
 // Whether the file at `p` really lies under the repo: a symlinked folder on the way to it is followed, so it counts by where it points.
 const realInside = (repo, p) => realpathSync(p).startsWith(`${realpathSync(repo)}${sep}`);
 // Why repo-relative `file` has no line `line` (through `end`), or '' when it has.
@@ -265,8 +268,11 @@ async function pass(run, dir, cfg, h, prefix = '') {
         const left = new Set();
         let total = 0;
         let capped = false;
-        for (const m of cites(text)) {
-            for (const p of citedFiles(repo, tracked, m[1])) {
+        // Files the feature file cites with a line, then files it only names (`public/index.html`, init writes no line numbers).
+        // The skill's own files are never source.
+        const names = [...cites(text).map((m) => m[1]), ...(text.match(NAMED) ?? [])];
+        for (const name of names) {
+            for (const p of citedFiles(repo, tracked, name).filter((p) => !p.startsWith(`${rel(skill)}/`))) {
                 if (seen.has(p) || left.has(p))
                     continue;
                 if (capped) {
@@ -322,21 +328,32 @@ async function pass(run, dir, cfg, h, prefix = '') {
                 add({ kind: 'coverage', file: rel(file), what: 'the feature entry is not a readable file, so no reader covers it' });
             return undefined;
         });
-        return text === undefined ? [] : [{ name, text }];
+        return text === undefined ? [] : [{ name, text, file }];
     });
+    // SKILL.md states the launch and readiness check, which drift like a feature does (a renamed health route): it is read too,
+    // but only when it names tracked source (a skill that names none has nothing to compare), and after the features.
+    const main = join(skill, 'SKILL.md');
+    const mainText = agentBlock || regular.length >= MAX_CALLS - 1 ? undefined : tryRead(main, undefined, () => (lstatSync(main).isFile() ? readFileSync(main, 'utf8') : undefined));
+    const skillRel = `${rel(skill)}/`;
+    if (mainText && [...cites(mainText).map((m) => m[1]), ...(mainText.match(NAMED) ?? [])].some((n) => citedFiles(repo, tracked, n).some((p) => !p.startsWith(skillRel))))
+        regular.push({ name: 'SKILL.md', text: mainText, file: main });
     const readers = [];
-    for (const { name, text } of regular) {
-        const file = join(featDir, name);
+    for (const { name, text, file } of regular) {
         if (text.length > FEATURE_CHARS)
             add({ kind: 'truncated', file: rel(file), what: `the reader saw only the first ${FEATURE_CHARS} characters of this feature file` });
+        const source = toolless ? citedSource(rel(file), text.slice(0, FEATURE_CHARS)) : '';
+        // A reader with no tools and no source can only call the feature right: that is not a clean pass.
+        if (toolless && !source)
+            add({ kind: 'coverage', file: rel(file), what: 'names no tracked source file, so the reader had no source to compare it with; name the files it comes from (path or path:line)' });
         const prompt = `You are a read-only source reader for done-done maintain. Do not edit, create or delete any file, and do not run the app or any command.
 ${toolless ? 'You have no tools: the source that the feature file cites is below, each line after its line number, and it is all you can read.' : 'The repository is your working directory.'} Below is one feature file from the verification skill at ${cfg.skill} (app ${cfg.app}).
 ${toolless ? 'Use the cited source, not the skill, and explain' : "Read the product's source code, not the skill, and explain"} how this user-facing feature works today.
 - drift: each statement in the feature file that the source contradicts or no longer supports, each {claim: the feature file's words, why: what the source does instead, file, line: the source location that shows it}. Empty when the file is right.
+Statements about done-done itself (its instance block, DONE_DONE_* variables, the evidence folder, maintain) are not the product's behavior: never report them as drift.
 - recipe: one short recipe to verify the feature live, the way a user reaches it.
 
 Feature file ${rel(file)}:
-${text.slice(0, FEATURE_CHARS)}${toolless ? citedSource(rel(file), text.slice(0, FEATURE_CHARS)) : ''}`;
+${text.slice(0, FEATURE_CHARS)}${source}`;
         const a = await askAgent({ ...agent, prompt, schema: READER_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record: record(`reader-${name.replace(/\.md$/, '')}`) });
         if (!a.ok)
             add({ kind: 'coverage', file: rel(file), what: `the reader did not answer: ${a.error}` });
