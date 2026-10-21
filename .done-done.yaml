@@ -12,6 +12,8 @@ journeys:
     command: node journeys/lint-journey-warn.mjs
   lint-generated:
     command: node journeys/lint-generated.mjs
+  create-maintain:
+    command: node journeys/create-maintain.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode
