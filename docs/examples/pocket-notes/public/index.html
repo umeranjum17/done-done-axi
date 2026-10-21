@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pocket Notes</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 0; background: #f6f5f1; color: #222; }
+  main { max-width: 420px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; padding: 10px; font: inherit; border: 1px solid #bbb; border-radius: 6px; }
+  button { padding: 10px 14px; font: inherit; border: 0; border-radius: 6px; background: #1d6b4f; color: #fff; }
+  ul { list-style: none; padding: 0; margin: 16px 0 0; }
+  li { background: #fff; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pocket Notes</h1>
+  <form id="add"><input id="text" placeholder="Write a note" autocomplete="off"><button type="submit">Add note</button></form>
+  <ul id="notes"></ul>
+</main>
+<script>
+  const list = document.getElementById('notes');
+  async function refresh() {
+    const notes = await (await fetch('/api/notes')).json();
+    list.innerHTML = '';
+    for (const n of notes) {
+      const li = document.createElement('li');
+      li.textContent = n.text;
+      list.append(li);
+    }
+  }
+  document.getElementById('add').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('text');
+    await fetch('/api/notes', { method: 'POST', body: JSON.stringify({ text: input.value }) });
+    input.value = '';
+    refresh();
+  });
+  refresh();
+</script>
+</body>
+</html>

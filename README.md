@@ -155,6 +155,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 - [Vision](VISION.md): the three-tool family, the rules they share, and where done-done goes next.
 - [Worked example: a CLI project](docs/example-cli.md): set up, one journey, check and receipt on a command-line tool.
+- [Worked example: create and maintain a verify skill](docs/example-create-maintain.md): init writes the skill, a source change makes it drift, maintain fixes it, then a real browser journey is judged.
 - [Full reference](docs/reference.md): every command and option, the Checks block rules, each file check, and both config files.
 - [Report a problem or ask a question](https://github.com/umeranjum17/done-done-axi/issues)
 

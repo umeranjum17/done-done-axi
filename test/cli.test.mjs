@@ -5061,6 +5061,12 @@ if (${JSON.stringify(mode)} === 'limit') {
   process.stderr.write('Error: 429 weekly usage limit reached, resets at 2026-10-18T00:00:00Z\\n');
   setInterval(() => process.stderr.write('retrying in 60s\\n'), 1000);
 }
+// limitjson: pi --mode json, a limit inside an event line, which keeps retrying.
+if (${JSON.stringify(mode)} === 'limitjson') {
+  const msg = JSON.stringify({ message: "You've reached your weekly usage limit for your plan. Your limit resets at 2026-10-21T11:49:59Z.", code: 'RATE_LIMITED' });
+  console.log(JSON.stringify({ type: 'message_start', message: { role: 'assistant', content: [], usage: { input: 0, cacheRead: 0 }, stopReason: 'error', errorMessage: '429: ' + msg } }));
+  setInterval(() => {}, 1000);
+}
 if (${JSON.stringify(mode)} === 'hang' || ${JSON.stringify(mode)} === 'silent') {
   process.stderr.write('Warning: Extension package pi-hermes-memory failed to load\\n');
   if (${JSON.stringify(mode)} === 'silent') process.exit(0);
@@ -5169,6 +5175,17 @@ test('pi is asked again when its answer is not valid JSON, then fails after thre
   assert.equal(capped.code, 2, capped.out);
   assert.ok(Date.now() - started2 < 20_000, 'a rate limit stops the call at once, not after its retries');
   assert.match(toon(capped).checks.find((x) => x.check === 'probe').detail, /^pi did not answer: pi hit a rate limit and stopped: Error: 429 weekly usage limit reached, resets at 2026-10-18T00:00:00Z; record /);
+});
+
+test('a rate limit inside a pi JSON event is reported as the provider\'s message and reset time, not the raw event', () => {
+  const { repo, env } = setup();
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
+  const limited = stubPiGemini(env, '{"ok":true}', 'limitjson');
+  const r = doctorIn(repo, limited.env, 'doctor', '--probe');
+  const detail = toon(r).checks.find((x) => x.check === 'probe').detail;
+  assert.match(detail, /^pi did not answer: pi hit a rate limit and stopped: You've reached your weekly usage limit for your plan\. Your limit resets at 2026-10-21T11:49:59Z\.; record /);
+  assert.doesNotMatch(detail, /message_start/);
 });
 
 test('doctor --probe asks gemini with the prompt on stdin, and reports a signed-out gemini with a sign-in fix', () => {
@@ -5585,7 +5602,9 @@ test('maintain pins the read-only reader to read tools with no user settings, MC
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
   writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
-  writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1;\n');
+  writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nSource: src/app.js\n');
   sh('add', '-A');
   sh('commit', '-qm', 'skill');
   assert.equal(doctorIn(repo, s.env, 'maintain', '--foreground').code, 0);
@@ -5707,9 +5726,58 @@ test('maintain sends a pi reader only the source its prompt shows, not a citatio
   sh('add', '-A');
   sh('commit', '-qm', 'skill');
   const r = doctorIn(repo, s.env, 'maintain', '--foreground');
-  assert.equal(r.code, 0, r.out);
+  assert.equal(r.code, 3, r.out);
   const reader = s.calls().find((c) => c.stdin.includes('Feature file'));
   assert.doesNotMatch(reader.stdin, /Cited source src\/app\.js/);
+});
+
+// init writes a feature file that names its source ("Source: `public/index.html`") with no line number. A reader with no tools
+// must still be given that file: with no source it can only answer "no drift", and maintain would end clean having read nothing.
+test('maintain gives a tool-less reader the source a feature file names without a line, and blocks when it names none', () => {
+  const { repo, env, sh } = setup();
+  const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
+  mkdirSync(join(skill, 'features'), { recursive: true });
+  mkdirSync(join(repo, 'public'), { recursive: true });
+  writeFileSync(join(repo, 'public', 'index.html'), '<button>Save note</button>\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n');
+  writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Add](add.md)\n');
+  writeFileSync(join(skill, 'features', 'add.md'), '# Add\n\nSource: `public/index.html`. Click `Add note`. Open http://127.0.0.1:4199/health.\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'skill');
+  const ok = doctorIn(repo, s.env, 'maintain', '--foreground');
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(s.calls().find((c) => c.stdin.includes('Feature file')).stdin, /Cited source public\/index\.html:\n1: <button>Save note<\/button>/);
+
+  writeFileSync(join(skill, 'features', 'add.md'), '# Add\n\nClick `Add note`.\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'skill without a source');
+  const blind = doctorIn(repo, s.env, 'maintain', '--foreground');
+  assert.equal(blind.code, 3, blind.out);
+  assert.match(toon(blind).reason, /^coverage: .*add\.md: names no tracked source file/);
+});
+
+test('maintain reads SKILL.md too when it names source, so a stale launch or readiness claim is drift', () => {
+  const { repo, env, sh } = setup();
+  const s = stubPiGemini(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
+  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: pi\n${judgeYaml(env)}`);
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
+  mkdirSync(join(skill, 'features'), { recursive: true });
+  writeFileSync(join(repo, 'server.mjs'), "if (req.url === '/healthz') res.end('ok');\n");
+  writeFileSync(join(repo, 'app.mjs'), 'export const app = 1;\n');
+  writeFileSync(join(skill, 'SKILL.md'), '# done-done-verify-notes\n\nReady: /health returns ok (from `server.mjs`).\n');
+  writeFileSync(join(skill, 'features', 'README.md'), '# features\n\n- [Home](home.md)\n');
+  writeFileSync(join(skill, 'features', 'home.md'), '# Home\n\nSource: app.mjs\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'skill');
+  const r = doctorIn(repo, s.env, 'maintain', '--foreground');
+  assert.equal(r.code, 0, r.out);
+  const readers = s.calls().filter((c) => c.stdin.includes('Feature file'));
+  assert.equal(readers.length, 2);
+  assert.match(readers[1].stdin, /Feature file \.agents\/skills\/done-done-verify-notes\/SKILL\.md:[\s\S]*Cited source server\.mjs:\n1: if \(req\.url === '\/healthz'\)/);
 });
 
 test('maintain names at most 500 recently changed paths to reconcile and says how many it left out', () => {
