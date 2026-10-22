@@ -1,6 +1,7 @@
 // `done-done lint`: the deterministic merge gate on a worker's claim. It reads the newest "## Checks" block of a PR body
 // or report file and fails an unproven, reused or oversized claim. No judge, no model; the repo config only switches on
-// the two optional size rules (checks.upstream_catch_up, checks.moved_from) and extra generated paths (checks.generated_paths).
+// the two optional size rules (checks.upstream_catch_up, checks.moved_from) and extra generated paths (checks.generated_paths);
+// files the target repo marks generated in .gitattributes are not counted either.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -8,6 +9,26 @@ import { basename, dirname, isAbsolute, join, matchesGlob, resolve } from 'node:
 // Third-party, legal text and committed build output are not reviewable code.
 const GENERATED = /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.sum|[^/]*\.lock)$|(^|\/)vendor\/|(^|\/)dist\/|(^|\/)(LICENSE|LICENSES|NOTICE|COPYING)[^/]*$/;
 const generatedBy = (globs = []) => (p) => GENERATED.test(p) || globs.some((g) => matchesGlob(p, g));
+// A target repo's own .gitattributes marks generated files: linguist-generated, linguist-generated=true or -diff. The last matching line wins;
+// linguist-generated=false and an unset attribute mean not generated. A pattern with no slash matches the basename, like git.
+function attrGenerated(attrs) {
+    const rules = attrs.split('\n').map((l) => l.trim().split(/\s+/)).filter((w) => w[0] && !w[0].startsWith('#') && w.length > 1);
+    return (p) => {
+        let gen = false;
+        for (const [pat, ...as] of rules) {
+            const glob = pat.replace(/^\//, '');
+            if (!matchesGlob(glob.includes('/') ? p : basename(p), glob.endsWith('/') ? `${glob}**` : glob))
+                continue;
+            for (const a of as) {
+                if (/^(linguist-generated(=true)?|-diff)$/.test(a))
+                    gen = true;
+                else if (/^(linguist-generated=false|-linguist-generated|!linguist-generated)$/.test(a))
+                    gen = false;
+            }
+        }
+        return gen;
+    };
+}
 export const SIZE_LIMIT = 1000;
 const FIX_TITLE = /^(fix|bugfix|hotfix)\b/i;
 const NOT_APPLICABLE = /^n\/?a\b/i;
@@ -70,7 +91,8 @@ function movedLines(run, nwo, body, paths, isGenerated) {
 const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 // src: a PR URL or a report file; ev: the folder the evidence names are relative to; dir: where the hash store and log live.
 export function lint(src, ev, dir, rules = {}, run = gh) {
-    const isGenerated = generatedBy(rules.generated_paths);
+    const byConfig = generatedBy(rules.generated_paths);
+    let isGenerated = byConfig;
     let warn = ''; // set for a PR that touches src/ with no journeys/ file; it only softens a PASS
     const log = (v) => {
         if (v.ok && warn)
@@ -95,6 +117,12 @@ export function lint(src, ev, dir, rules = {}, run = gh) {
         const author = pr.author?.login ?? '';
         if (/^(app\/)?(dependabot|renovate)(\[bot\])?$/.test(author))
             return log({ ok: true, why: 'bot', head });
+        const nwo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//.exec(src)?.[1];
+        const attrs = nwo && [head, pr.baseRefOid].map((ref) => ref && run('api', '-H', 'Accept: application/vnd.github.raw', `repos/${nwo}/contents/.gitattributes?ref=${ref}`)).find((a) => a && a.status === 0);
+        if (attrs) {
+            const byAttr = attrGenerated(attrs.stdout);
+            isGenerated = (p) => byConfig(p) || byAttr(p);
+        }
         const paths = (pr.files ?? []).map((f) => f.path ?? '');
         if (paths.some((p) => p.startsWith('src/')) && !paths.some((p) => p.startsWith('journeys/')))
             warn = 'the diff changes src/ and no journeys/ file: run the journey, commit it, then open the PR';
@@ -103,7 +131,6 @@ export function lint(src, ev, dir, rules = {}, run = gh) {
             const d = run('pr', 'diff', src);
             if (!d.status) {
                 let net = netLines(d.stdout, isGenerated);
-                const nwo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//.exec(src)?.[1];
                 if (nwo && rules.upstream_catch_up && total(net) >= SIZE_LIMIT)
                     net = without(net, upstreamDelta(run, nwo, head, pr.baseRefOid ?? '', isGenerated));
                 if (nwo && rules.moved_from && total(net) >= SIZE_LIMIT)

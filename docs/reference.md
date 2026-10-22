@@ -238,6 +238,7 @@ journeys:
   - `checks.upstream_catch_up: true`: in a fork, lines the parent repo already shipped are not authored here, so lint subtracts the changes between the PR's base and the merge base with the parent's default branch. A PR that merges in no new upstream commit loses nothing.
   - `checks.moved_from: true`: a line in the PR body `moved-from: <owner>/<repo>@<ref> <dst-prefix>=<src-prefix>` (more `dst=src` pairs may follow) cancels added lines that match, byte for byte after trimming, the file at the same path under `<src-prefix>` in that repo at `<ref>`. The source repo must have the PR's owner; authored lines still count.
   - `checks.generated_paths: ["gen/**", "*.snap"]`: globs for the repo's own generated files, counted as generated beside the built-in ones above, so they stay out of the size count. Default none, so results do not change. Like the two rules above it applies to a PR URL, never a report file.
+  - `.gitattributes` in the target repo: a file it marks `linguist-generated`, `linguist-generated=true` or `-diff` is counted as generated too, with no config. `linguist-generated=false` and an unset attribute are not; the last matching line wins. `lint` reads the file at the PR head (else its base) and, like the rules above, only for a PR URL.
 
 ### Base-ref before
 

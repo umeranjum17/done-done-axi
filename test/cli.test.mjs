@@ -7234,6 +7234,7 @@ test('lint counts a big PR whole by default, and drops upstream catch-up, moved-
 case "$*" in
   "pr view"*) cat ${q('pr.json')} ;;
   "pr diff"*) cat ${q('pr.diff')} ;;
+  *"contents/.gitattributes?ref=head1") cat ${q('attrs')} ;;
   *"vnd.github.diff"*) cat ${q('up.diff')} ;;
   *"vnd.github.raw"*"contents/src/big.js?ref=main") cat ${q('src.js')} ;;
   *"compare/up:main...head1"*) echo mergebase ;;
@@ -7244,7 +7245,8 @@ esac
   env.PATH = `${bin}:${env.PATH}`;
   const url = 'https://github.com/acme/tool/pull/7';
   const base = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
-  const lintWith = (checks, movedFrom = 'moved-from: acme/lib@main lib/=src/') => {
+  const lintWith = (checks, movedFrom = 'moved-from: acme/lib@main lib/=src/', attrs = '') => {
+    writeFileSync(join(dir, 'attrs'), attrs);
     writeFileSync(join(repo, '.done-done.yaml'), base + checks);
     writeFileSync(join(dir, 'pr.json'), pr(movedFrom));
     return dd('lint', url, dir);
@@ -7258,6 +7260,9 @@ esac
   assert.match(lintWith('checks:\n  moved_from: true\n', '').out, over, 'no moved-from line cancels nothing');
   assert.deepEqual(lintWith('checks:\n  generated_paths: ["lib/**"]\n'), { code: 0, out: 'PASS\n' }, 'a repo glob makes its own generated files not count');
   assert.match(lintWith('checks:\n  generated_paths: ["gen/**"]\n').out, over, 'a glob that misses changes nothing');
+  for (const mark of ['linguist-generated', 'linguist-generated=true', '-diff']) assert.deepEqual(lintWith('', '', `lib/*.js ${mark}\n`), { code: 0, out: 'PASS\n' }, `.gitattributes ${mark} makes the file generated`);
+  assert.match(lintWith('', '', 'lib/*.js linguist-generated=false\n').out, over, 'linguist-generated=false is not generated');
+  assert.match(lintWith('', '', 'lib/*.js linguist-generated\nlib/big.js -linguist-generated\n').out, over, 'a later unset wins');
   assert.equal(lintWith('checks:\n  moved_from: yes please\n').code, 2, 'a key that is not a boolean is a config error');
 });
 
