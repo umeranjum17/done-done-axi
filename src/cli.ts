@@ -132,6 +132,8 @@ const FLAGS: Record<string, string> = {
   '--run <run-id>': 'the run to show (default: the newest run of this checkout)',
   '--probe': 'ask the configured agent one JSON-schema question and require a valid answer (one call at the agent\'s model: its cheap default where it has one, else its own; set agent_config.<agent>.model to choose)',
   '--mock <screen>=<mock>': 'judge this screen next to its approved mock (repeat per screen; the screen is judged even when not listed)',
+  '--mock <file>': 'with look: the approved design of this page (PNG or JPEG); the judge the user set compares the capture with it, as design --mock does, and a defect fails look',
+  '--act <selector>': 'with look: click the element this CSS selector names, then require the page to change what a user can read (its text, elements or address) within 5s; repeat to click several in order; look measures and captures the page they leave',
   '--step <name>': 'the step log to show (verify: resolve, drive, check, judge, gate, receipt, report; maintain: locate, hygiene, source-wave, reconcile, triage, fix, report)',
   '--feature <name>': 'with no journey, the author agent drives this feature of the verify skill (features/<name>.md); default: the only feature, else the agent picks the one the outcome is about',
   '--action <approve|skip|fix>': 'at a spend gate, approve: spend and run the journey; skip: end the run with nothing spent. At the judge gate only fix or skip: fix ends it fail, then the product or the verify skill is fixed (done-done maintain checks it against the source); skip ends it fail without the fix',
@@ -224,12 +226,14 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   passed, 1 a screen failed, 3 none failed but one is unsure`],
   },
   look: {
-    usage: [['done-done look <url> [--out <file.png>]', 'open a page in headless Chrome at a phone viewport, capture it with its page-check record, and fail on any squashed, clipped or cut-off UI']],
-    flags: ['--out <file.png>'],
-    more: [`look: one deterministic step a journey calls as its command or inside its script; no judge, no model. It measures horizontal
+    usage: [['done-done look <url> [--act <selector>]... [--mock <file>] [--out <file.png>]', 'open a page in headless Chrome at a phone viewport, click each action, capture it with its page-check record, and fail on any squashed, clipped or cut-off UI, an action that changes nothing, or a mismatch with the design']],
+    flags: ['--act <selector>', '--mock <file>', '--out <file.png>'],
+    more: [`look: one step a journey calls as its command or inside its script; with no --mock, no judge and no model. It measures horizontal
   overflow, squashed text, text clipped by its container and elements cut off by the left, right or top edge, writes the
-  screenshot and its .dom.json record, and exits 1 naming each element, kind and text, 0 when there is none. A hit always
-  fails: never wrap it in || true. Needs Chrome or Chromium (DONE_DONE_CHROME names the binary)`],
+  screenshot and its .dom.json record, and exits 1 naming each element, kind and text, 0 when there is none. Each --act is
+  clicked and must change the page. With a look block in .done-done.yaml (the approved reference: tokens, max_control) it
+  also fails on a control drawn as the browser's own and on one taller than max_control. A hit always fails: never wrap it
+  in || true. Exit 3 when the only doubt is an unsure judge. Needs Chrome or Chromium (DONE_DONE_CHROME names the binary)`],
   },
   gate: {
     usage: [['done-done gate [<head>] [--dir <folder>] [--pushed <time>]', 'no-model check for a hosted runner: PASS or FAIL: <reason> for a receipt committed under .done-done-receipts/']],
@@ -822,7 +826,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     const record = !!cfg.dom && isDomRecord(name);
     const inRoot = under(cfg.evidence.root, path);
     const pair = pairOf(inRoot);
-    if (cfg.dom && !pair && ['png', 'jpeg', 'webp', 'gif', 'mp4', 'webm'].includes(v.type)) for (const why of domIssues(cfg.dom, path)) findings.push({ level: 'fail', why: `${name}: ${why}` });
+    if (cfg.dom && !pair && ['png', 'jpeg', 'webp', 'gif', 'mp4', 'webm'].includes(v.type)) for (const why of domIssues(cfg.dom, path, cfg.look)) findings.push({ level: 'fail', why: `${name}: ${why}` });
     // A base capture may equal its head capture byte for byte: the pair's judge, not this check, says the screen did not change.
     if (seen.has(hash) && !record && !pair) findings.push({ level: 'fail', why: `${name}: byte-identical to ${seen.get(hash)}` });
     if (!pair) seen.set(hash, name);
@@ -3602,31 +3606,43 @@ async function cmdDoctor(argv: string[]): Promise<number> {
   return missingRequired.length ? USAGE : PASS;
 }
 
-// The design check: every named screen, and each --mock screen, judged for visual defects.
+// The look step: one page measured, with its actions clicked, against the project's look reference and the --mock design.
 async function cmdLook(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({ args: argv, options: { out: { type: 'string' } }, allowPositionals: true });
+  const { values, positionals } = parseArgs({ args: argv, options: { out: { type: 'string' }, mock: { type: 'string' }, act: { type: 'string', multiple: true } }, allowPositionals: true });
   if (positionals.length !== 1) throw new UsageError('look needs one page URL', 'Re-run with the page to check: done-done look <url>');
   // A path to a page on disk opens as its file:// URL.
   const url = !/^[a-z][\w+.-]*:/i.test(positionals[0]) && existsSync(positionals[0]) ? pathToFileURL(resolve(positionals[0])).href : positionals[0];
   const capture = resolve(values.out ?? join(process.env.DONE_DONE_EVIDENCE_ROOT || '.', 'look.png'));
   if (!capture.endsWith('.png')) throw new UsageError(`--out ${values.out} must be a .png file`);
+  const cfg = loadConfig(repoOrCwd());
+  // The mock and the judge are checked before Chrome starts, so a bad one costs no capture.
+  const mock = values.mock === undefined ? undefined : loadScreen(values.mock);
+  const choice = mock && (await preflightJudge(cfg, false));
   mkdirSync(dirname(capture), { recursive: true });
-  const record = await look(url, capture, 390, 844);
-  const hits = lookIssues(record);
+  const record = await look(url, capture, 390, 844, values.act ?? []);
+  const hits = lookIssues(record, cfg.look);
+  const [judged] = mock && choice ? await design(cfg, choice, [{ ...loadScreen(capture), mock }], join(home(), 'agents')) : [];
+  for (const d of judged?.defects ?? []) hits.push(`${url} differs from the approved design ${values.mock}: ${d.kind}: ${d.where}`);
+  const code = hits.length ? FAIL : judged?.verdict === 'unsure' ? INCONCLUSIVE : PASS;
   const shown = cap(hits);
+  const again = `done-done look ${[positionals[0], ...(values.act ?? []).flatMap((a) => ['--act', a]), ...(values.mock ? ['--mock', values.mock] : []), ...(values.out ? ['--out', values.out] : [])].map(quote).join(' ')}`;
   emit({
     command: 'look',
     // look measures the layout; it gives no verdict on the outcome, which only the judged check does.
-    result: hits.length ? 'fail' : 'clean',
+    result: code === FAIL ? 'fail' : code === INCONCLUSIVE ? 'inconclusive' : 'clean',
     url,
     viewport: '390x844',
     capture,
     record: domRecord(capture),
+    ...(cfg.look && { reference: { ...cfg.look, ...(values.mock && { mock: values.mock }) } }),
+    ...(judged && { judge: { route: choice!.route, model: choice!.model, verdict: judged.verdict, ...(judged.reason && { reason: judged.reason }), ...(judged.cached && { cached: true }) } }),
     hits: shown.items,
     ...(shown.omitted && { hits_omitted: shown.omitted }),
-    help: hits.length ? [`Fix each element named above so it fits the 390 px wide screen, then re-run: done-done look ${quote(positionals[0])}${values.out ? ` --out ${quote(values.out)}` : ''}`] : ['No squashed, clipped or cut-off UI on this page; look at the capture to check the rest'],
+    help: code === FAIL ? [`Fix each element or action named above so it fits the 390 px wide screen, the design and its reference, then re-run: ${again}`]
+      : code === INCONCLUSIVE ? [`The judge is unsure the page matches ${values.mock}: look at both yourself, then re-run: ${again}`]
+      : ['No squashed, clipped or cut-off UI on this page; look at the capture to check the rest'],
   });
-  return hits.length ? FAIL : PASS;
+  return code;
 }
 
 // The folder of a branch where a receipt copied from the evidence root is committed, for `gate`.
@@ -3696,6 +3712,25 @@ function cmdLint(argv: string[]): number {
   return v.ok ? PASS : FAIL;
 }
 
+// A screen or mock file for the design judge.
+function loadScreen(name: string): Capture {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(name);
+  } catch (e) {
+    throw new UsageError(`${name}: cannot read (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`, 'Pass screen and mock files that exist');
+  }
+  return { name, bytes, sha256: sha256(bytes), media: checkMedia(name, bytes) };
+}
+
+function repoOrCwd(): string {
+  try {
+    return repoRoot();
+  } catch {
+    return process.cwd();
+  }
+}
+
 async function cmdDesign(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, options: { mock: { type: 'string', multiple: true } }, allowPositionals: true });
   const mocks = new Map<string, string>();
@@ -3706,23 +3741,8 @@ async function cmdDesign(argv: string[]): Promise<number> {
   }
   const names = [...new Set([...positionals, ...[...mocks.keys()].filter((p) => !positionals.some((n) => resolve(n) === p))])];
   if (!names.length) throw new UsageError('design needs at least one screen file', 'Re-run with the screens to check: done-done design <screens...>');
-  const load = (name: string): Capture => {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(name);
-    } catch (e) {
-      throw new UsageError(`${name}: cannot read (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`, 'Pass screen and mock files that exist');
-    }
-    return { name, bytes, sha256: sha256(bytes), media: checkMedia(name, bytes) };
-  };
-  const screens = names.map((n) => ({ ...load(n), ...(mocks.has(resolve(n)) && { mock: load(mocks.get(resolve(n))!) }) }));
-  let repo: string;
-  try {
-    repo = repoRoot();
-  } catch {
-    repo = process.cwd();
-  }
-  const cfg = loadConfig(repo);
+  const screens = names.map((n) => ({ ...loadScreen(n), ...(mocks.has(resolve(n)) && { mock: loadScreen(mocks.get(resolve(n))!) }) }));
+  const cfg = loadConfig(repoOrCwd());
   const choice = await preflightJudge(cfg, false);
   const judged = await design(cfg, choice, screens, join(home(), 'agents'));
   const count = (v: string) => judged.filter((j) => j.verdict === v).length;

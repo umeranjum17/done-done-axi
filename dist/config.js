@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { checkMatrix } from './matrix.js';
-import { parseDom } from './dom.js';
+import { parseDom, parseLook } from './dom.js';
 export class UsageError extends Error {
     help;
     // The exact next command, when the error has one.
@@ -66,6 +66,7 @@ const KEYS = {
     instance: { scope: 'repo', type: 'instance' },
     matrix: { scope: 'repo', type: 'matrix' },
     dom: { scope: 'repo', type: 'dom' },
+    look: { scope: 'repo', type: 'look' },
     base_ref: { scope: 'repo', type: 'string' },
     'evidence.root': { scope: 'repo', type: 'string' },
     'evidence.allow_dirty': { scope: 'repo', type: 'boolean' },
@@ -219,6 +220,14 @@ function apply(target, text, file, scope) {
             target.dom = d;
             continue;
         }
+        if (key === 'look') {
+            const l = parseLook(value, dirname(file));
+            if (typeof l === 'string')
+                throw new UsageError(`${file}: look ${l}`);
+            target.from[key] = scope;
+            target.look = l;
+            continue;
+        }
         if (!ok)
             throw new UsageError(`${file}: ${key} must be ${want[spec.type] ?? `a ${spec.type}`}${key === 'matrix' ? `: ${checkMatrix(value)}` : ''}`);
         if (key === 'agent_config')
@@ -279,6 +288,7 @@ function defaultConfig(repo) {
         instance: null,
         matrix: null,
         dom: null,
+        look: null,
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },

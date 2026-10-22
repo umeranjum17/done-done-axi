@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- look fixture: a board card whose Request changes button is the browser's own unstyled button, and whose Approve
+     button is styled but 64 px tall, over the 44 px the tokens allow; styled.html is the same card in the design. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board</title>
+<style>
+  body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: #f4f4f6; color: #1c1c1e; }
+  header { padding: 12px 16px; background: #fff; font-weight: 600; }
+  main { padding: 16px; }
+  .card { background: #fff; border-radius: 12px; padding: 12px 16px; }
+  .card p { margin: 0 0 12px; }
+  .approve { height: 64px; padding: 0 16px; border: 0; border-radius: 10px; background: #0a66c2; color: #fff; font: inherit; }
+</style>
+</head>
+<body>
+<header>Decide</header>
+<main>
+  <section class="card">
+    <p>Umer asks: ship the new inbox?</p>
+    <button class="approve">Approve</button>
+    <button id="request">Request changes</button>
+  </section>
+</main>
+</body>
+</html>

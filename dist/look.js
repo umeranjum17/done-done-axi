@@ -3,14 +3,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UsageError } from './config.js';
-import { domRecord, LOOK, SQUASHED_TEXT } from './dom.js';
+import { AIM, CHANGED, CONTROLS, domRecord, LOOK, SQUASHED_TEXT } from './dom.js';
 import { findBin } from './agents.js';
 // done-done look: opens one page in headless Chrome at a phone viewport over the DevTools protocol (Node's own
-// WebSocket, no browser library), writes the screenshot and its page-check record next to it, and returns the record.
+// WebSocket, no browser library), clicks each action in `acts` in order (a CSS selector each) and waits for it to complete,
+// then writes the screenshot and its page-check record next to it, and returns the record.
 // Chrome runs without its sandbox so it starts in containers: point look at your own app, not untrusted sites.
 const BROWSERS = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
 const WAIT = 30_000;
-export async function look(url, capture, width, height) {
+// How long an action has to change what a user can read of the page.
+const ACT = 5_000;
+export async function look(url, capture, width, height, acts = []) {
     const bin = process.env.DONE_DONE_CHROME ? findBin(process.env.DONE_DONE_CHROME) : BROWSERS.map(findBin).find(Boolean);
     if (!bin)
         throw new UsageError(`look needs Chrome or Chromium: ${process.env.DONE_DONE_CHROME ? `DONE_DONE_CHROME=${process.env.DONE_DONE_CHROME} is not an executable` : `none of ${BROWSERS.slice(0, 4).join(', ')} is on PATH`}`, 'Install Chrome or Chromium, or set DONE_DONE_CHROME to its binary');
@@ -93,8 +96,23 @@ export async function look(url, capture, width, height) {
             throw new Error(`${url} did not load: ${nav.errorText}`);
         await loaded;
         // Web fonts change text widths, so measure once they are in and two frames have painted.
-        await evaluate('document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))');
-        const record = { url, ...(await evaluate(`(${LOOK})()`)), console_errors: consoleErrors, failed_requests: failed, squashed_text: await evaluate(`(${SQUASHED_TEXT})()`) };
+        const settle = () => evaluate('document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))');
+        await settle();
+        // Each action is a real click at its centre, so a control under a toast or overlay fails as covered.
+        const actions = [];
+        for (const selector of acts) {
+            const at = await evaluate(`(${AIM})(${JSON.stringify(selector)})`);
+            if (!at.failed) {
+                for (const type of ['mousePressed', 'mouseReleased'])
+                    await send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 });
+                if (!(await evaluate(`(${CHANGED})(${JSON.stringify(at.before)}, ${ACT})`)))
+                    at.failed = `changed nothing a user can read on the page (its text, elements or address) within ${ACT / 1000}s`;
+            }
+            actions.push({ selector, text: at.text, ...(at.failed && { failed: at.failed }) });
+        }
+        if (acts.length)
+            await evaluate('scrollTo(0, 0)').then(settle);
+        const record = { url, ...(await evaluate(`(${LOOK})()`)), console_errors: consoleErrors, failed_requests: failed, squashed_text: await evaluate(`(${SQUASHED_TEXT})()`), controls: await evaluate(`(${CONTROLS})()`), ...(acts.length && { actions }) };
         const shot = await send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(capture, Buffer.from(shot.data, 'base64'));
         writeFileSync(domRecord(capture), `${JSON.stringify(record, null, 2)}\n`);

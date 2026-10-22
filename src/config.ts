@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse } from 'yaml';
 import type { Instance } from './instance.js';
 import { checkMatrix, type Matrix } from './matrix.js';
-import { type Dom, parseDom } from './dom.js';
+import { type Dom, type LookRef, parseDom, parseLook } from './dom.js';
 import type { Secrets } from './secrets.js';
 
 export class UsageError extends Error {
@@ -33,6 +33,8 @@ export type Config = {
   matrix: Matrix | null;
   // Primitive 14 (DOM assertions): page-check records per capture, allow lists; null when unset: today's behaviour.
   dom: Dom | null;
+  // The look step's approved design reference (tokens, the tallest control); null when unset: today's behaviour.
+  look: LookRef | null;
   // Primitive 4 (base-ref-before): verify drives this ref too and pairs its captures with the head's; '' (the default) is off.
   base_ref: string;
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
@@ -88,7 +90,7 @@ export const EFFORT_FLAGS: Record<string, (level: string) => string[]> = {
 const AGENT_TIMEOUT = '30m';
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   agent_config: { scope: 'global', type: 'agent_config' },
@@ -104,6 +106,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   instance: { scope: 'repo', type: 'instance' },
   matrix: { scope: 'repo', type: 'matrix' },
   dom: { scope: 'repo', type: 'dom' },
+  look: { scope: 'repo', type: 'look' },
   base_ref: { scope: 'repo', type: 'string' },
   'evidence.root': { scope: 'repo', type: 'string' },
   'evidence.allow_dirty': { scope: 'repo', type: 'boolean' },
@@ -242,6 +245,13 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       target.dom = d;
       continue;
     }
+    if (key === 'look') {
+      const l = parseLook(value, dirname(file));
+      if (typeof l === 'string') throw new UsageError(`${file}: look ${l}`);
+      target.from[key] = scope;
+      target.look = l;
+      continue;
+    }
     if (!ok) throw new UsageError(`${file}: ${key} must be ${want[spec.type] ?? `a ${spec.type}`}${key === 'matrix' ? `: ${checkMatrix(value)}` : ''}`);
     if (key === 'agent_config')
       for (const [a, c] of Object.entries(value as Record<string, { model?: string; effort?: string }>)) {
@@ -293,6 +303,7 @@ function defaultConfig(repo: string): Config {
     instance: null,
     matrix: null,
     dom: null,
+    look: null,
     base_ref: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },

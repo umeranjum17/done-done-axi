@@ -5,10 +5,12 @@
 //    "console_errors": ["<message>", ...], "failed_requests": [{"url": "<request url>", "status": <HTTP status, 0 when none>}],
 //    "squashed_text": [{"element": "<element>", "text": "<its text, ~40 chars>", "chars": <width>, "lines": <n>, "words": <n>}],
 //    "clipped_text": [{"element": "<element>", "text": "<its text>", "by": "<the container that cuts it>"}],
-//    "cut_off": [{"element": "<element>", "text": "<its text>", "edges": ["left" | "right" | "top", ...]}]}
-// squashed_text, clipped_text and cut_off are optional, so a record written before them stays valid.
+//    "cut_off": [{"element": "<element>", "text": "<its text>", "edges": ["left" | "right" | "top", ...]}],
+//    "controls": [{"element": "<element>", "text": "<its label>", "native": <true when drawn as the browser's own control>, "height": <px, absent for a textarea or list box>}],
+//    "actions": [{"selector": "<what was clicked>", "text": "<its label>", "failed": "<why it did not complete, absent when it did>"}]}
+// squashed_text, clipped_text, cut_off, controls and actions are optional, so a record written before them stays valid.
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 // The measurement the recipe passes to its browser tool's eval, so no agent invents one: every visible element with its
 // own non-empty text is squashed when its box is under 8 characters wide (box width / the average glyph width of its
 // font) while its text is wider than the box, or when its text sits on more line boxes than it has words.
@@ -67,6 +69,39 @@ export const LOOK = `() => {
   }
   return { overflow: document.documentElement.scrollWidth > vw, overflowing: [...document.querySelectorAll('body *')].filter((e) => e.getBoundingClientRect().right > vw + 1).slice(0, 10).map(name), ...out };
 }`.replace(/\s*\n\s*/g, ' ');
+// Every visible control with its label and height, and whether it is drawn as the browser's own: its background and
+// border are what the browser gives the same control (same tag, input type and colour scheme) on a page with no styles.
+// A checkbox, radio, range, colour or file input is not measured, and a textarea or list box has no height to hold.
+export const CONTROLS = `() => {
+  const name = (e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : e.classList[0] ? '.' + e.classList[0] : '');
+  const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0'; document.documentElement.append(f);
+  const d = f.contentDocument; d.open(); d.write('<!doctype html><body>'); d.close();
+  const keys = ['backgroundColor', 'borderTopStyle', 'borderTopWidth', 'borderTopColor', 'borderTopLeftRadius']; const out = [];
+  for (const e of document.querySelectorAll('button, select, textarea, input, [role=button]')) {
+    const s = getComputedStyle(e); const r = e.getBoundingClientRect();
+    if (!e.getClientRects().length || s.visibility !== 'visible' || r.width < 1 || r.height < 1 || (e.tagName === 'INPUT' && ['checkbox', 'radio', 'range', 'color', 'file'].includes(e.type))) continue;
+    let native = false;
+    if (['BUTTON', 'SELECT', 'TEXTAREA', 'INPUT'].includes(e.tagName)) { const t = d.createElement(e.tagName); if (e.tagName === 'INPUT') t.type = e.type; t.style.colorScheme = s.colorScheme; d.body.append(t); const u = f.contentWindow.getComputedStyle(t); native = keys.every((k) => s[k] === u[k]); }
+    const tall = e.tagName === 'TEXTAREA' || (e.tagName === 'SELECT' && (e.multiple || e.size > 1));
+    out.push({ element: name(e), text: (e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || '').replace(/\\s+/g, ' ').trim().slice(0, 40), native, ...(!tall && { height: Math.round(r.height) }) });
+  }
+  f.remove(); return out;
+}`.replace(/\s*\n\s*/g, ' ');
+// What a user can read of the page: its address, how many elements it has and its visible text. An action completes when
+// this changes: a card moves, a reply shows as saved, a toast says so.
+const STATE = "(() => location.href + '\\n' + document.querySelectorAll('body *').length + '\\n' + document.body.innerText)()";
+// Where to click the action `sel` names, with its label and the page state before it, or why it cannot be clicked.
+export const AIM = `(sel) => {
+  const e = document.querySelector(sel); if (!e) return { text: '', failed: 'is not on the page' };
+  e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); const x = r.left + r.width / 2; const y = r.top + r.height / 2;
+  const text = (e.getAttribute('aria-label') || e.innerText || e.value || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+  if (e.disabled || e.getAttribute('aria-disabled') === 'true') return { text, failed: 'is disabled' };
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || (hit !== e && !e.contains(hit))) return { text, failed: 'is covered by ' + (hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : hit.classList[0] ? '.' + hit.classList[0] : '') : 'nothing that takes a click') };
+  return { text, x, y, before: ${STATE} };
+}`.replace(/\s*\n\s*/g, ' ');
+// Whether the page state differs from `before` within `ms`, checked each 50 ms.
+export const CHANGED = `async (before, ms) => { for (let t = 0; t <= ms; t += 50) { if (${STATE} !== before) return true; await new Promise((r) => setTimeout(r, 50)); } return false; }`;
 const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const strings = (a) => Array.isArray(a) && a.every((s) => typeof s === 'string');
 // An optional record list: absent, or every item has an element and text and passes `more`.
@@ -100,8 +135,41 @@ export function parseDom(v) {
         return 'fail_on_overflow must be true or false';
     return { allow_console: v.allow_console ?? [], allow_requests: v.allow_requests ?? [], fail_on_overflow: v.fail_on_overflow ?? true };
 }
+// The look block read from config in `repo`, or the reason it is not one. max_control is a number of px, or the name of
+// a custom property in the tokens file (--ctl-h: 2.75rem), read as px with a rem or em of 16 px.
+export function parseLook(v, repo) {
+    if (v == null)
+        v = {};
+    if (!isMap(v))
+        return 'a mapping with optional tokens and max_control';
+    for (const k of Object.keys(v))
+        if (!['tokens', 'max_control'].includes(k))
+            return `unknown key ${k} (tokens, max_control)`;
+    const { tokens, max_control: max } = v;
+    if (tokens !== undefined && (typeof tokens !== 'string' || !tokens))
+        return 'tokens must be the path of the design tokens file';
+    if (typeof max === 'number')
+        return max > 0 ? { ...(tokens && { tokens }), max_control: max } : 'max_control must be more than 0 px';
+    if (max === undefined)
+        return tokens ? { tokens } : {};
+    if (typeof max !== 'string' || !/^--[\w-]+$/.test(max))
+        return 'max_control must be a number of px or the name of a token such as --ctl-h';
+    if (!tokens)
+        return `max_control ${max} names a token, so tokens must name the file that sets it`;
+    let text;
+    try {
+        text = readFileSync(resolve(repo, tokens), 'utf8');
+    }
+    catch (e) {
+        return `tokens ${tokens} does not read: ${e.code ?? e.message}`;
+    }
+    const m = new RegExp(`(?<![\\w-])${max}\\s*:\\s*([\\d.]+)(px|rem|em)\\s*[;}]`).exec(text);
+    if (!m)
+        return `max_control ${max} is not set in ${tokens} as a px, rem or em size`;
+    return { tokens, max_control: Number(m[1]) * (m[2] === 'px' ? 1 : 16) };
+}
 // Every non-allowed issue the capture's page-check record shows; a missing or malformed record is an issue too.
-export function domIssues(dom, capture) {
+export function domIssues(dom, capture, ref) {
     const path = domRecord(capture);
     let r;
     try {
@@ -114,22 +182,28 @@ export function domIssues(dom, capture) {
     if (!isMap(r) || typeof r.url !== 'string' || typeof r.overflow !== 'boolean' || !strings(r.overflowing ?? []) || !strings(r.console_errors)
         || !Array.isArray(r.failed_requests) || !r.failed_requests.every((q) => isMap(q) && typeof q.url === 'string' && typeof q.status === 'number')
         || !list(r.squashed_text, (q) => [q.chars, q.lines, q.words].every((n) => typeof n === 'number'))
-        || !list(r.clipped_text, (q) => typeof q.by === 'string') || !list(r.cut_off, (q) => strings(q.edges)))
-        return [`page-check record ${basename(path)} is not {url, overflow, overflowing, console_errors, failed_requests: [{url, status}], squashed_text: [{element, text, chars, lines, words}], clipped_text: [{element, text, by}], cut_off: [{element, text, edges}]}`];
+        || !list(r.clipped_text, (q) => typeof q.by === 'string') || !list(r.cut_off, (q) => strings(q.edges))
+        || !list(r.controls, (q) => typeof q.native === 'boolean' && ['number', 'undefined'].includes(typeof q.height))
+        || !(r.actions === undefined || (Array.isArray(r.actions) && r.actions.every((q) => isMap(q) && typeof q.selector === 'string' && typeof q.text === 'string' && ['string', 'undefined'].includes(typeof q.failed)))))
+        return [`page-check record ${basename(path)} is not {url, overflow, overflowing, console_errors, failed_requests: [{url, status}], squashed_text: [{element, text, chars, lines, words}], clipped_text: [{element, text, by}], cut_off: [{element, text, edges}], controls: [{element, text, native, height}], actions: [{selector, text, failed}]}`];
     const allowed = (list, s) => list.some((re) => new RegExp(re).test(s));
     return [
-        ...lookIssues({ ...r, overflow: dom.fail_on_overflow && r.overflow }),
+        ...lookIssues({ ...r, overflow: dom.fail_on_overflow && r.overflow }, ref),
         ...r.console_errors.filter((m) => !allowed(dom.allow_console, m)).map((m) => `${r.url} console error: ${m}`),
         ...r.failed_requests.filter((q) => (q.status === 0 || q.status >= 400) && !allowed(dom.allow_requests, q.url)).map((q) => `${r.url} request failed (${q.status || 'no response'}): ${q.url}`),
     ];
 }
-// The look defects a page-check record shows: horizontal overflow, squashed, clipped and cut-off text or elements.
-export function lookIssues(r) {
+// The look defects a page-check record shows: horizontal overflow, squashed, clipped and cut-off text or elements, and an
+// action that did not complete; against a reference, also a control drawn as the browser's own or taller than max_control.
+export function lookIssues(r, ref) {
     const quoted = (t) => (t ? ` "${t}"` : '');
     return [
         ...(r.overflow ? [`${r.url} overflows the viewport horizontally${r.overflowing?.length ? ` (${r.overflowing.join(', ')})` : ''}`] : []),
         ...(r.squashed_text ?? []).map((q) => `${r.url} squashed text: ${q.element} "${q.text}" is ${q.chars} characters wide (lines ${q.lines}, words ${q.words})`),
         ...(r.clipped_text ?? []).map((q) => `${r.url} clipped text: ${q.element}${quoted(q.text)} is cut by ${q.by}`),
         ...(r.cut_off ?? []).map((q) => `${r.url} cut off: ${q.element}${quoted(q.text)} runs past the ${q.edges.join(' and ')} edge of the viewport`),
+        ...(ref ? r.controls ?? [] : []).filter((q) => q.native).map((q) => `${r.url} unstyled control: ${q.element}${quoted(q.text)} is drawn as the browser's own control, not with the design's style`),
+        ...(ref?.max_control ? r.controls ?? [] : []).filter((q) => q.height > ref.max_control + 0.5).map((q) => `${r.url} oversized control: ${q.element}${quoted(q.text)} is ${q.height} px tall, over the ${ref.max_control} px the design allows`),
+        ...(r.actions ?? []).filter((q) => q.failed).map((q) => `${r.url} action did not complete: ${q.selector}${quoted(q.text)} ${q.failed}`),
     ];
 }

@@ -63,7 +63,11 @@ its findings and captures, and end it with \`done-done respond --action fix\` on
 A journey that \`spends\` runs only after the user approves spending: \`done-done run <journey>\` refuses it, so ask the user and use \`verify\`.
 
 For a web page, \`done-done look <url>\` is the look step a journey calls: it captures the page at a 390x844 phone viewport
-with its page-check record and exits 1 on squashed, clipped or cut-off UI, naming each element. A hit fails the journey;
+with its page-check record and exits 1 on squashed, clipped or cut-off UI, naming each element. \`--act <selector>\` clicks a
+control and fails when the page does not change (a card moves, a reply saves, a toast shows): a button that is only there
+is not proof it works. A \`look\` block in \`.done-done.yaml\` (\`tokens\`, \`max_control\`) is the approved reference: look
+then fails on a control drawn as the browser's own or taller than \`max_control\`, and \`--mock <file>\` has the judge compare
+the page with its approved mock. A hit fails the journey;
 never wrap it in \`|| true\` or log the exit and go on. A claim that a phone UI works needs a 390 px capture of the real
 page and the page's scroll-container count as proof: a mock, a different width or a claim with no count is not proof. A journey in \`.done-done.yaml\` that calls it:
 
