@@ -177,18 +177,23 @@ done-done never drives the browser: the recipe or journey writes one page-check 
 {"url": "http://127.0.0.1:4100/", "overflow": true, "overflowing": ["div#wide"], "console_errors": ["boom"], "failed_requests": [{"url": "http://127.0.0.1:4100/x.js", "status": 404}],
  "squashed_text": [{"element": "h3.card-title", "text": "Approved", "chars": 1.6, "lines": 8, "words": 1}],
  "clipped_text": [{"element": "h3.card-title", "text": "Answered: the release notes are approved", "by": "its own box"}],
- "cut_off": [{"element": "div.clock", "text": "12:30", "edges": ["top"]}]}
+ "cut_off": [{"element": "div.clock", "text": "12:30", "edges": ["top"]}],
+ "controls": [{"element": "button#request", "text": "Request changes", "native": true, "height": 21}],
+ "actions": [{"selector": "#request", "text": "Request changes", "failed": "changed nothing a user can read on the page (its text, elements or address) within 5s"}]}
 ```
+
+`controls` and `actions` are optional too; [`done-done look`](#look-check) writes `controls` on every page and `actions` when it clicks one. With a [`look` block](#look-check), the check fails on each control in `controls` drawn as the browser's own, and on one taller than `max_control`; it fails on each `actions` item with a `failed` reason with or without one. A recipe that drives its own browser runs done-done's `CONTROLS` measurement (exported from `dom.js` next to `LOOK`) for `controls`, and `AIM` and `CHANGED` around each click for `actions`.
 
 With your browser tool, for example chrome-devtools-axi: `overflow` and `overflowing` from `eval` (document `scrollWidth` beyond `clientWidth`, and the elements whose right edge passes it), `console_errors` from `console --type error`, `failed_requests` (status 400 or more, or 0 for no response) from `network`, `squashed_text` from `eval` of done-done's measurement function, run in each frame of the page (an embedded frame too). It lists every visible HTML element with its own text (SVG text has no layout box and is skipped; widths are untransformed layout pixels, so a scaled ancestor does not shrink them) whose box is under 8 characters wide (its width over the average glyph width of its font) while its text is wider than the box, or whose text sits on more lines (distinct line boxes) than it has words: a title wrapped one letter per line in a narrow column. `squashed_text`, `clipped_text` and `cut_off` are optional, so a record written without them stays valid; [`done-done look`](#look-check) writes all of them, and the check fails on each `clipped_text` and `cut_off` item as it does on `squashed_text`. The agent drive prompt carries the recipe, and a verify skill should carry it too. Verify's check and `done-done check` fail naming the capture and each issue not on an allow list, and fail when a capture has no record or a record is not this shape. No `dom` block keeps today's behaviour.
 
 ### Look check
 
-`done-done look` is the look step a journey calls on a web page. It opens the page in headless Chrome at a 390x844 phone viewport (a mobile device at 1x scale), measures the look defects in the DOM, writes the screenshot with its page-check record next to it, and exits 1 on any hit, naming the element, the kind and its text. It is a measurement step, not a verdict: with no hit it ends `result: clean` (exit 0), never `pass`, and its capture is judged when a `check` or `verify` cites it. No model runs here, so the same page gives the same answer. A worker's claim that a phone UI works needs this 390 px capture of the real page, plus the page's scroll-container count, as proof; a mock or another width is not proof.
+`done-done look` is the look step a journey calls on a web page. It opens the page in headless Chrome at a 390x844 phone viewport (a mobile device at 1x scale), clicks each `--act` and checks it completes, measures the look defects in the DOM, writes the screenshot with its page-check record next to it, and exits 1 on any hit, naming the element, the kind and its text. It is a measurement step, not a verdict: with no hit it ends `result: clean` (exit 0), never `pass`, and its capture is judged when a `check` or `verify` cites it. Without `--mock` no model runs here, so the same page gives the same answer. A worker's claim that a phone UI works needs this 390 px capture of the real page, plus the page's scroll-container count, as proof; a mock or another width is not proof.
 
 ```sh
 done-done look http://127.0.0.1:3000/inbox --out "$DONE_DONE_EVIDENCE_ROOT/inbox.png"
 done-done look ./public/inbox.html                     # a path on disk opens as its file:// URL
+done-done look "$DONE_DONE_BASE_URL/#decide" --act '#item-1 .approve' --mock design/decide.png --out "$DONE_DONE_EVIDENCE_ROOT/decide.png"
 ```
 
 A journey in `.done-done.yaml` that calls it (one command per screen, `&&` between them, so the first hit stops the journey):
@@ -211,17 +216,31 @@ journeys:
   | squashed text | done-done's [squashed-text measurement](#dom-assertions): a text block under 8 characters wide while its text does not fit, or on more lines than it has words |
   | clipped text | part of an element's text shows and part runs past a container that hides its overflow (`overflow: hidden` or `clip`), with no `text-overflow: ellipsis` (sideways) or line clamp (downwards): a card title cut to one line |
   | cut off | part of an element shows and part lies past the left, right or top edge of the viewport: a status-bar clock clipped at the top. The page is at its top, so content below the bottom edge is fine |
+  | action did not complete | an `--act <selector>` names nothing, a disabled control, or one covered where its centre is (a toast over a button), or its click changes nothing a user can read within 5 seconds: the page's visible text, its element count and its address all stay the same. A card that moves, a reply that shows as saved or a toast that says so is a change; a button that is only there is not |
+  | unstyled control | with a `look` block: a button, select, textarea or input drawn as the browser's own, its background and border the ones the browser gives the same control (same tag, input type and colour scheme) on a page with no styles. Checkbox, radio, range, colour and file inputs are not measured |
+  | oversized control | with `look.max_control`: a button, select, input or `role=button` taller than that many px. A textarea or list box is not measured |
+  | differs from the approved design | with `--mock <file>`: the [design check](#design-check)'s judge (the one the user set) names a defect on the capture next to that approved mock, the same request as `design --mock`, cached the same way |
 
   Something entirely outside its container or the viewport is hidden on purpose (a closed drawer, a visually hidden label) and is not a hit; a cut element's children are not listed again. Content in a scrolling container (`overflow: auto` or `scroll`, such as a carousel) scrolls into view and is not clipped.
-- **What it writes.** `--out <file.png>` (default `look.png` in `$DONE_DONE_EVIDENCE_ROOT` inside a journey, else in the current folder) gets the viewport screenshot, exactly the viewport size in pixels, and `<file>.dom.json` next to it the page-check record of [DOM assertions](#dom-assertions), with the page's console errors and failed requests too. look itself fails only on the four kinds above; with a `dom` block, verify's check also reads the record and applies its allow lists to console errors and failed requests.
+- **The approved reference.** A `look` block in `.done-done.yaml` is the project's approved design reference; with none, look behaves as before:
+
+  ```yaml
+  look:
+    tokens: web/tokens.css   # the approved design tokens file, relative to the repo
+    max_control: --ctl-h     # the tallest a control may be: px (44), or a token in tokens set in px, rem or em (a rem or em is 16 px)
+  ```
+
+  The block alone turns on the unstyled-control check; `max_control` adds the size check. A token that is not set in the file, a tokens file that does not read or an unknown key is a config error (exit 2). The per-page reference is its mock: pass `--mock <file>` with the approved design of that screen. The `--act` clicks are real mouse clicks at each control's centre, in order, and the page they leave is the one measured and captured, so a journey drives the page to the state to check with them.
+- **What it writes.** `--out <file.png>` (default `look.png` in `$DONE_DONE_EVIDENCE_ROOT` inside a journey, else in the current folder) gets the viewport screenshot, exactly the viewport size in pixels, and `<file>.dom.json` next to it the page-check record of [DOM assertions](#dom-assertions), with the page's console errors and failed requests too. look itself fails only on the kinds above; with a `dom` block, verify's check also reads the record and applies its allow lists to console errors and failed requests.
 - **Chrome.** look starts its own headless Chrome or Chromium (`google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on PATH, or `DONE_DONE_CHROME` naming the binary) with a throwaway profile, and removes both when it ends. It runs Chrome without its sandbox so it starts in containers, so point it at your own app, not untrusted sites. No Chrome is a usage error (exit 2) that says how to install or point to one; a page that does not load (its network error, or no load event within 30 seconds) is exit 2 with the cause.
-- **Limits.** Only the main frame is measured, not an embedded frame; a transform or `clip-path` that hides part of a box is not seen; nothing is clicked or scrolled first, so drive the page to the state to check (a URL per state) before you call look. Look at the capture too: a defect the DOM cannot see (a stretched image, a colour) is the [design check](#design-check)'s.
+- **Limits.** Only the main frame is measured, not an embedded frame; a transform or `clip-path` that hides part of a box is not seen; nothing is scrolled first, and only `--act` clicks; drive any other state (typing, a URL per state) before you call look. Look at the capture too: a defect the DOM cannot see (a stretched image, a colour) is the [design check](#design-check)'s.
 
 | Result | Exit |
 |---|---|
 | no hit | 0 |
 | a hit of any kind | 1 |
-| bad flags, no Chrome, or the page did not load | 2 |
+| bad flags, a bad `look` block, no Chrome, the page did not load, or `--mock` with no judge set | 2 |
+| no hit, but the `--mock` judge is unsure | 3 |
 
 ### Lint check
 
@@ -653,6 +672,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `instance` | none; the app under test started per run, see [Run-instance harness](#run-instance-harness) |
 | `matrix` | none, so each journey runs once; `theme`, `width`, `form` and `skip` set the [capture matrix](#capture-matrix) |
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |
+| `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |
 | `base_ref` | none; a ref `verify` also drives, pairing its captures with the head's, see [Base-ref before](#base-ref-before) |
 | `evidence.root` | `<local_root>/<app>`, outside the repo. A relative path is under the repo; an absolute path is used as-is |

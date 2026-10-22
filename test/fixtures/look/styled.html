@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- look fixture: a board card in the design, every control 40 px tall. Approve moves the card from Decide to Answered
+     and says so; Request changes has no handler, so a click on it changes nothing. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board</title>
+<style>
+  body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: #f4f4f6; color: #1c1c1e; }
+  header { padding: 12px 16px; background: #fff; font-weight: 600; }
+  main { padding: 16px; }
+  h2 { margin: 0 0 8px; font-size: 15px; color: #636366; }
+  ul { list-style: none; margin: 0 0 16px; padding: 0; min-height: 24px; }
+  .card { background: #fff; border-radius: 12px; padding: 12px 16px; }
+  .card p { margin: 0; }
+  .card p + button { margin-top: 12px; }
+  button { height: 40px; padding: 0 16px; border: 1px solid #0a66c2; border-radius: 10px; background: #fff; color: #0a66c2; font: inherit; }
+  button.primary { background: #0a66c2; color: #fff; }
+  #toast { position: fixed; left: 16px; right: 16px; bottom: 16px; padding: 12px 16px; border-radius: 10px; background: #1c1c1e; color: #fff; }
+</style>
+</head>
+<body>
+<header>Board</header>
+<main>
+  <h2>Decide</h2>
+  <ul id="decide">
+    <li class="card" id="card">
+      <p>Umer asks: ship the new inbox?</p>
+      <button class="primary" id="approve">Approve</button>
+      <button id="request">Request changes</button>
+    </li>
+  </ul>
+  <h2>Answered</h2>
+  <ul id="answered"></ul>
+</main>
+<div id="toast" hidden></div>
+<script>
+  document.getElementById('approve').addEventListener('click', () => {
+    const card = document.getElementById('card');
+    card.querySelectorAll('button').forEach((b) => b.remove());
+    document.getElementById('answered').append(card);
+    const toast = document.getElementById('toast');
+    toast.textContent = 'Approved: moved to Answered';
+    toast.hidden = false;
+  });
+</script>
+</body>
+</html>

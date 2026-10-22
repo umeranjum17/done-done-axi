@@ -65,7 +65,10 @@ try {
   // step here starts. The look journeys call the look step on a phone screen with a clipped card title and on the same
   // screen fixed.
   // The committed recipe names the CLI and the fixture pages through env, so it holds no path of this checkout.
-  const look = (page) => `node "\${DONE_DONE_TEST_CLI:?}" look "\${DONE_DONE_LOOK_FIXTURES:?}/${page}.html" --out "$DONE_DONE_EVIDENCE_ROOT/${page}.png"`;
+  const look = (page, name = page, act = '') => `node "\${DONE_DONE_TEST_CLI:?}" look "\${DONE_DONE_LOOK_FIXTURES:?}/${page}.html"${act && ` --act '${act}'`} --out "$DONE_DONE_EVIDENCE_ROOT/${name}.png"`;
+  // The fixture's look reference: its tokens allow a control 2.75rem (44 px) tall. native.html has the browser's own button
+  // and a 64 px one; styled.html is in the design, and its Approve moves the card where Request changes does nothing.
+  const looks = [['clipped'], ['fixed'], ['native'], ['styled', 'approve', '#approve'], ['styled', 'request', '#request']];
   const stub = (name, body) => (writeFileSync(join(tmp, name), `#!${process.execPath}\n${body}\n`, { mode: 0o755 }), join(tmp, name));
   // The coverage lists every judge reply carries: this one-part outcome names no part, so both are empty.
   const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'It shows the outcome.', personReason: 'It shows the outcome.', parts: [], covers: [] } });
@@ -73,7 +76,8 @@ try {
   const agent = stub('agent-opencode', 'process.exit(1);');
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: stub/agent }\njudge:\n  route: answerer:gemini\n  model: stub-judge\nagent_path_override: { opencode: ${JSON.stringify(agent)}, gemini: ${JSON.stringify(judge)} }\n`);
-  writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\njourneys:\n  shots:\n    command: node make-shots.mjs \${RUN_ID}\n    core: true\n${['clipped', 'fixed'].map((p) => `  look-${p}:\n    command: ${JSON.stringify(look(p))}\n`).join('')}`);
+  writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\nlook:\n  tokens: tokens.css\n  max_control: --ctl-h\njourneys:\n  shots:\n    command: node make-shots.mjs \${RUN_ID}\n    core: true\n${looks.map(([p, n = p, a]) => `  look-${n}:\n    command: ${JSON.stringify(look(p, n, a))}\n`).join('')}`);
+  copyFileSync(join(REPO, 'test', 'fixtures', 'look', 'tokens.css'), join(repo, 'tokens.css'));
   // The screen is committed beside the recipe and named relative to it, so the fixture holds no absolute path.
   writeFileSync(join(repo, 'screen.png'), png(3));
   // The step record a journey writes beside its captures: target version, start state, user steps and the result a user sees.
@@ -198,6 +202,15 @@ try {
   assert.deepEqual(clipped.record.clipped_text.map((q) => q.element), ['h3.card-title']);
   const fixed = lookRun('fixed', 0);
   assert.deepEqual([fixed.record.clipped_text, fixed.record.cut_off, fixed.record.squashed_text, fixed.record.overflow], [[], [], [], false]);
+  // Against the reference, the browser's own button and one over the token size fail; the page in the design passes.
+  const native = lookRun('native', 1);
+  assert.match(native.out, /unstyled control: button#request \\?"Request changes\\?" is drawn as the browser's own control/);
+  assert.match(native.out, /oversized control: button\.approve \\?"Approve\\?" is 64 px tall, over the 44 px the design allows/);
+  // An action must complete: Approve moves the card and says so; Request changes is there but does nothing, so it fails.
+  const approve = lookRun('approve', 0);
+  assert.deepEqual([approve.record.actions, approve.record.controls.filter((c) => c.native)], [[{ selector: '#approve', text: 'Approve' }], []]);
+  const request = lookRun('request', 1);
+  assert.match(request.out, /action did not complete: #request \\?"Request changes\\?" changed nothing a user can read on the page/);
 
   // The lint gate: a real claim passes; a claim naming a file that is not there fails with exit 1.
   const lintDir = join(tmp, 'lint');
@@ -303,13 +316,13 @@ esac
   copyFileSync(shot, join(OUT, `${RUN_ID}.home.png`));
   writeFileSync(join(OUT, `${RUN_ID}.real-product.log`), realProduct.join('\n') + '\n');
   writeFileSync(join(OUT, `${RUN_ID}.affected.log`), affectedLog.join('\n') + '\n');
-  for (const [page, r] of [['clipped', clipped], ['fixed', fixed]]) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
+  for (const [page, r] of Object.entries({ clipped, fixed, native, approve, request })) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
   // The step record of this run, beside its captures: what a user does with the built CLI and what the fixture shows at the end.
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version },
     start: 'the built done-done CLI and a fresh fixture repo with no run, receipt or evidence',
-    steps: ['init a repo and record its journeys', 'run the core journey and check its capture', 'record a receipt and gate on it', 'refuse code-only proof', 'look at a clipped and a fixed screen', 'lint a PR claim'],
-    result: 'the fixture home screen is checked and receipted, code-only proof is refused, and the clipped screen fails look where the fixed one passes',
+    steps: ['init a repo and record its journeys', 'run the core journey and check its capture', 'record a receipt and gate on it', 'refuse code-only proof', 'look at a clipped and a fixed screen', 'look at a board against its design reference and click its actions', 'lint a PR claim'],
+    result: 'the fixture home screen is checked and receipted, code-only proof is refused, the clipped screen fails look where the fixed one passes, the board with a native and an oversized button fails its reference, and an action that changes nothing fails where one that moves the card passes',
   }));
   const names = readdirSync(OUT).sort();
   say(`evidence: ${names.join(', ')}`);

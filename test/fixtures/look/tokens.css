@@ -1,0 +1,2 @@
+/* look fixture: the approved design tokens a fixture repo names as its look reference; a control is at most --ctl-h tall. */
+:root { --surface: #ffffff; --accent: #0a66c2; --r-ctl: 0.625rem; --ctl-h: 2.75rem; }
