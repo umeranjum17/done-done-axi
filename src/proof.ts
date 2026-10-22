@@ -121,7 +121,7 @@ export function stepRecordFault(s: unknown): string | null {
 
 // The run behind a capture, as a receipt records it: command null for a run opened by hand or driven by an agent.
 // feature: the verify skill feature an agent drove. tool: the done-done version that recorded the run; a run without it is older than step records.
-export type CaptureRun = { run_id: string; journey: string | null; command: string | null; tool?: string; steps?: StepRecord; steps_error?: string; feature?: string };
+export type CaptureRun = { run_id: string; journey: string | null; command: string | null; tool?: string; steps?: StepRecord; steps_error?: string; feature?: string; commit?: string };
 
 // Why these capture runs are no real-product evidence (none recorded, or every one code-only), or null.
 export function runsFault(runs: CaptureRun[] | undefined): string | null {
