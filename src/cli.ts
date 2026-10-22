@@ -787,6 +787,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const captures: Capture[] = [];
   // The run behind each cited capture, for the real-product rule and the receipt.
   const runs = new Map<string, CaptureRun>();
+  const warnings: string[] = [];
   // base_ref: a capture in <run id>/before/ of a run that drove its base ref pairs with <run id>/<the same name>.
   const pairOf = (inRoot: string | null) => {
     const [id, dir, ...rest] = inRoot?.split(sep) ?? [];
@@ -852,7 +853,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
       continue;
     }
     const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
-    runs.set(rec.run_id, { run_id: rec.run_id, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }), ...(rec.tool && { tool: rec.tool }), ...(rec.steps && { steps: rec.steps }), ...(rec.steps_error && { steps_error: rec.steps_error }) });
+    runs.set(rec.run_id, { run_id: rec.run_id, commit: rec.commit, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }), ...(rec.tool && { tool: rec.tool }), ...(rec.steps && { steps: rec.steps }), ...(rec.steps_error && { steps_error: rec.steps_error }) });
     // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
     const c: Capture = { name, bytes, sha256: hash, media: v };
     if (v.status === 'ok' && !record && pair) befores.set(pair, c);
@@ -860,7 +861,9 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
       captures.push(c);
       if (rec.base) heads.push([c, inRoot, rec]);
     }
-    const stale = staleness(repo, cfg, rec.commit, now.commit);
+    const kept: string[] = [];
+    const stale = staleness(repo, cfg, rec.commit, now.commit, rec, kept);
+    for (const w of kept) if (!warnings.includes(w)) warnings.push(w);
     if (stale) findings.push({ level: 'fail', why: `${name}: ${stale} (run ${rec.run_id})` });
     if (rec.dirty && !cfg.evidence.allow_dirty) findings.push({ level: 'fail', why: `${name}: captured from a tree with uncommitted changes (run ${rec.run_id}); commit them, then capture again` });
     if (rec.exit !== null && rec.exit !== 0) findings.push({ level: 'fail', why: `${name}: its run command exited ${rec.exit} (run ${rec.run_id})` });
@@ -879,7 +882,6 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const codeRuns = runs.size ? runsFault([...runs.values()]) : null;
   if (codeRuns) findings.push({ level: 'fail', why: codeRuns });
   // The user steps behind the captures: a cited real run needs a step record covering the claim. Runs from before step records warn.
-  const warnings: string[] = [];
   if (claim && runs.size && !codeRuns) {
     const s = stepsFault([...runs.values()], claim.outcome);
     if (s.fault) findings.push({ level: 'fail', why: s.fault });
@@ -1086,7 +1088,7 @@ function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: numb
 }
 
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
-function staleness(repo: string, cfg: Config, from: string, to: string): string {
+function staleness(repo: string, cfg: Config, from: string, to: string, run?: RunRecord, warnings: string[] = []): string {
   if (from === to) return '';
   let changed: string[];
   try {
@@ -1096,6 +1098,19 @@ function staleness(repo: string, cfg: Config, from: string, to: string): string 
   }
   const outside = changed.filter((p) => !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g)));
   if (changed.length && !outside.length) return '';
+  // A head change that touches no journey or feature the run covered leaves its proof valid; both commits are reported.
+  const needs = outside.filter((p) => !p.startsWith(`${GATE_DIR}/`));
+  if (run && (run.journey || run.feature) && needs.length) {
+    const m = mapDiff(repo, cfg, needs, git(repo, 'ls-files', '-z').split('\0').filter(Boolean));
+    if (!m.journeys.some((j) => j.name === run.journey) && !m.features.some((f) => f.name === run.feature)) {
+      warnings.push(`run ${run.run_id} is for commit ${from.slice(0, 12)} and HEAD is ${to.slice(0, 12)}: its ${run.journey ? `journey ${run.journey}` : `feature ${run.feature}`} is untouched by the ${needs.length} changed file${needs.length === 1 ? '' : 's'} (done-done affected)`);
+      return '';
+    }
+  }
+  if (run && changed.length && !needs.length) {
+    warnings.push(`run ${run.run_id} is for commit ${from.slice(0, 12)} and HEAD is ${to.slice(0, 12)}: only gate receipts changed`);
+    return '';
+  }
   return `evidence is for commit ${from.slice(0, 12)}, HEAD is ${to.slice(0, 12)}${outside.length ? ` (changed: ${outside.slice(0, 3).join(', ')}${outside.length > 3 ? ', ...' : ''})` : ''}`;
 }
 
@@ -3789,6 +3804,14 @@ function defaultBranch(repo: string): string {
 
 const isAncestor = (repo: string, a: string, b: string) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: repo, stdio: 'ignore' }).status === 0;
 
+// The journeys and features `changed` needs (src/affected.ts), from the verify skill at the working tree.
+function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[], noBase?: string) {
+  const featDir = join(repo, cfg.skill, 'features');
+  const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
+  const coreLine = featureMap(repo, cfg).split('\n').find((l) => /^\s*[-*] /.test(l) && l.includes(MARK.core));
+  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase });
+}
+
 // Which journeys the change needs (src/affected.ts) and whether HEAD's proof covers them. The change is read from `baseArg`,
 // else from the newest receipt before HEAD (the commits since the last proof), else from the merge base with the default
 // branch; with none, the mapping is uncertain and the core journey is needed.
@@ -3818,10 +3841,7 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
   // Untracked files are no part of the change until added, as everywhere else in done-done.
   const uncommitted = list('diff', '--name-only', '--no-renames', '-z', 'HEAD').filter(counts);
   const changed = [...new Set([...(base ? list('diff', '--name-only', '--no-renames', '-z', base.commit, 'HEAD').filter(counts) : []), ...uncommitted])];
-  const featDir = join(repo, cfg.skill, 'features');
-  const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
-  const coreLine = featureMap(repo, cfg).split('\n').find((l) => /^\s*[-*] /.test(l) && l.includes(MARK.core));
-  const m = mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase: base ? undefined : 'no receipt before HEAD and no default branch to diff against' });
+  const m = mapDiff(repo, cfg, changed, tracked, base ? undefined : 'no receipt before HEAD and no default branch to diff against');
   const needed = [...m.journeys.map((j) => j.name), ...m.features.map((f) => `feature ${f.name}`)];
   // Proof: a valid receipt for HEAD whose runs include every journey and feature the change needs, with nothing uncommitted.
   const verified = verifyReceipt(repo, cfg, 'HEAD');

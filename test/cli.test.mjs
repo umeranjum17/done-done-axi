@@ -7396,3 +7396,27 @@ test('gate vouches for a committed receipt with no judge, config or evidence, an
   clone();
   assert.match(gate().out, /does not name its own head/, 'a receipt filed under another head');
 });
+
+test('a sealed proof survives a head change that touches no journey it covered, and records both commits; a change to the journey still fails as stale', () => {
+  const { repo, sh, dd, head, shots } = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n  other:\n    command: node other.mjs ${RUN_ID}\n    core: true\n');
+  writeFileSync(join(repo, 'other.mjs'), '// the core journey\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'add the other journey');
+  const { files } = shots();
+  const sealed = head();
+  const checks = join(repo, '..', 'checks.md');
+  writeFileSync(checks, `## Checks\noutcome: home and settings render\nrepro: n/a: no bug\nproof: no verify skill - \`done-done run shots\`\nevidence: ${files.join(', ')}\n`);
+  writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
+  sh('commit', '-qam', 'change code no journey runs');
+  const held = dd('check', '--from', checks);
+  assert.equal(held.code, 0, held.out);
+  assert.match(held.out, new RegExp(`is for commit ${sealed.slice(0, 12)} and HEAD is ${head().slice(0, 12)}: its journey shots is untouched`), 'the result records both commits');
+  const receipt = dd('receipt', '--from', checks);
+  assert.equal(receipt.code, 0, receipt.out);
+  assert.equal(JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'receipts', `${head()}.json`), 'utf8')).runs[0].commit, sealed, 'the receipt keeps the run commit beside its own head');
+  writeFileSync(join(repo, 'make-shots.mjs'), `${readFileSync(join(repo, 'make-shots.mjs'), 'utf8')}// changed\n`);
+  sh('commit', '-qam', 'change the journey');
+  const stale = dd('check', '--from', checks);
+  assert.equal(stale.code, 2, stale.out);
+  assert.match(stale.out, /evidence is for commit/);
+});
