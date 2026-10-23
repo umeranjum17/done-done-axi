@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
 import jpeg from 'jpeg-js';
-import { parse } from 'yaml';
+import { parse, parseDocument } from 'yaml';
 import { decode } from '@toon-format/toon';
 import { SQUASHED_TEXT } from '../dist/dom.js';
 
@@ -1487,14 +1487,14 @@ const keepSkill = (repo, app) => {
   writeFileSync(join(repo, '.agents', 'skills', `done-done-verify-${app}`, 'SKILL.md'), `# done-done-verify-${app}\n`);
 };
 
-test('journey add generates reviewable recipes, runs the app, and replays without an agent', () => {
+test('journey add and enhance generate reviewable recipes, run the app, and replay without an agent', () => {
   const { repo, env, sh } = setup('app: notes\n');
   delete env.CI;
   const skill = join(repo, '.agents/skills/done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
   writeFileSync(join(skill, 'SKILL.md'), '# Notes CLI\n');
   writeFileSync(join(skill, 'features/README.md'), '# Features\n');
-  writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello Umer");\n');
+  writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello " + (process.argv[2] ?? "Umer"));\n');
   sh('add', '-A'); sh('commit', '-qm', 'fixture app');
   const script = `import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -1506,7 +1506,7 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out);
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: {version: '1'}, start: 'fresh CLI', steps: ['run the greeting command'], result: out }));
 `;
   const answer = { name: 'greet-umer', title: 'Greet Umer', source: 'app.mjs', script, checks: 'Greeting equals Hello Umer.', spends: '', blocker: '' };
-  const s = stubAgents(env, JSON.stringify(answer));
+  let s = stubAgents(env, JSON.stringify(answer));
   const run = (extra, ...args) => spawnSync(process.execPath, [CLI, ...args, '--json'], { cwd: repo, env: { ...s.env, PATH: `${s.env.PATH}:${process.env.PATH}`, ...extra }, encoding: 'utf8' });
   const add = (...args) => run({}, 'journey', 'add', ...args);
   const r = add('greet Umer');
@@ -1533,10 +1533,79 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stri
   assert.equal(run({ CI: 'true' }, 'journey', 'add', 'greet Umer').status, 2);
   const before = sh('status', '--porcelain').toString();
   assert.equal(before, '', 'refusals leave the project unchanged');
-  writeFileSync(join(repo, 'app.mjs'), 'console.log("Wrong greeting");\n');
+  const enhance = (...args) => run({}, 'journey', 'enhance', ...args);
+  const calls = s.calls().length;
+  assert.equal(enhance('missing').status, 2);
+  assert.equal(run({ CI: 'true' }, 'journey', 'enhance', answer.name).status, 2);
+  writeFileSync(global, '');
+  assert.equal(enhance(answer.name).status, 2, 'enhance never selects an agent');
+  writeFileSync(global, configured);
+  assert.equal(s.calls().length, calls, 'refusals never generate');
+  const doc = parseDocument(readFileSync(join(repo, '.done-done.yaml'), 'utf8'));
+  doc.setIn(['journeys', answer.name, 'core'], true);
+  doc.setIn(['journeys', answer.name, 'timeout'], '45s');
+  doc.setIn(['journeys', 'other'], { command: 'node app.mjs Other' });
+  writeFileSync(join(repo, '.done-done.yaml'), doc.toString());
+  sh('commit', '-qam', 'Keep journey roles and sibling');
+  const deeper = script.replace("writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out);", `const edge = execFileSync(process.execPath, ['app.mjs', ''], { encoding: 'utf8' });
+assert.equal(edge, 'Hello \\n');
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + edge);`);
+  const focus = 'also check an empty name';
+  s = stubAgents(env, JSON.stringify({ ...answer, script: deeper, checks: 'Preserve Hello Umer and check empty name gives Hello.' }));
+  const e = enhance(answer.name, focus);
+  assert.equal(e.status, 0, e.stdout + e.stderr);
+  assert.equal(JSON.parse(e.stdout).dirty, true);
+  assert.match(e.stderr, /Enhanced journey greet-umer[\s\S]*Review these repo changes:[\s\S]*greet-umer.mjs/);
+  assert.match(s.calls()[0].stdin, /Enhance ONLY[\s\S]*also check an empty name[\s\S]*Preserve every existing drive step/);
+  assert.ok(s.calls()[0].stdin.includes(script.trim()), 'existing script reaches the generator');
+  const yaml = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
+  assert.match(yaml, /Enhanced focus: "also check an empty name"/);
+  assert.deepEqual(parse(yaml).journeys[answer.name], { command: 'node journeys/greet-umer.mjs', core: true, timeout: '45s' });
+  assert.deepEqual(parse(yaml).journeys.other, { command: 'node app.mjs Other' });
+  assert.equal(readFileSync(join(skill, 'features/README.md'), 'utf8').match(/greet-umer.md/g).length, 1);
+  const feature = readFileSync(join(skill, 'features/greet-umer.md'), 'utf8');
+  assert.match(feature, /Greeting equals Hello Umer[\s\S]*Enhanced coverage[\s\S]*empty name/);
+  sh('add', '-A'); sh('commit', '-qm', 'Enhance greeting journey');
+  writeFileSync(global, '');
+  const clean = run({ CI: 'true' }, 'run', answer.name);
+  assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+  assert.equal(JSON.parse(clean.stdout).dirty, false);
+  assert.equal(s.calls().length, 1, 'enhanced replay never generates');
+  writeFileSync(global, configured);
+  s = stubAgents(env, JSON.stringify({ ...answer, name: 'renamed' }));
+  assert.equal(enhance(answer.name).status, 2, 'enhance cannot rename');
+  assert.match(s.calls()[0].stdin, /boundary sizes and states/);
+  assert.equal(sh('status', '--porcelain').toString(), '', 'bad answer writes nothing');
+  // Spend restrictions survive even when generation returns an empty spends field.
+  writeFileSync(join(repo, '.done-done.yaml'), yaml.replace('timeout: 45s', 'timeout: 45s\n    spends: one paid call'));
+  s = stubAgents(env, JSON.stringify({ ...answer, script: deeper }));
+  const paid = enhance(answer.name, focus);
+  assert.equal(paid.status, 2, paid.stdout + paid.stderr);
+  assert.match(paid.stdout + paid.stderr, /spends \(one paid call\)/);
+  assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).journeys[answer.name].spends, 'one paid call');
+  writeFileSync(join(repo, '.done-done.yaml'), yaml);
+  // Only the newly added edge is broken: the original greeting still passes.
+  writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello " + (process.argv[2] || "Umer"));\n');
   const failure = run({}, 'run', answer.name);
   assert.equal(failure.status, 1, failure.stdout + failure.stderr);
   assert.match(failure.stderr, /AssertionError/);
+  // A hand-recorded command also gains a static recipe without touching its old source.
+  writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello " + (process.argv[2] ?? "Umer"));\n');
+  s = stubAgents(env, JSON.stringify({ ...answer, name: 'other', script: deeper }));
+  const custom = enhance('other', focus);
+  assert.equal(custom.status, 0, custom.stdout + custom.stderr);
+  assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).journeys.other.command, 'node journeys/other.mjs');
+  assert.match(readFileSync(join(skill, 'features/other.md'), 'utf8'), /Run `done-done run other`/);
+  // Reproduce the hosted producer: double-escaped source has literal backslash-n separators.
+  // Native --check failure must retain its SyntaxError, not throw on Buffer stderr.
+  s = stubAgents(env, JSON.stringify({ ...answer, name: 'bad-script', script: script.replaceAll('\n', '\\n') }));
+  const beforeInvalid = sh('diff').toString();
+  const invalid = add('a malformed recipe');
+  assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
+  assert.match(JSON.parse(invalid.stdout).error, /invalid JavaScript[\s\S]*SyntaxError/);
+  assert.doesNotMatch(invalid.stderr, /trim is not a function/);
+  assert.equal(sh('diff').toString(), beforeInvalid, 'native syntax rejection leaves config and skill untouched');
+  assert.equal(existsSync(join(repo, 'journeys/bad-script.mjs')), false);
 });
 
 test("init has the agent write the verify skill from the repo's own proof path, not the start script", () => {

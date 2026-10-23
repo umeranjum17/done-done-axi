@@ -108,7 +108,7 @@ done-done journey add "sign in then post a card from the phone"
 
 Run `init` first and commit the app's source so the generator can read it. `journey add` uses exactly your configured `agent`, model and agent settings, like init's verify scaffold; no agent is chosen for you. It supports the same read-only generators as init (claude, codex, opencode, pi and ACP; gemini reports its unsupported tool-less mode). No Firstmate installation is needed. Nothing generates or runs until you invoke the command. Generation refuses CI; run it locally instead.
 
-The agent reads the repository context and existing verify skill and returns one static Node ESM capture script with assertions, expected results and a tracked source citation. A blocker or invalid answer writes nothing. Plain code checks the citation and script syntax, preserves existing config comments and feature entries, and adds:
+The agent reads the repository context and existing verify skill and returns one static Node ESM capture script with assertions, expected results and a tracked source citation. A blocker or invalid answer writes nothing. A script syntax failure reports the native JavaScript error and generator call-record location instead of crashing while formatting stderr. Plain code checks the citation and script syntax, preserves existing config comments and feature entries, and adds:
 
 - `journeys/<name>.mjs`: drive steps, checks, actual captures and `steps.json`;
 - `.done-done.yaml`: `journeys.<name>.command: node journeys/<name>.mjs`;
@@ -116,7 +116,20 @@ The agent reads the repository context and existing verify skill and returns one
 
 An existing journey or target file is never overwritten. The skill must be inside the repo; symlinked output paths are refused. Repo changes during generation stop the write. The command prints a diff summary to stderr and immediately runs the saved journey once; stdout is the usual `run` result (also with `--json`). A failing capture/check returns nonzero and leaves the generated changes available for review. A journey declaring `spends` is saved but **not run**: use `done-done verify <name> --outcome "<claim>"` and its approval gate.
 
-The first execution is an uncommitted trial, not clean proof. Review the generated code as you would any executable code: generation is not a sandbox or a guarantee that an agent's recipe is correct or safe. Commit it, then run `done-done run <name>` again and check its captures. The saved script is instructed to use isolated state and deterministic checks, never agents or models at runtime; replay needs no configured agent. CI can execute that reviewed script without generation, a model or a key; use `gate` for committed receipt validation as described below. Enhancement or instruction-based revision of an existing journey is not part of `journey add`.
+The first execution is an uncommitted trial, not clean proof. Review the generated code as you would any executable code: generation is not a sandbox or a guarantee that an agent's recipe is correct or safe. Commit it, then run `done-done run <name>` again and check its captures. The saved script is instructed to use isolated state and deterministic checks, never agents or models at runtime; replay needs no configured agent. CI can execute that reviewed script without generation, a model or a key; use `gate` for committed receipt validation as described below. Use `journey enhance` to deepen an existing journey rather than adding another.
+
+### Enhance one existing journey
+
+```sh
+done-done journey enhance greet-umer
+done-done journey enhance greet-umer "focus on empty input, long names and error states"
+```
+
+`enhance <name> ["<focus>"]` uses the same configured generator and safety checks as `add`: local invocation only, no model in CI, no agent selection and no Firstmate requirement. The name must be an existing lowercase kebab-case journey. Without a focus it asks for more steps, edge cases, boundary sizes, states and stronger checks on that path. It supplies the current command, script and feature to the agent and instructs it to retain existing steps and assertions. Review the resulting code: this instruction is not a semantic guarantee.
+
+It writes a complete `journeys/<name>.mjs`, updates that journey's command with a reviewable focus comment in `.done-done.yaml`, and appends the focus and checks to its verify feature (creating the feature and map entry when absent). Other journeys, feature-map entries, existing feature text, role marks, timeout and spend restrictions are retained. An existing canonical script must belong exclusively to this journey; a colliding feature must already name `done-done run <name>`. Otherwise nothing is written. A renamed answer is refused, as are symlinks and invalid scripts or source citations.
+
+The diff summary and immediate dirty-tree trial work exactly as for `add`; failed assertions return nonzero with changes left for review. A spend-gated journey is saved but not executed. Review and commit, then `done-done run <name>` records clean evidence with no generation or agent needed, including in CI. Improving several journeys from an instruction is a follow-up, not this command.
 
 ### Run a journey
 

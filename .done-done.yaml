@@ -26,6 +26,8 @@ journeys:
     command: node journeys/journey-add.mjs
   shared-parts:
     command: node journeys/shared-parts.mjs
+  journey-enhance:
+    command: node journeys/journey-add.mjs --enhance
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode
