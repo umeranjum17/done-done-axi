@@ -69,7 +69,7 @@ try {
   // The fixture's look reference: its tokens allow a control 2.75rem (44 px) tall. native.html has the browser's own button
   // and a 64 px one; styled.html is in the design, and its Approve moves the card where Request changes does nothing.
   // look-mock sends native.html to the judge next to the approved mock, and the stub judge names a layout mismatch.
-  const looks = [['clipped'], ['fixed'], ['native'], ['styled', 'approve', '#approve'], ['styled', 'request', '#request'], ['native', 'mock', '', 'mock.png']];
+  const looks = [['clipped'], ['fixed'], ['ellipsis'], ['ellipsis-clips'], ['native'], ['styled', 'approve', '#approve'], ['styled', 'request', '#request'], ['native', 'mock', '', 'mock.png']];
   const stub = (name, body) => (writeFileSync(join(tmp, name), `#!${process.execPath}\n${body}\n`, { mode: 0o755 }), join(tmp, name));
   // The coverage lists every judge reply carries: this one-part outcome names no part, so both are empty.
   const answer = JSON.stringify({ relevance: { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'It shows the outcome.', personReason: 'It shows the outcome.', parts: [], covers: [] } });
@@ -207,6 +207,12 @@ try {
   assert.deepEqual(clipped.record.clipped_text.map((q) => q.element), ['h3.card-title']);
   const fixed = lookRun('fixed', 0);
   assert.deepEqual([fixed.record.clipped_text, fixed.record.cut_off, fixed.record.squashed_text, fixed.record.overflow], [[], [], [], false]);
+  // Readable single-line ellipses remain readable inside a clipping row, including nested inline text.
+  // Three complete words OR 20 visible characters suffice; short ellipses and real clips must still fail.
+  const ellipsis = lookRun('ellipsis', 0);
+  assert.deepEqual([ellipsis.record.clipped_text, ellipsis.record.squashed_text, ellipsis.record.overflow], [[], [], false]);
+  const ellipsisClips = lookRun('ellipsis-clips', 1);
+  assert.deepEqual(ellipsisClips.record.clipped_text.map((q) => q.element), ['div#short', 'div#one', 'div#nineteen', 'div#hard', 'div#vertical', 'div#clamp', 'div#ancestor']);
   // Against the reference, the browser's own button and one over the token size fail; the page in the design passes.
   const native = lookRun('native', 1);
   assert.match(native.out, /unstyled control: button#request \\?"Request changes\\?" is drawn as the browser's own control/);
@@ -325,18 +331,18 @@ esac
   copyFileSync(shot, join(OUT, `${RUN_ID}.home.png`));
   writeFileSync(join(OUT, `${RUN_ID}.real-product.log`), realProduct.join('\n') + '\n');
   writeFileSync(join(OUT, `${RUN_ID}.affected.log`), affectedLog.join('\n') + '\n');
-  for (const [page, r] of Object.entries({ clipped, fixed, native, approve, request, mock })) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
+  for (const [page, r] of Object.entries({ clipped, fixed, ellipsis, 'ellipsis-clips': ellipsisClips, native, approve, request, mock })) copyFileSync(r.capture, join(OUT, `${RUN_ID}.look-${page}.png`));
   // The step record of this run, beside its captures: what a user does with the built CLI and what the fixture shows at the end.
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version },
     start: 'the built done-done CLI and a fresh fixture repo with no run, receipt or evidence',
-    steps: ['init a repo and record its journeys', 'run the core journey and check its capture', 'record a receipt and gate on it', 'refuse code-only proof', 'look at a clipped and a fixed screen',
+    steps: ['init a repo and record its journeys', 'run the core journey and check its capture', 'record a receipt and gate on it', 'refuse code-only proof', 'look at a clipped and a fixed screen', 'accept readable single-line ellipses inside clipping rows; reject short ellipses, hard clips, vertical clips, mid-line clamps and narrower ancestor clips',
       "give the project's look block the approved design tokens, with a 44 px control size token",
       "look at a board page whose Request changes button is the browser's own unstyled control and whose Approve control is over the token size",
       'look at that page against its approved mock with --mock, where the judge names a mismatch',
       'click Request changes with --act on the styled page, a click that changes nothing',
       'click Approve with --act on the styled page, which moves the card to Answered', 'lint a PR claim'],
-    result: 'the fixture home screen is checked and receipted, code-only proof is refused, the clipped screen fails look where the fixed one passes, look fails the page whose button is an unstyled native control and whose control is over the token size, naming both, and fails it on the judged mismatch with the approved mock; a click that changes nothing fails, and the styled page passes when its click moves the card',
+    result: 'the fixture home screen is checked and receipted, code-only proof is refused, the clipped screen fails look where the fixed one passes, readable ellipses pass while short ellipses and hard clips fail, look fails the page whose button is an unstyled native control and whose control is over the token size, naming both, and fails it on the judged mismatch with the approved mock; a click that changes nothing fails, and the styled page passes when its click moves the card',
   }));
   const names = readdirSync(OUT).sort();
   say(`evidence: ${names.join(', ')}`);
