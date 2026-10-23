@@ -20,7 +20,7 @@ For developers using coding agents. Tests can pass while the app is still broken
 ```sh
 npm install -g done-done-axi
 cd your-app && done-done init
-done-done verify --outcome "<what a user can now do>"
+done-done verify --outcome "<what works now>"
 ```
 
 The last line is your first result: your agent drives the real app, a judge checks each capture, and you get a pass with a receipt, or the judge's reason it did not pass.
@@ -35,7 +35,7 @@ You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in 
 
 1. **Install.** The first line above puts `done-done` (and the long name `done-done-axi`) on your PATH. No `sudo`? Add `--prefix ~/.local` and put `~/.local/bin` on your `PATH`.
 2. **Set up your repo.** `init` asks you, in a terminal, which coding agent drives your app and which judge checks it. done-done never picks either for you. It then writes a minimal `.done-done.yaml` and a verify skill: how to launch and drive your app. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
-3. **Get your first result.** `verify` has your agent drive the real product the way a user does and save screenshots or output. A fresh judge checks whether each capture shows your claim. A pass names the capture and writes a receipt for this commit. Anything else stops at a gate with the judge's reason, and `done-done respond` answers it. No judge pass, no receipt.
+3. **Get your first result.** Say what works now, in plain words. `verify` has your agent drive the real product the way a user does and save screenshots or output. A fresh judge checks whether each capture shows your claim. A pass names the capture and writes a receipt for this commit. Anything else stops at a gate with the judge's reason, and `done-done respond` answers it. No judge pass, no receipt.
 
 No result? `done-done doctor` changes nothing and names each missing piece, such as a verify skill `init` could not write, with the exact command that fixes it. Commit `.done-done.yaml` and the verify skill so later runs and your teammates use the same recipe. You choose the agents and models; captures go to your chosen judge's provider, on your own plan or key. [Manual CLI](#manual-cli) walks through recording a journey, checking it and saving a receipt.
 
