@@ -500,6 +500,11 @@ const tryText = (p) => {
 // checks each attempt, and done-done makes the commit; the user's branch and checkout are never touched.
 // Every path the fixer changed in the worktree since `base`: tracked edits (and commits) and new files; ignored ones unless `ignored` is false.
 export const changedSince = (wt, base, ignored = true) => [...new Set([...git(wt, 'diff', '--name-only', '--no-renames', '-z', base).split('\0'), ...git(wt, 'ls-files', '--others', ...(ignored ? [] : ['--exclude-standard']), '-z').split('\0')])].filter(Boolean);
+// A reviewable feature-map addition, not an invented drive recipe or an edit to the user's skill.
+export function journeyProposal(skill, commit, files, journeys) {
+    const name = `change-${commit.slice(0, 12)}`;
+    return `# Missing journey proposal for ${commit}\n\nProposal only. Review and complete the recipe before applying it.\n\nAdd to ${skill}/features/README.md:\n- [Changed surface](${name}.md): cover the changed files below\n\nProposed ${skill}/features/${name}.md:\n\n# Changed surface\n\nSource: ${files.map((p) => JSON.stringify(p)).join(', ')}\n\n## Drive\n\n${journeys.length ? `Start from the existing fallback: ${journeys.map((j) => `done-done run ${j}`).join('; ')}.` : 'Record a core journey first: done-done init --journey <name> --core -- <command>.'}\nExtend that real-product recipe to exercise the changed surface, then name its journey here with run <name>. Do not treat the fallback alone as coverage of these files.\n\n## Capture\n\nSave the resulting user-visible output and steps.json into $DONE_DONE_EVIDENCE_ROOT. Review the evidence before recording a receipt.\n`;
+}
 export const named = (paths) => `${paths.slice(0, LEFT_NAMED).join(', ')}${paths.length > LEFT_NAMED ? `, +${paths.length - LEFT_NAMED} more` : ''}`;
 export const dirtyTracked = (repo) => git(repo, 'diff', '--name-only', '--no-renames', '-z', 'HEAD').split('\0').filter(Boolean);
 // A detached done-done worktree at `commit` for the body, removed after it whatever happens; a branch made from it stays.

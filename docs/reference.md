@@ -38,6 +38,22 @@ done-done init --hook claude
 
 `--hook claude` also adds a Claude Code SessionStart hook to the repo's `.claude/settings.json` (project scope; your `~/.claude` is never touched), so each session starts with the bare `done-done` state as context. The hook runs `command -v done-done >/dev/null && done-done || true`: without done-done on PATH it prints nothing and exits 0, so it never breaks a session. An existing settings file keeps every other key and hook; re-running adds no duplicate. The result's `claude_hook` says `added to .claude/settings.json` or `unchanged`. Any other `--hook` value exits 2 naming the supported values, and a malformed `.claude/settings.json` exits 2 untouched. Commit `.claude/settings.json` to share the hook.
 
+### Opt-in capture after a commit (Claude Bash)
+
+```sh
+done-done init --hook claude --after-commit
+```
+
+Plain `--hook claude` stays SessionStart-only. Adding `--after-commit` explicitly installs paired `PreToolUse` and `PostToolUse` command hooks matched to `Bash`, keeping all other settings and hooks; rerunning adds no duplicates. It is supported only with `--hook claude` (otherwise exit 2). Remove the two lifecycle entries to opt out; keep SessionStart if you still want orientation. No home agent settings or Git hooks are changed.
+
+The hooks invoke `done-done after-commit --before` and `done-done after-commit`, reading Claude's JSON event on stdin. The start records HEAD under `$DONE_DONE_HOME/hooks`, keyed by this checkout, session and tool-call id. The finish consumes that snapshot once. A changed HEAD whose latest reflog entry is a commit (including amend and initial commits) triggers capture; no commit, an unpaired or duplicate finish, or a checkout alone runs nothing. This covers commits made by Bash in the current project checkout, not commits in other repos, other tools, external terminals or sessions without the opt-in. An interrupted Bash call with no finish cannot capture; run `done-done affected` and the named journeys manually. Git reflogs must be enabled. Hooks have a 600-second timeout; a timed-out capture is not proof.
+
+From a clean tracked tree, the command maps the committed diff since that Bash call began using the same model-free mapping as `affected`: it runs each named journey with `done-done run`, including the core fallback for uncovered files (or every real journey when no core is named). Initial commits map all their files. Ignored paths and committed gate receipts need nothing. Each journey writes the usual sealed, commit-bound evidence record; capture is **not** a judged pass or receipt. No agent or model is chosen or started, and no judge is invoked, even if one is configured. Spend-gated journeys retain `run`'s refusal and recovery command. Failures report their real cause; a feature with no journey command reports `needs-recipe` (exit 3) instead of silently selecting an agent or inventing an outcome. Commit remaining tracked changes before capturing; a dirty finish is refused.
+
+For files that no feature or journey covers, it writes `<evidence.root>/.done-done/proposals/<head>.md`. This proposal names the uncovered files, a suggested feature-map entry and feature file, and the core recipe to extend. The user reviews and completes the real-product drive before applying it to the verify skill; the hook never edits the skill or commits a proposal. Duplicate delivery does not capture again. Review the evidence and record a judged receipt separately with `done-done check` / `done-done receipt`.
+
+Reproduce the full flow without any agent or judge: `done-done run after-commit`. Its fixture installs the actual lifecycle commands, commits a mapped source change and an uncovered file, checks clean sealed runs at both commits and a proposal-only skill addition, and rejects duplicate, no-commit and checkout triggers.
+
 ```sh
 done-done init --hook codex
 ```
