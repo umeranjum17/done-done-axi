@@ -930,8 +930,8 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const { choice } = j;
   const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), judged: rows.items.map(({ sha256, ...r }) => r) };
   if (choice) {
-    const byName = new Map(captures.map((c) => [c.name, receiptPath(repo, cfg, cite(c.name))]));
-    judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byName.get(r.path)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
+    const byHash = new Map(captures.map((c) => [c.sha256, receiptPath(repo, cfg, cite(c.name))]));
+    judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
   }
   if (rows.omitted) judged.judged_omitted = rows.omitted;
   if (j.notJudged.length) judged.not_judged = j.notJudged;
