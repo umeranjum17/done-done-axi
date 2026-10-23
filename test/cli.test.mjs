@@ -621,6 +621,7 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   // done-done probes the recording; it must not silently extract or judge additional frames.
   const j = judgeSetup(CORRECT);
   const outcome = 'changed.png shows the Changed state; clip-frame.png shows the next screen from clip.mp4';
+  j.stub(CORRECT, true, [], [], '', { parts: ['Changed', 'next screen'], shows: { 'changed.png': { covers: [0] }, 'clip-frame.png': { parts: ['NEXT', 'CHANGED'], covers: [1] } } });
   const opened = toon(j.dd('run', '--open')).run_id;
   const folder = `.proof/${opened}`;
   const root = join(j.repo, folder);
@@ -633,14 +634,28 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   const checked = j.dd('check', '--outcome', outcome, ...files);
   assert.equal(checked.code, 0, checked.out);
   assert.deepEqual(toon(checked).judge.not_judged, [files[2]]);
-  const call = j.calls()[0];
-  assert.equal(call.images, 2);
-  assert.deepEqual([call.state.capture_0.name, call.state.capture_1.name], files.slice(0, 2).map(p => basename(p)), 'each image retains its cited name, not just a generic capture index');
-  const data = JSON.parse(call.prompt.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
-  assert.deepEqual(data.questions.capture_0.images, ['capture_0__changed']);
-  assert.deepEqual(data.questions.capture_1.images, ['capture_1__clip-frame']);
+  assert.equal(j.calls().length, 2);
+  for (const [i, call] of j.calls().entries()) {
+    assert.equal(call.images, 1, 'another citation must not reach this model context');
+    assert.equal(call.state[`capture_${i}`].name, basename(files[i]));
+    assert.equal(Object.keys(call.state).filter(k => /^capture_/.test(k)).length, 1);
+    const data = JSON.parse(call.prompt.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
+    assert.deepEqual(data.questions[`capture_${i}`].images, [i ? 'capture_1__clip-frame' : 'capture_0__changed']);
+  }
+  assert.deepEqual(j.calls()[1].state.shared_parts, ['Changed', 'next screen']);
+  assert.deepEqual(toon(checked).judge.judged.map(r => [r.parts, r.covers]), [[['Changed', 'next screen'], [0]], [['Changed', 'next screen'], [1]]], 'later labels cannot redefine shared coverage positions');
   assert.equal(j.dd('check', '--outcome', outcome, ...files).code, 0);
-  assert.equal(j.calls().length, 1, 'the exact named batch is cached');
+  assert.equal(j.calls().length, 2, 'the exact named set is cached');
+  j.stub(CORRECT, true, [], [], '', { parts: ['Changed', 'next screen'], shows: { 'changed.png': { covers: [0] } } });
+  const missing = j.dd('check', '--outcome', outcome + ' missing', ...files);
+  assert.equal(missing.code, 3, missing.out);
+  assert.match(missing.out, /next screen/);
+  j.stub(CORRECT, true, [], [], '', { parts: ['Changed', 'next screen'], shows: { 'changed.png': { covers: [0] }, 'clip-frame.png': { parts: ['redefined'], covers: [2] } } });
+  const invalid = j.dd('check', '--outcome', outcome + ' invalid', ...files);
+  assert.equal(invalid.code, 2, invalid.out);
+  assert.match(toon(invalid).error, /no parts and covers lists for capture_1/);
+  assert.equal(toon(invalid).result, undefined, 'invalid shared positions are not partial proof');
+  const callsBeforeSwap = j.calls().length;
 
   // Identical bytes in identical argument order, but their names now assign them to the wrong parts.
   const swapped = toon(j.dd('run', '--open')).run_id;
@@ -653,12 +668,25 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   j.stub({ correct: 0.02, wrong: 0.96, unclear: 0.02 });
   const wrong = j.dd('check', '--outcome', outcome, ...['clip-frame.png', 'changed.png', 'clip.mp4'].map(n => `${swappedFolder}/${n}`));
   assert.equal(wrong.code, 1, wrong.out);
-  assert.equal(j.calls().length, 2, 'renaming cannot reuse the true batch verdict or its old paths');
+  assert.equal(j.calls().length, callsBeforeSwap + 2, 'renaming cannot reuse the true set verdict or its old paths');
   assert.ok(toon(wrong).judge.judged.every(r => r.path.startsWith(swappedFolder) && !r.cached));
 
   const single = j.dd('check', '--outcome', outcome, files[0]);
   assert.equal(single.code, 1, single.out);
   assert.equal(j.calls().at(-1).state.name, basename(files[0]), 'single-image checks retain the cited name too');
+
+  // No partial/cached pass when isolation would exceed the request budget.
+  const cap = toon(j.dd('run', '--open')).run_id;
+  const many = Array.from({ length: 11 }, (_, i) => `.proof/${cap}/part-${i}.png`);
+  for (const [i, file] of many.entries()) writeFileSync(join(j.repo, file), screen(20 + i));
+  writeFileSync(join(j.repo, '.proof', cap, 'steps.json'), stepsOf(outcome));
+  assert.equal(j.dd('run', '--close', cap).code, 0);
+  const count = j.calls().length;
+  const refused = j.dd('check', '--outcome', outcome, ...many);
+  assert.equal(refused.code, 2, refused.out);
+  assert.match(toon(refused).error, /at most 10 captures/);
+  assert.equal(toon(refused).result, undefined);
+  assert.equal(j.calls().length, count, 'oversized isolated checks ask no model');
 });
 
 test('check reads the same Checks block from a file or from stdin', () => {
@@ -2857,7 +2885,7 @@ const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
 // The coverage lists: every capture names the outcome's parts, and shows the positions whose needle its text holds.
 const capKeys = Object.keys(state).filter((k) => /^capture_\\d+$/.test(k));
 const judged = Object.fromEntries(capKeys.map((k) => {
-  const text = String(state[k]?.capture ?? '');
+  const text = String(state[k]?.capture ?? state[k]?.name ?? '');
   const shown = Object.entries(stub.shows ?? {}).filter(([needle]) => text.includes(needle)).map(([, s]) => s);
   return [k, { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale, ...(stub.noLists ? {} : { parts: shown.at(-1)?.parts ?? stub.parts ?? [], covers: shown.flatMap((s) => s.covers) }) }];
 }));
@@ -2918,8 +2946,8 @@ test('judge pass exits 0, sends one downscaled image and the outcome only, and a
   assert.deepEqual(d.judge.judged.map((x) => [x.path, x.verdict, x.cached]), cited.map((p) => [p, 'pass', false]));
   assert.equal(d.judge.judged[0].reason, 'The screen shows the notes list.');
   const calls = j.calls();
-  assert.equal(calls.length, 1, 'one request includes both images');
-  assert.ok(calls.every((c) => c.images === 2 && c.model === 'claude-test-1'));
+  assert.equal(calls.length, 2, 'one isolated request per citation');
+  assert.ok(calls.every((c) => c.images === 1 && c.model === 'claude-test-1'));
   assert.equal(calls[0].width, 200, 'the first image is attached');
   assert.ok(calls.every((c) => c.prompt.includes('the notes list shows three notes') && !c.prompt.includes('.proof') && !c.prompt.includes(j.repo)), 'only the outcome line goes with the image');
   assert.ok(calls.every((c) => c.home === j.env.HOME && c.configDir === (process.env.CLAUDE_CONFIG_DIR ?? null)), 'the judge runs your own claude: your HOME, and no sign-in folder of done-done\'s');
@@ -2927,13 +2955,13 @@ test('judge pass exits 0, sends one downscaled image and the outcome only, and a
   const again = j.dd('check', '--outcome', 'the notes list shows three notes', ...cited);
   assert.equal(again.code, 0, again.out);
   assert.ok(toon(again).judge.judged.every((x) => x.cached === true && x.verdict === 'pass'));
-  assert.equal(j.calls().length, 1, 'a cache hit asks no model');
+  assert.equal(j.calls().length, 2, 'a cache hit asks no model');
   const cacheDir = join(j.env.DONE_DONE_HOME, 'runs', 'notes', 'judge');
   const cache = readFileSync(join(cacheDir, readdirSync(cacheDir)[0]), 'utf8');
   assert.doesNotMatch(cache, /token|key|secret/i, 'the cache in the run store holds verdicts only');
   const agents = join(j.env.DONE_DONE_HOME, 'agents');
   const records = readdirSync(agents).filter((n) => n.startsWith('judge-'));
-  assert.equal(records.length, 1, 'the claude-code route writes one call record for the whole check');
+  assert.equal(records.length, 2, 'the claude-code route writes one call record per citation');
   assert.doesNotMatch(readFileSync(join(agents, records[0]), 'utf8'), /BEGIN DATA/, 'a call record never holds the prompt');
 });
 
@@ -3047,7 +3075,7 @@ test('an allowed claude rate-limit event does not stop the judge call, and its a
   assert.equal(r.code, 0, r.out);
   assert.doesNotMatch(r.out, /hit a rate limit and stopped/, 'claude retrying a 429 itself is not a stop');
   assert.deepEqual(toon(r).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
-  assert.equal(j.calls().length, 1, 'one request covers both images; the warning did not end it');
+  assert.equal(j.calls().length, 2, 'each image is isolated; the warning did not end either request');
 });
 
 test('the claude judge sends its images on stdin and leaves no copy in its scratch folder', () => {
@@ -3181,8 +3209,8 @@ test('a chat screenshot reaches the judge as an image, and a two-width JSON capt
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual(toon(ok).judge.judged.map((x) => x.verdict), ['pass', 'pass']);
   assert.ok(j.calls().find((c) => c.images === 1 && c.width > 0 && c.width <= 1280), 'the chat PNG is sent to the judge as an image, downscaled to 1280px');
-  const call = j.calls()[0];
-  assert.equal(call.images, 1, 'the screenshot is attached and JSON remains text');
+  const call = j.calls()[1];
+  assert.equal(call.images, 0, 'the JSON request cannot see the screenshot');
   const sent = JSON.parse(call.state.capture_1.capture);
   assert.deepEqual(sent, { checks }, 'every width and frame reaches the judge, none cut');
 });
@@ -3359,7 +3387,7 @@ test('check judges text evidence too, and a failed plain check stops with its ca
   const stray = j.dd('check', '--outcome', 'three notes are saved', 'stray.png');
   assert.equal(stray.code, 2, stray.out);
   assert.match(toon(stray).error, /^check: the judge was not asked, so there is no verdict: stray\.png: not in any done-done run record/, 'a capture with no run record is never sent');
-  assert.equal(j.calls().length, 1);
+  assert.equal(j.calls().length, 2);
 });
 
 test('the judge reads text and JSON captures as text: a wrong count fails with its reason, over-cap text stops with its cause, a re-run is a cache hit', () => {
@@ -3472,15 +3500,15 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   const o = toon(ok);
   assert.deepEqual(o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
   const calls = right.calls();
-  assert.equal(calls.length, 1, 'one tools-off call covers both captures, none to the author');
+  assert.equal(calls.length, 2, 'one tools-off call per capture, none to the author');
   assert.ok(calls.every((c) => c.agent === 'opencode' && c.argv.includes('opencode-go/muse-spark-1.3-contributor') && JSON.parse(c.permission)['*'] === 'deny'));
-  assert.ok(calls.every((c) => c.attached.length === 2 && c.attached.every((x) => x === 'PNG')), 'the call attaches both captures');
+  assert.ok(calls.every((c) => c.attached.length === 1 && c.attached.every((x) => x === 'PNG')), 'the call attaches only its own capture');
   assert.ok(calls.every((c) => c.file.includes('home and settings render') && !c.file.includes('.proof') && !c.argv.some((a) => a.includes('home and settings render'))), 'the outcome goes in the prompt file, never argv or a path');
   const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', o.run_id);
   const judgeLog = decode(readFileSync(join(runDir, 'logs', 'judge.log'), 'utf8'));
   assert.deepEqual([judgeLog.route, judgeLog.independence, judgeLog.author], ['answerer:opencode', 'agent', 'claude (model claude-haiku-5-5)']);
   const records = readdirSync(join(runDir, 'agents')).sort();
-  assert.equal(records.length, 1, 'one agent call record for the check, and no author judge record');
+  assert.equal(records.length, 2, 'one agent call record per capture, and no author judge record');
   for (const n of records) {
     const text = readFileSync(join(runDir, 'agents', n), 'utf8');
     assert.doesNotMatch(text, /home and settings render|Answer the typed questions/, `${n} keeps no prompt text`);
@@ -3949,9 +3977,9 @@ test('a pi judge on a claude-bridge model loads only that provider extension: th
   const r = spawnSync(process.execPath, [CLI, 'verify', 'shots', '--outcome', 'home and settings render', '--foreground'], { cwd: t.repo, env: s.env, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const judged = s.calls().filter((c) => c.agent === 'pi');
-  assert.equal(judged.length, 1, 'one tools-off call covers both captures');
-  for (const c of judged) {
-    assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', 'npm:pi-claude-bridge', '--model', 'claude-bridge/claude-haiku-4-5', `@${join(c.cwd, 'capture_0__home.png')}`, `@${join(c.cwd, 'capture_1__settings.png')}`]);
+  assert.equal(judged.length, 2, 'one tools-off call per capture');
+  for (const [i, c] of judged.entries()) {
+    assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', 'npm:pi-claude-bridge', '--model', 'claude-bridge/claude-haiku-4-5', `@${join(c.cwd, i ? 'capture_1__settings.png' : 'capture_0__home.png')}`]);
   }
 });
 
@@ -3976,16 +4004,16 @@ test('verify through pi and gemini: each judges tools-off with the capture attac
     assert.equal(ok.code, 0, ok.out);
     const o = toon(ok);
     const calls = right.calls();
-    assert.equal(calls.length, 1, 'one tools-off call covers both captures, none to the author');
-    for (const c of calls) {
+    assert.equal(calls.length, 2, 'one tools-off call per capture, none to the author');
+    for (const [i, c] of calls.entries()) {
       assert.equal(c.agent, judge);
-      assert.deepEqual(c.attached, ['PNG', 'PNG'], 'one call attaches both captures');
+      assert.deepEqual(c.attached, ['PNG'], 'the call cannot see the other capture');
       assert.match(c.stdin, new RegExp(`home and settings render for ${judge}`));
       assert.ok(!c.argv.some((a) => a.includes('home and settings render') || a.includes('.proof')), 'the outcome goes on stdin, never argv or a path');
       assert.notEqual(c.cwd, t.repo, 'the judge runs in a scratch folder, never the repo');
-      if (judge === 'pi') assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--model', model, `@${join(c.cwd, 'capture_0__home.png')}`, `@${join(c.cwd, 'capture_1__settings.png')}`]);
+      if (judge === 'pi') assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--model', model, `@${join(c.cwd, i ? 'capture_1__settings.png' : 'capture_0__home.png')}`]);
       else {
-        assert.deepEqual(c.argv, ['-p', 'Follow the instructions on stdin. @capture_0__home.png @capture_1__settings.png', '-o', 'json', '-m', model, '--approval-mode', 'plan', '--policy', join(c.cwd, 'deny-all.toml'), '--skip-trust']);
+        assert.deepEqual(c.argv, ['-p', `Follow the instructions on stdin. @${i ? 'capture_1__settings.png' : 'capture_0__home.png'}`, '-o', 'json', '-m', model, '--approval-mode', 'plan', '--policy', join(c.cwd, 'deny-all.toml'), '--skip-trust']);
         assert.match(c.policy, /toolName = "\*"\ndecision = "deny"/, 'every tool is denied');
       }
     }
@@ -3994,7 +4022,9 @@ test('verify through pi and gemini: each judges tools-off with the capture attac
     assert.deepEqual([judgeLog.route, judgeLog.model, judgeLog.independence], [`answerer:${judge}`, model, 'agent']);
     for (const n of readdirSync(join(runDir, 'agents'))) {
       const rec = JSON.parse(readFileSync(join(runDir, 'agents', n), 'utf8'));
-      assert.deepEqual([rec.agent, rec.tools, rec.images], [judge, 'none', ['capture_0__home.png', 'capture_1__settings.png']], 'the record names both captures and keeps no image bytes');
+      assert.deepEqual([rec.agent, rec.tools], [judge, 'none']);
+      assert.equal(rec.images.length, 1, 'the record names only this capture and keeps no image bytes');
+      assert.ok(['capture_0__home.png', 'capture_1__settings.png'].includes(rec.images[0]));
     }
     // A wrong screen parks the run at the gate (exit 4), not a fail.
     const bad = verify(agents({ correct: 0.04, wrong: 0.93, unclear: 0.03 }).env, `the settings page shows dark mode on for ${judge}`);
@@ -4098,7 +4128,7 @@ globalThis.fetch = async (url, init) => {
   const ok = check(env, 'home and settings render');
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual([toon(ok).judge.route, toon(ok).judge.model], ['minimax:key', 'MiniMax-M3.1-Flash-Preview']);
-  assert.equal(requests().length, 1, 'one request covers the entire capture set');
+  assert.equal(requests().length, 2, 'one request per capture');
   assert.ok(requests().every((r) => r.url === 'https://api.minimax.io/anthropic/v1/messages' && r.key === key && r.model === 'MiniMax-M3.1-Flash-Preview' && r.image), 'the key goes only to MiniMax, with the capture');
   assert.equal(j.calls().length, 0, 'claude is not asked while the route answers');
   // A refused key, then no key at all: each is judged again by claude at its cheap model, and the result names the route that answered.
@@ -4107,7 +4137,7 @@ globalThis.fetch = async (url, init) => {
     const fell = check(e, `the notes list shows three notes (${why})`);
     assert.equal(fell.code, 0, fell.out);
     assert.deepEqual([toon(fell).judge.route, toon(fell).judge.model], ['claude-code', 'claude-haiku-5-5'], why);
-    assert.equal(j.calls().length - before, 1, `${why}: claude judged the entire capture set in one call`);
+    assert.equal(j.calls().length - before, 2, `${why}: claude judged each capture in isolation`);
   }
   // When the fallback fails too, the error carries both causes.
   j.stub('error');
@@ -4260,7 +4290,7 @@ test('with no judge set, verify in a terminal asks from a list, saves the pick a
   assert.match(r.stdout, /answerer:opencode \(model opencode-go\/muse-spark-1\.3-contributor\) saved to /);
   const g = parse(readFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'utf8'));
   assert.deepEqual([g.judge.route, g.judge.model], ['answerer:opencode', 'opencode-go/muse-spark-1.3-contributor']);
-  assert.ok(s.calls().length === 1 && s.calls().every((c) => c.agent === 'opencode'), 'the picked judge judged the full capture set in one call');
+  assert.ok(s.calls().length === 2 && s.calls().every((c) => c.agent === 'opencode'), 'the picked judge judged each capture in isolation');
 });
 
 test('init in a terminal says why it asks again and refuses a model the agent does not list', { skip: !existsSync('/usr/bin/script') && 'no script(1)' }, () => {
@@ -7124,7 +7154,7 @@ const triage = /a screen the judge called wrong/.test(prompt);
 appendFileSync(${JSON.stringify(join(e.PATH, 'calls'))}, (triage ? 'triage' : 'judge') + '\\n');
 const p = (probabilities) => ({ probabilities, rationale: 'r', personReason: 'the title is missing' });
 const answer = triage && existsSync(${JSON.stringify(join(e.PATH, 'triage-fails'))}) ? 'not json' : triage ? Object.fromEntries(JSON.parse(prompt.trim().split('\\n').filter((l) => l.startsWith('{')).pop()).required.map((id) => [id, p({ fix: 0.97, ask: 0.02, unclear: 0.01 })]))
-  : Object.fromEntries(images.map((img, i) => ['capture_' + i, { ...p(img.equals(readFileSync(${JSON.stringify(join(t.dir, 'screen.png'))})) ? { correct: 0.003, wrong: 0.995, unclear: 0.002 } : { correct: 0.003, wrong: 0.002, unclear: 0.995 }), parts: [], covers: [] }]));
+  : Object.fromEntries(images.map((img, i) => [process.argv.slice(2).filter(a => a.startsWith('@'))[i].match(/capture_\\d+/)[0], { ...p(img.equals(readFileSync(${JSON.stringify(join(t.dir, 'screen.png'))})) ? { correct: 0.003, wrong: 0.995, unclear: 0.002 } : { correct: 0.003, wrong: 0.002, unclear: 0.995 }), parts: [], covers: [] }]));
 console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(answer) }] } }));
 `, { mode: 0o755 });
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
@@ -7145,7 +7175,7 @@ console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', 
     if (floor) assert.match(m.findings[0].what, /; judge: the judge was not sure \(confidence 0\.97 below floor 0\.99\); triage: ask$/, 'the park names the shared floor it missed');
   }
   const calls = readFileSync(join(e.PATH, 'calls'), 'utf8').trim().split('\n');
-  assert.deepEqual([calls.slice(0, 2), calls.slice(2).every((c) => c === 'triage'), existsSync(join(e.PATH, 'fixer'))], [['judge', 'triage'], true, false], 'the capture batch is judged once before triage; no fixer runs');
+  assert.deepEqual([calls.slice(0, 2), calls.slice(2).every((c) => c === 'triage'), existsSync(join(e.PATH, 'fixer'))], [['judge', 'judge'], true, false], 'each isolated capture is judged before triage; no fixer runs');
 });
 
 // A fixer that un-ignores a copied ignored file (.env.local) and edits it is dropped before anything is committed.
@@ -7520,7 +7550,7 @@ test('squashed text: the measurement flags a title wrapped one letter per line, 
 });
 
 // base_ref: verify drives the base ref too, in a done-done worktree, and the judge sees each head capture with its base capture.
-test('base_ref pairs each cell with its base capture in one judge request, and reports a head capture with none', () => {
+test('base_ref pairs each cell in its own judge request, and reports a head capture with none', () => {
   const t = matrixed(MATRIXED.replace('  width: [390, 1280]\n', '').replace('  enabled: false\n', ''), '!cell', (t) =>
     `const page = readFileSync('page.txt', 'utf8').trim();\nif (existsSync(${JSON.stringify(t.dir)} + '/' + page + '.' + cell + '.png')) copyFileSync(${JSON.stringify(t.dir)} + '/' + page + '.' + cell + '.png', root + '/home.' + cell + '.png');`);
   writeFileSync(join(t.repo, 'make-cells.mjs'), readFileSync(join(t.repo, 'make-cells.mjs'), 'utf8').replace('mkdirSync }', 'mkdirSync, existsSync, readFileSync }'));
@@ -7540,13 +7570,13 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
   // Key off: each capture is judged alone and nothing is driven at a base ref.
   const off = verify();
   assert.equal(off.code, 0, off.out);
-  assert.deepEqual([s.calls().map((c) => c.attached.length), existsSync(join(t.repo, '.proof', off.run.run_id, 'before'))], [[2], false]);
+  assert.deepEqual([s.calls().map((c) => c.attached.length), existsSync(join(t.repo, '.proof', off.run.run_id, 'before'))], [[1, 1], false]);
   writeFileSync(join(t.repo, '.done-done.yaml'), `${readFileSync(join(t.repo, '.done-done.yaml'), 'utf8')}base_ref: ${base}\n`);
   t.sh('commit', '-qam', 'compare with the old page');
   const on = verify();
   assert.equal(on.code, 0, on.out);
-  const calls = s.calls().slice(1);
-  assert.ok(calls.length === 1 && calls[0].attached.join() === 'PNG,PNG,PNG,PNG' && calls[0].file.includes('base ref'), 'one request holds every before and after image');
+  const calls = s.calls().slice(2);
+  assert.ok(calls.length === 2 && calls.every(c => c.attached.join() === 'PNG,PNG' && c.file.includes('base ref')), 'each request holds only its own before and after pair');
   const proof = join(t.repo, '.proof', on.run.run_id);
   const paired = JSON.parse(calls[0].file.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
   for (const [key, value] of Object.entries(paired.state).filter(([key]) => key.startsWith('capture_'))) {
