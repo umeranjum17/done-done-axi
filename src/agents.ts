@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -29,6 +29,7 @@ export type AgentCall = {
   images?: { name: string; bytes: Buffer }[]; // attached to the prompt for the answerer judge, written into the call's scratch folder
   attempts?: number; // asks allowed for a bad tool-less answer, default ASK_ATTEMPTS
   dirs?: string[]; // folders outside cwd an edit step may write (the run's evidence folder)
+  accountCommand?: string; // judge.account_command for Claude calls only
   env?: Record<string, string>; // extra environment for the agent
   onSpawn?: (pgid: number) => void; // an edit step runs in its own process group; this gets its id
 };
@@ -336,9 +337,10 @@ export const noAgent = () =>
 export const modelFor = (cfg: Config, agent: string) => cfg.agent_config[agent]?.model || CHEAP[agent]?.model || '';
 
 // Everything askAgent needs from config to start one agent: its model, effort, extra flags, binary and timeout.
-export type AgentRun = { agent: string; model: string; effort: string; args: string[]; path: string; override: string; timeoutMs: number };
+export type AgentRun = { agent: string; model: string; effort: string; args: string[]; path: string; override: string; timeoutMs: number; accountCommand?: string };
 export const agentRun = (cfg: Config, agent: string, model = modelFor(cfg, agent)): AgentRun => ({
   agent, model, effort: cfg.agent_config[agent]?.effort ?? '', args: cfg.agent_args_override[agent] ?? [], path: agentPath(agent, cfg), override: cfg.agent_path_override[agent] ?? '', timeoutMs: parseDuration(cfg.agent_timeout)!,
+  ...(agent === 'claude' && cfg.judge.account_command ? { accountCommand: cfg.judge.account_command } : {}),
 });
 export const notStartable = (agent: string, override = '') => (override ? `agent_path_override.${agent} ${override} is not an executable file` : `${agent} is not on PATH`);
 
@@ -505,6 +507,31 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
   });
 }
 
+type ClaudeAccount = { id: string; folder: string; unset: string[] };
+let accountPick: Promise<ClaudeAccount> | undefined;
+
+// One pick (including failure) per process, shared by readers, drives and the judge; never change the caller's env.
+export function claudeAccount(agent: string, command?: string): Promise<ClaudeAccount | undefined> {
+  if (agent !== 'claude' || !command || process.env.CLAUDE_CONFIG_DIR !== undefined) return Promise.resolve(undefined);
+  return accountPick ??= Promise.resolve().then(() => {
+    const fail = (why: string): never => { throw new UsageError(`judge.account_command: ${why}`, 'Fix judge.account_command in the global config, or export CLAUDE_CONFIG_DIR for this call'); };
+    const r = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 });
+    if (r.error) fail((r.error as NodeJS.ErrnoException).code ?? 'command could not start');
+    let pick;
+    try { pick = JSON.parse(r.stdout); } catch { fail(r.status === 0 ? 'invalid JSON' : `command exited ${r.status}: ${errorLine(r.stderr) || 'no pick returned'}`); }
+    if (r.status !== 0) fail(`command exited ${r.status}: ${typeof pick?.reason === 'string' ? errorLine(pick.reason) : errorLine(r.stderr) || 'no pick returned'}`);
+    if (pick?.ok !== true) fail(typeof pick?.reason === 'string' ? errorLine(pick.reason) : 'ok must be true');
+    if (typeof pick.id !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(pick.id)) fail('invalid account id');
+    const folder = pick.set?.CLAUDE_CONFIG_DIR;
+    let directory = false;
+    try { directory = typeof folder === 'string' && isAbsolute(folder) && statSync(folder).isDirectory(); } catch {}
+    if (!directory) fail('set.CLAUDE_CONFIG_DIR must be an absolute existing folder');
+    if (!Array.isArray(pick.unset) || !pick.unset.every((n: unknown) => typeof n === 'string' && /^[A-Za-z_]\w*$/.test(n))) fail('unset must be a list of environment variable names');
+    if (pick.unset.includes('CLAUDE_CONFIG_DIR')) fail('cannot unset CLAUDE_CONFIG_DIR');
+    return { id: pick.id, folder, unset: pick.unset };
+  });
+}
+
 export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
   const adapter = adapterFor(c.agent);
   const argv = (d: string) => (adapter ? [...adapter.argv(c, d), ...(c.effort ? EFFORT_FLAGS[c.agent]?.(c.effort) ?? [] : []), ...(c.args ?? [])] : []);
@@ -521,6 +548,9 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
     if (!adapter) throw new Error(`no adapter for ${c.agent} yet`);
     const bin = c.path;
     if (!bin) throw new Error(c.agent.startsWith('acp:') ? `${c.agent} needs acpx, and acpx is not startable; ${ACPX_INSTALL}` : notStartable(c.agent, c.override));
+    const account = await claudeAccount(c.agent, c.accountCommand);
+    const env: NodeJS.ProcessEnv = { ...process.env, ...c.env, ...adapter.env?.(c), ...(account && { CLAUDE_CONFIG_DIR: account.folder }) };
+    for (const name of account?.unset ?? []) delete env[name];
     if (adapter.readsImages) for (const i of c.images ?? []) writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
     for (const [name, text] of Object.entries(adapter.files?.(c) ?? {})) writeFileSync(join(dir, name), text, { mode: 0o600 });
     let lastError = '';
@@ -533,7 +563,7 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
       const promptText = (attempts === 1 ? prompt : `${prompt}\n\nYour previous answer was not valid (${lastError}).`) + schemaTrailer;
       if (adapter.file) writeFileSync(join(dir, 'prompt.md'), promptText, { mode: 0o600 });
       const input = adapter.file ? '' : adapter.stdin ? adapter.stdin(c, promptText) : promptText;
-      res = await start(bin, argv(dir), c, cwd, input, { ...process.env, ...c.env, ...adapter.env?.(c) }, adapter.streams ? c.idleMs ?? AGENT_IDLE_MS : 0);
+      res = await start(bin, argv(dir), c, cwd, input, env, adapter.streams ? c.idleMs ?? AGENT_IDLE_MS : 0);
       if (res.error) throw res.error;
       // A permission the run refused explains a call with no answer; name it rather than the exit code text.
       const refused = adapter.reject?.(String(res.stderr ?? '')) ?? '';

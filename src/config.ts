@@ -49,7 +49,7 @@ export type Config = {
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
-  judge: { route: string; model: string; floor: number; env_file: string };
+  judge: { route: string; model: string; floor: number; env_file: string; account_command: string };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -127,6 +127,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.route': { scope: 'global', type: 'route' },
   'judge.floor': { scope: 'global', type: 'number' },
   'judge.env_file': { scope: 'global', type: 'string' },
+  'judge.account_command': { scope: 'global', type: 'string' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -331,7 +332,7 @@ function defaultConfig(repo: string): Config {
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
-    judge: { route: '', model: '', floor: 0.7, env_file: '' },
+    judge: { route: '', model: '', floor: 0.7, env_file: '', account_command: '' },
     trusted: false,
     from: {},
   };
@@ -419,5 +420,7 @@ judge:
   # A file of KEY=value lines (a provider API key) handed to the judge's agent, or to openai:key, for names your shell has not
   # exported, so the judge works in any shell. The key stays in that file: done-done never copies or prints it.
   # env_file: ~/.config/done-done/judge.env
+  # Optional shell command printing one account-pick JSON for Claude judge and agent calls; an exported CLAUDE_CONFIG_DIR wins.
+  # account_command: account-picker pick claude --json
 `;
 }
