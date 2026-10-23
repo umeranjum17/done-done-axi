@@ -43,6 +43,7 @@
   figure { margin:0 auto 16px; max-width:560px; }
   .quickstart .eyebrow { margin-bottom:6px; }
   .quickstart pre { max-width:560px; margin:0 auto 12px; text-align:left; }
+  .quickstart .note { max-width:560px; margin:0 auto 8px; }
   .shot { border:1px solid #393b4c; border-radius:12px; overflow:hidden; background:#11131c; }
   figcaption { font-size:12px; color:var(--muted); margin-top:8px; line-height:1.4; }
   .eyebrow { display:block; color:var(--accent); font-size:11px; font-weight:700; letter-spacing:.07em; margin:0 0 10px; }
@@ -84,7 +85,7 @@
   <header class="hero">
     <h1>Prove your app really works.</h1>
     <p class="definition">A command-line check of real screenshots, recordings and output.</p>
-    <p class="audience">For developers using coding agents.</p>
+    <p class="audience">For developers using coding agents, alone or in a <a href="#firstmate">Firstmate</a> fleet.</p>
     <p class="problem">Tests pass. Your agent says &ldquo;done&rdquo;. The app is still broken.</p>
     <div class="actions"><a class="btn" href="#install">Install in 3 steps</a><a class="btn quiet" href="#see">See it work</a><a class="github" href="https://github.com/umeranjum17/done-done-axi">GitHub ↗</a></div>
     <div class="start">
@@ -96,7 +97,9 @@
         <p class="eyebrow">START HERE · NODE 22.18+ + GIT</p>
         <pre><code>npm install -g done-done-axi
 cd your-app &amp;&amp; done-done init
-done-done doctor</code></pre>
+done-done verify --outcome "&lt;what works now&gt;"</code></pre>
+        <p class="note">The last line is your first result: your agent drives the real app, a judge checks each capture, and you get a pass with a receipt, or the judge&rsquo;s reason it did not pass.</p>
+        <p class="note"><b>With or without Firstmate.</b> On its own, you or your agent run these three lines. In a <a href="https://github.com/kunchenguid/firstmate">Firstmate</a> fleet, two files make every worker prove its task, plus an optional merge gate that checks that proof (<a href="#firstmate">how</a>).</p>
       </div>
     </div>
   </header>
@@ -108,9 +111,8 @@ done-done doctor</code></pre>
       <div class="tile"><span class="eyebrow">02 / CHECK</span><h3>Show the claim is true.</h3><p>A fresh judge reads each capture. Wrong output fails; uncertainty never becomes a pass.</p></div>
       <div class="tile"><span class="eyebrow">03 / KEEP</span><h3>Save a receipt.</h3><p>A pass records the commit and file hashes. No judge pass, no receipt.</p></div>
     </div>
-    <p><code>init</code> asks which coding agent and which judge to use, then writes your repo&rsquo;s setup and a capture recipe. You choose both agents and models. <code>doctor</code> checks setup, not the product: it names missing pieces and how to fix them.</p>
-    <p>Review and commit the recipe and verify skill, then describe what a user should be able to do:</p>
-    <pre><code>done-done verify --outcome "&lt;what a user can now do&gt;"</code></pre>
+    <p><code>init</code> asks which coding agent drives your app and which judge checks it, then writes your repo&rsquo;s setup and a verify skill: how to launch and drive your app. You choose both agents and models. <code>verify</code> then drives the real product, has the judge check each capture, and writes a receipt on a pass; anything else stops at a gate with the judge&rsquo;s reason.</p>
+    <p>No result? <code>doctor</code> checks setup, not the product: it names each missing piece and the command that fixes it. Commit <code>.done-done.yaml</code> and the verify skill so later runs and your teammates use the same recipe.</p>
     <p class="note">Bring your own signed-in agent or API key. Captures go to the judge&rsquo;s provider on your plan or key. Need no-sudo installation, non-interactive flags or a manual capture? Read the <a href="https://github.com/umeranjum17/done-done-axi/blob/main/docs/manual-cli.md">manual walkthrough</a>.</p>
     <p>Prefer to ask your agent &ldquo;is this really done?&rdquo; Install the <a href="https://github.com/umeranjum17/done-done-axi#use-it-from-your-agent">agent skill</a>: <code>npx skills add umeranjum17/done-done-axi --skill done-done -a &lt;agent&gt; -y</code>.</p>
   </section>
