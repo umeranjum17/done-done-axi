@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { agentRun, askAgent, claudeAccount, notStartable } from './agents.js';
 import { home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
@@ -10,7 +10,7 @@ const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 10; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 13; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -34,7 +34,7 @@ const TEXT_OPTIONS = {
 };
 // The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
 // capture. In a batch, capture_0 defines one shared list; every covers position refers to that list, not another label.
-const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, in the order the outcome names them, as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the position in parts (0 for the first, 1 for the next) of each part this capture itself shows.';
+const PARTS = 'Inspect only this question\'s listed image IDs or text, never substitute another question\'s image even if it better matches the cited name. Use the cited capture name in the state to match this capture to the outcome\'s own named part, not another capture\'s part. A capture showing one part is not wrong for lacking the other parts; a visible contradiction of its own part is still wrong. If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, in the order the outcome names them, as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the position in parts (0 for the first, 1 for the next) of each part this capture itself shows.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION = {
     kind: 'choice',
@@ -243,6 +243,8 @@ const missingParts = (judged) => {
     const shown = new Set(judged.filter((r) => r.verdict === 'pass').flatMap((r) => r.covers ?? []));
     return (judged[0]?.parts ?? []).filter((_, i) => !shown.has(i));
 };
+// Keep the cited basename beside the actual image bytes on every provider, not only in the JSON state.
+const imageId = (id, c) => `${id}__${basename(c.name).replace(/\.[^.]*$/, '').replace(/[^\w.-]/g, '_')}`;
 export const screen = (c) => c.media.type === 'png' || c.media.type === 'jpeg';
 // The judge reads screens as images and text captures (logs, JSON, CLI output) as text; video and other files are not judged.
 export const judgeable = (c) => screen(c) || c.media.type === 'text';
@@ -296,7 +298,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         return { c, pair, row: { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) } };
     });
     const { route, model } = choice;
-    const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.sha256, c.before?.sha256]), outcome, route, model, cfg.judge.floor])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, cfg.judge.floor])).digest('hex');
     const hit = readCache(dir, key);
     if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r))))
         return { judged: [...hit.judged.map((r) => ({ ...r, cached: true })), ...suffix], notJudged, choice, missing: hit.missing ?? [] };
@@ -310,14 +312,14 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         if (typeof input === 'string' || typeof before === 'string')
             throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${input}`, 'Capture it again as the error says, then re-run this command');
         const base = 'text' in input ? before ? TEXT_PAIR : TEXT_QUESTION : before ? PAIR : QUESTION;
-        const beforeId = `before_${i}`;
-        const captureId = `capture_${i}`;
+        const beforeId = pair && imageId(`before_${i}`, pair);
+        const captureId = imageId(`capture_${i}`, c);
         if ('mime' in input)
             images[captureId] = input;
-        if (before && 'mime' in before)
+        if (beforeId && before && 'mime' in before)
             images[beforeId] = before;
-        state[id] = { ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
-        questions[id] = { ...base, images: 'text' in input ? [] : before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS} Use one shared parts list for this entire request: define it in capture_0.parts, in outcome order. Every capture's covers indexes that shared list, never a separately worded or reordered list.`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
+        state[id] = { name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
+        questions[id] = { ...base, images: 'text' in input ? [] : beforeId && before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS} Use one shared parts list for this entire request: define it in capture_0.parts, in outcome order. Every capture's covers indexes that shared list, never a separately worded or reordered list.`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
     }
     const call = join(records, `judge-${stamp}-1`);
     const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
@@ -358,7 +360,7 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         const pair = c.before && judgeable(c.before) && screen(c.before) === screen(c) ? c.before : undefined; // a screen pairs with a screen, text with text
         const row = { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) };
         // The floor is in the key: it decides pass or inconclusive, so a changed judge.floor asks the model again.
-        const key = createHash('sha256').update(JSON.stringify([VERSION, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.sha256] : [])])).digest('hex');
+        const key = createHash('sha256').update(JSON.stringify([VERSION, c.name, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.name, pair.sha256] : [])])).digest('hex');
         const hit = readCache(dir, key);
         // A stored coverage pair goes back through the same resolver as a reply's, so an entry whose covers do not index its
         // parts is unreadable, and asking the model again is the miss readCache promises.
@@ -382,12 +384,14 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         const base = 'text' in input ? (before ? TEXT_PAIR : TEXT_QUESTION) : before ? PAIR : QUESTION;
         // The parts rule asks the reply for the coverage lists as answer fields on routes that return them. A key route returns
         // no lists, so it keeps requiring no part (docs/reference.md).
-        const shape = { ...base, instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, ...(Object.hasOwn(KEY_ROUTES, choice.route) ? {} : { answerFields: FIELDS }) };
+        const captureId = imageId('capture', c);
+        const beforeId = pair && imageId('before', pair);
+        const shape = { ...base, images: 'text' in input ? [] : beforeId ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, ...(Object.hasOwn(KEY_ROUTES, choice.route) ? {} : { answerFields: FIELDS }) };
         // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
         be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
         const answers = 'text' in input
-            ? await askJudge(cfg, be, choice, { outcome, ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
-            : await askJudge(cfg, be, choice, { outcome }, { relevance: shape }, before && 'mime' in before ? { before, capture: input } : { capture: input });
+            ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
+            : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input });
         const a = answers.relevance;
         const options = shape.options;
         const reason = a.personReason || a.rationale || options[String(a.answer)] || '';
