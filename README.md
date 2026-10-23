@@ -20,8 +20,12 @@ For developers using coding agents. Tests can pass while the app is still broken
 ```sh
 npm install -g done-done-axi
 cd your-app && done-done init
-done-done doctor
+done-done verify --outcome "<what a user can now do>"
 ```
+
+The last line is your first result: your agent drives the real app, a judge checks each capture, and you get a pass with a receipt, or the judge's reason it did not pass.
+
+**With or without Firstmate.** On its own, you or your agent run these three lines. In a [Firstmate](https://github.com/kunchenguid/firstmate) fleet, two files make every worker prove its task, plus an optional merge gate that checks that proof ([how](#use-with-firstmate-or-another-agent-fleet)).
 
 [Website](https://umeranjum17.github.io/done-done-axi/) · [Setup](#install-in-3-steps) · [Agent skill](#use-it-from-your-agent) · [Reference](docs/reference.md) · [npm](https://www.npmjs.com/package/done-done-axi)
 
@@ -30,16 +34,10 @@ done-done doctor
 You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in coding agent or API key for the judge. Early preview; see [what's next](#whats-next).
 
 1. **Install.** The first line above puts `done-done` (and the long name `done-done-axi`) on your PATH. No `sudo`? Add `--prefix ~/.local` and put `~/.local/bin` on your `PATH`.
-2. **Set up your repo.** `init` writes a minimal `.done-done.yaml` and asks you, in a terminal, which coding agent and which judge to use. done-done never picks either for you. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
-3. **Check the setup.** `doctor` changes nothing and names each missing piece with the exact command that fixes it. It checks setup, not whether your app works.
+2. **Set up your repo.** `init` asks you, in a terminal, which coding agent drives your app and which judge checks it. done-done never picks either for you. It then writes a minimal `.done-done.yaml` and a verify skill: how to launch and drive your app. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
+3. **Get your first result.** `verify` has your agent drive the real product the way a user does and save screenshots or output. A fresh judge checks whether each capture shows your claim. A pass names the capture and writes a receipt for this commit. Anything else stops at a gate with the judge's reason, and `done-done respond` answers it. No judge pass, no receipt.
 
-Review and commit the capture recipe and verify skill, then ask for proof:
-
-```sh
-done-done verify --outcome "<what a user can now do>"
-```
-
-Your agent drives the real product and saves screenshots or output. A fresh judge checks whether each capture shows your claim. No judge pass, no receipt. You choose the agents and models; captures go to your chosen judge's provider, on your own plan or key. [Manual CLI](#manual-cli) walks through recording a journey, checking it and saving a receipt.
+No result? `done-done doctor` changes nothing and names each missing piece, such as a verify skill `init` could not write, with the exact command that fixes it. Commit `.done-done.yaml` and the verify skill so later runs and your teammates use the same recipe. You choose the agents and models; captures go to your chosen judge's provider, on your own plan or key. [Manual CLI](#manual-cli) walks through recording a journey, checking it and saving a receipt.
 
 ## Why
 
