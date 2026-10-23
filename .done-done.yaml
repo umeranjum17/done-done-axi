@@ -22,6 +22,8 @@ journeys:
     command: node journeys/agents-live.mjs
   after-commit:
     command: node journeys/after-commit.mjs
+  journey-add:
+    command: node journeys/journey-add.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

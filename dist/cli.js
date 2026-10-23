@@ -214,6 +214,11 @@ const COMMANDS = {
         flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--claim-id <id>', '--wait', '--no-wait', '--foreground'],
         more: [RUNS_TEXT],
     },
+    journey: {
+        usage: [['done-done journey add "<description>"', 'use your configured agent to add a capture script, journey config and verify feature, print a diff summary, then run it once']],
+        flags: [],
+        more: ['Run init first. Generation runs locally, never in CI, and never chooses an agent. Review and commit the generated files, then re-run for clean proof. A journey that spends is saved but not run: use verify for approval.'],
+    },
     maintain: {
         usage: [['done-done maintain [--no-wait | --wait | --foreground]', 'check the verify skill against the source in a run: links, index, cited file:line, one read-only reader per feature; with auto_fix.maintain, the agent fixes the skill on a done-done branch']],
         flags: ['--wait', '--no-wait', '--foreground'],
@@ -1253,7 +1258,7 @@ const STALE_MS = 60_000;
 const runsRoot = (app) => join(home(), 'runs', app);
 const verifySteps = (cfg) => ['resolve', 'drive', 'check', 'judge', ...(cfg.auto_fix.verify ? ['triage', 'fix'] : []), 'gate', 'receipt', 'report'];
 // Commands an agent drive must not run: they answer a gate, write a receipt or start a run that can write one.
-const DRIVE_REFUSED = ['respond', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit'];
+const DRIVE_REFUSED = ['respond', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit', 'journey'];
 // One agent drive may launch the app, drive it and save captures; past this it is killed with everything it started.
 const DRIVE_SCHEMA = {
     type: 'object',
@@ -2994,6 +2999,100 @@ function verifyFeatureMd(app, s, f) {
     const drive = clause(f.drive);
     return `# ${f.title}\n\nPart of the ${app} verification map. Source: \`${cited(f.source)}\`.\n\n## How to get to it (user POV)\n\n${clause(f.reach)}.\n\n## Driving it\n\nHarness: ${clause(s.harness)}.\n\n1. Launch the app as SKILL.md says and wait until it is ready.\n2. ${drive[0].toUpperCase()}${drive.slice(1)}.\n3. Capture: ${capture}, as SKILL.md's Evidence section says.\n4. Stop what you started.\n\n${NO_EDIT}.\n`;
 }
+// Generation is read-only, like init. Only plain code writes the returned recipe; subsequent runs need no agent.
+async function cmdJourney(argv) {
+    const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+    if (positionals.length !== 2 || positionals[0] !== 'add' || !positionals[1].trim())
+        throw new UsageError('Use: done-done journey add "<description>"');
+    if (process.env.CI)
+        throw new UsageError('journey add uses an agent to generate repo changes; run it locally, review and commit them, then run the saved journey in CI');
+    const repo = repoRoot(), cfg = loadConfig(repo);
+    const config = join(repo, '.done-done.yaml'), index = join(repo, cfg.skill, 'features/README.md');
+    if (![config, join(repo, cfg.skill, 'SKILL.md'), index].every(existsSync))
+        throw new UsageError('journey add needs the project config and verify feature map', 'Run: done-done init');
+    const inside = under(repo, index);
+    if (!inside || cfg.skill.split(/[\\/]/).includes('..'))
+        throw new UsageError('journey add needs a verify skill inside the repo');
+    const safePath = (p) => { if (symlinkOnPath(repo, p))
+        throw new UsageError(`${shown(repo, p)} is reached through a symlink; nothing written`); };
+    for (const p of [config, index, join(repo, cfg.skill, 'SKILL.md'), join(repo, 'journeys')])
+        safePath(p);
+    const agent = selectAgent(cfg), toolless = agent.agent !== 'claude';
+    if (!agent.path)
+        throw new UsageError(notStartable(agent.agent, agent.override));
+    if (toolless && toollessReason(agent.agent))
+        throw new UsageError(toollessReason(agent.agent), 'Use an agent supported by init: done-done init --agent <agent> --model <model>');
+    const before = repoState(repo);
+    const context = repoContext(repo, cfg.skill);
+    const fields = ['name', 'title', 'source', 'script', 'checks', 'spends', 'blocker'];
+    const schema = { type: 'object', properties: Object.fromEntries(fields.map(k => [k, STR])), required: fields, additionalProperties: false };
+    const record = join(home(), 'agents', `journey-add-${randomBytes(8).toString('hex')}.json`);
+    const a = await askAgent({ ...agent, cwd: repo, tools: toolless ? 'none' : 'read', record, schema, prompt: `Add ONE journey for this user request: ${JSON.stringify(positionals[1])}.
+Read only; never edit files, run commands or drive the app during generation. Use only the real handles in the supplied repository source. Never open secret-looking files or include secret values. Return blocker with the real cause if this cannot be driven safely; leave blocker empty otherwise.
+Return name (lowercase kebab-case), title, source (one tracked non-secret file shown below), script (a complete Node ESM capture script), checks (the concrete assertions and expected user-visible result), spends (empty unless it uses a paid service or sends/posts externally), blocker.
+The script runs from the repo root as node journeys/<name>.mjs. Drive the REAL app the way a user does, not tests, typechecks, lint or builds. Use isolated temporary state and clean up only what the script started. Use Umer for demo data. No installed app state or real accounts. Reuse existing proof handles where possible.
+The saved script MUST be deterministic and self-contained: no agents, model calls, done-done verify, generation or Firstmate dependency at runtime. Use node:assert/strict to check actual output/side effects; a failed check must exit nonzero. Write captures of the actual resulting state into process.env.DONE_DONE_EVIDENCE_ROOT, never invented output. Write steps.json there (${STEPS_SHAPE}) from the actual drive. Honour DONE_DONE_BASE_URL and matrix env when configured; screenshot/page-check records for visual flows. Do not embed absolute checkout paths.
+Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature map:\n${repoText(index)}\n\n${context.text}` });
+    if (repoState(repo) !== before)
+        throw new UsageError('the repo changed during generation; no recipe was written; review the changes before retrying');
+    if (!a.ok)
+        throw new UsageError(`${agent.agent} did not generate a journey: ${a.error}; record ${a.record ?? record}`);
+    const s = a.answer;
+    if (s.blocker.trim())
+        throw new UsageError(`journey not added: ${s.blocker}`);
+    if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(s.name) || s.name === 'readme')
+        throw new UsageError('the agent returned an invalid journey name');
+    if (Object.hasOwn(cfg.journeys, s.name))
+        throw new UsageError(`journey ${s.name} already exists; nothing written`);
+    if (!s.title.trim() || !s.checks.trim() || !s.script.includes('DONE_DONE_EVIDENCE_ROOT'))
+        throw new UsageError('the agent returned no title, checks or capture script; nothing written');
+    if (absoluteInside(s.script, repo))
+        throw new UsageError('the agent embedded an absolute checkout path; nothing written');
+    if (!context.files.has(s.source) || SECRET.test(s.source) || (toolless && !context.read.has(s.source)))
+        throw new UsageError(`the agent cited an unavailable source: ${s.source}; nothing written`);
+    // Parse, never execute, before touching any project file.
+    execFileSync(process.execPath, ['--check', '--input-type=module'], { input: s.script, stdio: ['pipe', 'pipe', 'pipe'] });
+    const script = join(repo, 'journeys', `${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
+    for (const p of [script, feature]) {
+        safePath(p);
+        if (existsSync(p))
+            throw new UsageError(`${shown(repo, p)} already exists; nothing written`);
+    }
+    const originalConfig = readFileSync(config, 'utf8'), originalIndex = readFileSync(index, 'utf8');
+    const doc = parseDocument(originalConfig);
+    if (doc.get('journeys') == null)
+        doc.set('journeys', doc.createNode({}));
+    doc.setIn(['journeys', s.name], { command: `node journeys/${s.name}.mjs`, ...(s.spends.trim() && { spends: s.spends.trim() }) });
+    const nextConfig = doc.toString({ lineWidth: 0 });
+    loadConfig(repo, nextConfig);
+    const featureText = `# ${s.title}\n\nRequest: ${positionals[1]}\n\nSource: \`${s.source}\`, \`journeys/${s.name}.mjs\`.\n\n## Drive and capture\n\nRun \`done-done run ${s.name}\`. The committed script drives the app, checks the result and writes captures and steps.json into $DONE_DONE_EVIDENCE_ROOT.\n\n## Checks\n\n${s.checks}\n`;
+    const files = new Map([[script, `${s.script.trim()}\n`], [feature, featureText], [index, `${originalIndex.trimEnd()}\n- [${s.title}](${s.name}.md): run \`done-done run ${s.name}\`\n`], [config, nextConfig]]);
+    const written = [];
+    try {
+        for (const [p, text] of files) {
+            mkdirSync(dirname(p), { recursive: true });
+            const fd = openSync(p, p === script || p === feature ? 'wx' : 'w');
+            written.push(p);
+            try {
+                writeFileSync(fd, text);
+            }
+            finally {
+                closeSync(fd);
+            }
+        }
+    }
+    catch (e) {
+        for (const p of written.reverse()) {
+            if (p === config || p === index)
+                writeFileSync(p, p === config ? originalConfig : originalIndex);
+            else
+                rmSync(p);
+        }
+        throw e;
+    }
+    process.stderr.write(`Added journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', relative(repo, config), relative(repo, index))}\n${[script, feature].map(p => ` ${relative(repo, p)} | ${files.get(p).split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
+    return cmdRun([s.name]);
+}
 // An entry's role marks, the text doctor reads (src/proof.ts namedJourney).
 const marks = (f) => `${f.core ? ` ${MARK.core}` : ''}${f.upgrade ? ` ${MARK.upgrade}` : ''}`;
 function verifyFeaturesMd(app, features, omitted) {
@@ -4327,6 +4426,8 @@ async function main(argv) {
             throw new UsageError(`${cmd} refuses to run inside an agent drive (DONE_DONE_DRIVE is set), so the agent does not answer its own gate, write a receipt or start a run by accident; this guards against accidents and is not a sandbox`, 'Stop the drive and report what you captured; done-done answers the run and writes the receipt');
         if (cmd === 'init')
             return await cmdInit(rest);
+        if (cmd === 'journey')
+            return await cmdJourney(rest);
         if (cmd === 'doctor')
             return await cmdDoctor(rest);
         if (cmd === 'run')
