@@ -34,6 +34,7 @@ const journeyExample = 'journeys: { smoke: { command: "<drive the core user jour
 const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DONE_EVIDENCE_ROOT (this run's own new folder in the evidence
   root) and DONE_DONE_RUN_ID set, and \${RUN_ID} in it is replaced; it must write its files into that folder, e.g.
   ${journeyExample}
+  or describe it in plain words and your agent writes the script: done-done journey add "<what a user does and sees>" (done-done journey --help has an example of add, enhance and improve)
   real product: a journey whose command only runs tests, typecheck, lint or a build (npm test, yarn run check, tsc, pytest, or a test or guard
   script such as bash tests/x.test.sh or node scripts/floor-guard.mjs) is code-only;
   init --journey refuses it, and check, receipt and gate refuse proof that comes only from code-only runs or a config of only code-only journeys
@@ -222,7 +223,15 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   journey: {
     usage: [['done-done journey add "<description>"', 'use your configured agent to add a capture script, journey config and verify feature, print a diff summary, then run it once'], ['done-done journey enhance <name> ["<focus>"]', 'deepen one existing journey, preserve its checks and settings, print a diff summary, then run it once'], ['done-done journey improve <name> "<instruction>"', 'apply one specific instruction to an existing journey, print a diff summary, then run it once']],
     flags: [],
-    more: ['Run init first. Generation runs locally, never in CI, and never chooses an agent. Review and commit the generated files, then re-run for clean proof. A journey that spends is saved but not run: use verify for approval.'],
+    more: [`examples (a greeting CLI; add names the journey from your words and prints that name):
+  done-done journey add "greet Umer and check that Hello Umer is printed"
+    writes journeys/greet-umer-prints-hello.mjs, its .done-done.yaml entry and a verify skill feature
+  done-done journey enhance greet-umer-prints-hello "add checks for an empty name and an unknown command"
+    keeps every existing check and adds the edge cases (leave out the focus for a general pass)
+  done-done journey improve greet-umer-prints-hello "also check that greeting Zoë prints exactly Hello Zoë"
+    makes only that one change
+each prints the files it changed and runs the journey once as a dirty-tree trial; review the script like any code, commit it, then
+  done-done run greet-umer-prints-hello records clean proof with no agent or model (CI can replay it)`, 'Run init first. Generation runs locally, never in CI, and uses only the agent you configured; it never chooses one. A journey that spends is saved but not run: use verify for approval.'],
   },
   maintain: {
     usage: [['done-done maintain [--no-wait | --wait | --foreground]', 'check the verify skill against the source in a run: links, index, cited file:line, one read-only reader per feature; with auto_fix.maintain, the agent fixes the skill on a done-done branch']],
