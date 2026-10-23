@@ -15,7 +15,7 @@ A journey entry in the format of muxr's project skill (`.agents/skills/done-done
 
 ## Driving it with the private stack
 
-Needs a separately authorized, isolated Herdr lab session. Never drive the captain's live Herdr.
+Needs a separately authorized, isolated Herdr lab session. Never drive a user's live Herdr.
 
 1. Start a lab host against a named lab Herdr session with two agent panes, A and B, and pair a lab phone client (Umer).
 2. Hold A's `pane.agent_status_changed` subscribe at a socket proxy so the kit's tree read waits for A's watch, then close pane A. This is step 4 of the counterexample.
