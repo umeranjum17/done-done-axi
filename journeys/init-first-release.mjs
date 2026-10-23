@@ -22,10 +22,10 @@ Object.assign(env, {
 const log = [];
 const say = (s) => { log.push(s); console.error(s); };
 const git = (...args) => execFileSync('git', args, { cwd: repo, env, encoding: 'utf8' }).trim();
-const dd = (code, ...args) => {
+const dd = (codes, ...args) => {
   const r = spawnSync(process.execPath, [CLI, ...args, '--json'], { cwd: repo, env, encoding: 'utf8', maxBuffer: 32 << 20 });
   say(`$ done-done ${args.join(' ')}\n${r.stdout}${r.stderr}\nexit: ${r.status}`);
-  assert.equal(r.status, code, r.error?.message || r.stdout + r.stderr);
+  assert.ok(codes.includes(r.status), r.error?.message || r.stdout + r.stderr);
   return JSON.parse(r.stdout);
 };
 
@@ -38,7 +38,7 @@ try {
   git('add', '-A');
   git('commit', '-qm', 'First-release CLI');
   say(`candidate HEAD: ${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()}`);
-  const init = dd(0, 'init', '--agent', process.env.DONE_DONE_JOURNEY_AGENT || 'claude', '--model', process.env.DONE_DONE_JOURNEY_MODEL || 'claude-haiku-5-5');
+  const init = dd([0], 'init', '--agent', process.env.DONE_DONE_JOURNEY_AGENT || 'claude', '--model', process.env.DONE_DONE_JOURNEY_MODEL || 'claude-haiku-5-5');
   assert.match(init.verify_skill, /^written by /);
   const skill = join(repo, '.agents', 'skills', 'done-done-verify-hello-umer');
   const body = readFileSync(join(skill, 'SKILL.md'), 'utf8');
@@ -48,11 +48,15 @@ try {
   git('add', '-A');
   git('commit', '-qm', 'Add verification skill');
   const base = git('rev-parse', 'HEAD');
-  const maintained = dd(0, 'maintain', '--foreground');
-  assert.equal(maintained.result, 'clean');
+  // The agent may find real drift in its generated prose. That is a usable report, not the missing-skill block.
+  const maintained = dd([0, 1], 'maintain', '--foreground');
+  assert.equal(maintained.status, 'completed');
+  assert.ok(['clean', 'drift'].includes(maintained.result));
+  assert.ok(maintained.steps.every((s) => s.status === 'completed'));
+  assert.equal(maintained.git_status, 'same');
   writeFileSync(join(repo, 'bin', 'cli.js'), source.replace('Hello Umer', 'Welcome Umer'));
   git('commit', '-qam', 'Change greeting');
-  const affected = dd(1, 'affected', base);
+  const affected = dd([1], 'affected', base);
   assert.deepEqual(affected.changed, ['bin/cli.js']);
   assert.ok(affected.features?.length, 'no affected feature from the generated map');
   assert.equal(affected.unmapped, undefined);
@@ -61,13 +65,13 @@ try {
   say(`$ node bin/cli.js\n${r.stdout}${r.stderr}\nexit: ${r.status}`);
   assert.equal(r.status, 0);
   assert.equal(r.stdout, 'Welcome Umer\n');
-  say('PASS: init wrote the skill with upgrade pending; maintain clean; affected maps the bin and requests fresh feature proof.');
+  say(`PASS: init wrote the skill with upgrade pending; maintain completed (${maintained.result}); affected maps the bin and requests fresh feature proof.`);
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version },
     start: 'a fresh never-released public npm bin package, no done-done config or verify skill',
-    steps: ['init writes the verify skill with a hosted agent', 'maintain reads the generated skill and ends clean', 'change the bin source and run affected', 'run the changed bin'],
-    result: 'init writes the skill with upgrade pending, maintain is clean, affected maps the changed bin to its feature and asks for fresh proof; the bin prints Welcome Umer',
+    steps: ['init writes the verify skill with a hosted agent', 'maintain completes a read-only report on the generated skill', 'change the bin source and run affected', 'run the changed bin'],
+    result: `init writes the skill with upgrade pending, maintain completes (${maintained.result}), affected maps the changed bin to its feature and asks for fresh proof; the bin prints Welcome Umer`,
   }));
 } catch (err) {
   say(`FAIL: ${err.message}`);
