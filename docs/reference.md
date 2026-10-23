@@ -461,6 +461,27 @@ done-done design shots/home.png --mock shots/home.png=design/home.png
 
 The result lists each screen (failing first, then unsure, then passing; `--full` for more than five) with its `verdict`, its `mock` when it had one, its `defects` (each a `kind` and `where`: the element and where it is on the screen) and a `reason` when it is unsure, plus the `judge` block (route, model, independence and author) and the counts. A missing screen or mock file, or a `--mock` without `=`, is a usage error (exit 2). The judge reads only what is visible, so a wide logo mark that is meant to be wide can fail without a mock; pass its mock to settle it.
 
+### Approved-design coverage
+
+Commit the approved prototype's inventory as an `approved_design` manifest in `.done-done.yaml`. Export one row for **every screen × size × theme** in the approved shots; the manifest, not the files a claim happens to cite, is the build contract:
+
+```yaml
+approved_design:
+  - { screen: home, size: 390x844, theme: light, mock: design/home.phone.light.png, capture: home.phone.light.png }
+  - { screen: home, size: 1280x800, theme: dark, mock: design/home.desktop.dark.png, capture: home.desktop.dark.png }
+  - { screen: today, size: 390x844, theme: light, mock: design/today.phone.light.png, capture: today.phone.light.png }
+```
+
+`mock` is a repo-relative approved PNG/JPEG; `capture` is the unique PNG/JPEG **filename** the live recipe writes into its run folder. `size` is the raw image's width × height in pixels (`390x844`), not a device label. The list must be non-empty, tuples and capture filenames unique, and paths cannot contain `..`. Commit the manifest and approved mocks before capturing. Each mock must match its committed bytes (from `--trusted-ref` when supplied, otherwise HEAD); an uncommitted or edited reference cannot silently redefine approval. No folder-name guessing or model infers the inventory: the approver must enumerate all prototype shots, including navigation and responsive states that need their own screen.
+
+Capture the **real product**, not the prototype, using `look --out "$DONE_DONE_EVIDENCE_ROOT/<capture>"` or the project's native capture recipe, then cite every required live image in `check` or `receipt` (or let `verify` cite the run). The existing run provenance, clean-tree, freshness, step-record and media checks still apply. Mocks need not be cited as live evidence.
+
+When this manifest is configured, **every claim** is gated, including design-done and release claims; wording the outcome differently cannot bypass it. Each required filename must identify exactly one cited, run-bound live screen of the declared pixel size. Missing or ambiguous captures fail **before calling a judge**, with exit 1 and `result: fail`, naming the screen / size / theme. Unrecorded images cannot fill a missing screen. Existing invalid-evidence errors remain errors (exit 2).
+
+After those checks pass, each live image is sent beside its approved mock through the existing [design judge](#design-check), in addition to the claim relevance judge. A mismatch (including missing navigation or elements) **or an unsure match** fails the claim (exit 1), naming its tuple. An unreadable mock, wrong-sized mock or judge error stops with its cause (exit 2); it never passes. The result's `design` list carries every tuple, live path and hash, mock path and hash, and per-screen verdict. Receipts keep that list under `judge.approved_design` and bind the approved mock bytes too, so `receipt --verify` detects an edited reference. `gate` validates the recorded passing comparisons without making a new model call, as with relevance verdicts.
+
+With no manifest, claims behave as before. `design` and `look --mock` remain ad-hoc measurements of supplied screens, not coverage claims: use `check`, `receipt` or `verify` to prove the complete approved inventory. This checks the declared inventory; it cannot discover an approved shot omitted from the manifest or establish capture authenticity beyond the existing run record.
+
 ### Record a receipt
 
 A receipt ties one passing check to one commit and to the exact bytes it cited, so a merge gate (or `gate` in CI) can re-verify the same proof later.
@@ -673,6 +694,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `matrix` | none, so each journey runs once; `theme`, `width`, `form` and `skip` set the [capture matrix](#capture-matrix) |
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |
 | `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
+| `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates all claims, see [Approved-design coverage](#approved-design-coverage) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |
 | `base_ref` | none; a ref `verify` also drives, pairing its captures with the head's, see [Base-ref before](#base-ref-before) |
 | `evidence.root` | `<local_root>/<app>`, outside the repo. A relative path is under the repo; an absolute path is used as-is |
