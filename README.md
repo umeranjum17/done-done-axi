@@ -106,6 +106,72 @@ The skill is the recommended path, but it is not the only one.
 
 Prefer a terminal to an agent skill? The [manual walkthrough](docs/manual-cli.md) covers installation without sudo, choosing agents, capture recipes, core and upgrade journeys, hooks, `doctor`, checks, receipts and the verify/fix loop. All behavior details live there or in the [reference](docs/reference.md).
 
+## Write journeys in plain words
+
+A journey is the saved script that drives your app and captures what a user sees. You do not have to write it yourself. Describe it, and the agent you chose at `init` writes it:
+
+```sh
+done-done journey add "greet Umer and check that Hello Umer is printed"
+done-done journey enhance greet-umer-prints-hello "add checks for an empty name and an unknown command"
+done-done journey improve greet-umer-prints-hello "also check that greeting Zoë prints exactly Hello Zoë"
+```
+
+- **`add "<description>"`** writes a new journey: a capture script in `journeys/`, its entry in `.done-done.yaml` and a feature in your verify skill. It names the journey from your words and prints that name.
+- **`enhance <name> ["<focus>"]`** deepens one journey you already have with more steps, edge cases and checks, and keeps the checks it has. Leave out the focus for a general pass.
+- **`improve <name> "<instruction>"`** makes one specific change to one journey and nothing else.
+
+Each command prints the files it changed, then runs the journey once. This is the real output of the three lines above, from a clean install on a small greeting CLI with Claude Code as the agent (run paths cut short with `…`):
+
+```
+$ done-done journey add "greet Umer and check that Hello Umer is printed"
+Added journey greet-umer-prints-hello through claude. Review these repo changes:
+.agents/skills/done-done-verify-hello-umer/features/README.md | 1 +
+ .done-done.yaml                                               | 3 +++
+ 2 files changed, 4 insertions(+)
+ journeys/greet-umer-prints-hello.mjs | 29 new lines
+ .agents/skills/done-done-verify-hello-umer/features/greet-umer-prints-hello.md | 13 new lines
+The first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run greet-umer-prints-hello
+ok greet-umer-prints-hello
+command: run
+result: recorded
+dirty: true
+files: 1
+evidence[1]: …/terminal.txt
+
+$ done-done journey enhance greet-umer-prints-hello "add checks for an empty name and an unknown command"
+Enhanced journey greet-umer-prints-hello through claude. Review these repo changes:
+.../features/greet-umer-prints-hello.md            |  8 +++++++
+ .done-done.yaml                                    |  4 +++-
+ journeys/greet-umer-prints-hello.mjs               | 27 +++++++++++++++++++---
+ 3 files changed, 35 insertions(+), 4 deletions(-)
+…
+files: 3
+evidence[3]: …/terminal-empty-name.txt,…/terminal-unknown-command.txt,…/terminal.txt
+
+$ done-done journey improve greet-umer-prints-hello "also check that greeting Zoë prints exactly Hello Zoë"
+Improved journey greet-umer-prints-hello through claude. Review these repo changes:
+.../features/greet-umer-prints-hello.md                       |  8 ++++++++
+ .done-done.yaml                                               |  1 +
+ journeys/greet-umer-prints-hello.mjs                          | 11 ++++++++++-
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+…
+files: 4
+evidence[4]: …/terminal-empty-name.txt,…/terminal-unknown-command.txt,…/terminal-zoe.txt,…/terminal.txt
+```
+
+`.done-done.yaml` keeps what you asked for next to the journey:
+
+```yaml
+journeys:
+  greet-umer-prints-hello:
+    command:
+      # Enhanced focus: "add checks for an empty name and an unknown command"
+      # Improved instruction: "also check that greeting Zoë prints exactly Hello Zoë"
+      node journeys/greet-umer-prints-hello.mjs
+```
+
+That first run is a trial on uncommitted files, not proof. Read the generated script as you would any code an agent wrote, commit it, then `done-done run greet-umer-prints-hello` records clean proof (`dirty: false`). The saved script needs no agent or model, so CI can replay it. Generation itself runs only on your machine, never in CI, and uses only the agent you configured. `done-done journey --help` shows these examples; the [reference](docs/reference.md#add-a-journey-from-a-description) has every rule.
+
 ## What it checks
 
 - 🧪 **The real product, not code checks**: Proof must come from driving the app, CLI or site the way a user does. A config whose journeys only run tests, typecheck, lint or a build, or proof whose captures all come from such runs, is refused by `check`, `receipt` and `gate`, and `doctor` flags it ([rule](docs/reference.md#real-product-evidence)).
@@ -165,7 +231,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 ## What's next
 
-So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `affected` (the journeys a diff needs), `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: the [milestones in the vision](VISION.md#next-milestones).
+So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `affected` (the journeys a diff needs), `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `journey add`, `enhance` and `improve` (journeys from plain words), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: the [milestones in the vision](VISION.md#next-milestones).
 
 ## Develop
 

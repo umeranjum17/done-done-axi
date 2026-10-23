@@ -61,6 +61,11 @@ and exits 1 until the receipt for HEAD has a run of each. Cite a file it flags i
 A run waiting at its judge gate (\`awaiting_approval\`) did not pass, and nothing moves it past its judge: show the user
 its findings and captures, and end it with \`done-done respond --action fix\` only when they say so.
 A journey that \`spends\` runs only after the user approves spending: \`done-done run <journey>\` refuses it, so ask the user and use \`verify\`.
+To add a journey, describe it in plain words instead of writing its script: \`done-done journey add "<what a user does and sees>"\`
+has the user's configured agent write the capture script, its \`.done-done.yaml\` entry and a verify skill feature, then runs it once.
+\`done-done journey enhance <name> ["<focus>"]\` deepens one existing journey and keeps its checks; \`done-done journey improve <name> "<instruction>"\`
+makes one specific change to it. Each first run is a dirty-tree trial: review the script like any code, commit it, then
+\`done-done run <name>\` for proof. \`done-done journey --help\` shows an example of each.
 
 For a web page, \`done-done look <url>\` is the look step a journey calls: it captures the page at a 390x844 phone viewport
 with its page-check record and exits 1 on squashed, clipped or cut-off UI, naming each element. \`--act <selector>\` clicks a
