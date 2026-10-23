@@ -10,7 +10,7 @@ const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 12; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 13; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -318,7 +318,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
             images[captureId] = input;
         if (beforeId && before && 'mime' in before)
             images[beforeId] = before;
-        state[id] = { name: c.name, ...(pair && { before_name: pair.name }), ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
+        state[id] = { name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
         questions[id] = { ...base, images: 'text' in input ? [] : beforeId && before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS} Use one shared parts list for this entire request: define it in capture_0.parts, in outcome order. Every capture's covers indexes that shared list, never a separately worded or reordered list.`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
     }
     const call = join(records, `judge-${stamp}-1`);
@@ -390,8 +390,8 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
         be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
         const answers = 'text' in input
-            ? await askJudge(cfg, be, choice, { outcome, name: c.name, ...(pair && { before_name: pair.name }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
-            : await askJudge(cfg, be, choice, { outcome, name: c.name, ...(pair && { before_name: pair.name }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input });
+            ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
+            : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input });
         const a = answers.relevance;
         const options = shape.options;
         const reason = a.personReason || a.rationale || options[String(a.answer)] || '';

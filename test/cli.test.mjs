@@ -635,7 +635,7 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   assert.deepEqual(toon(checked).judge.not_judged, [files[2]]);
   const call = j.calls()[0];
   assert.equal(call.images, 2);
-  assert.deepEqual([call.state.capture_0.name, call.state.capture_1.name], files.slice(0, 2), 'each image retains its cited name, not just a generic capture index');
+  assert.deepEqual([call.state.capture_0.name, call.state.capture_1.name], files.slice(0, 2).map(p => basename(p)), 'each image retains its cited name, not just a generic capture index');
   const data = JSON.parse(call.prompt.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
   assert.deepEqual(data.questions.capture_0.images, ['capture_0__changed']);
   assert.deepEqual(data.questions.capture_1.images, ['capture_1__clip-frame']);
@@ -658,7 +658,7 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
 
   const single = j.dd('check', '--outcome', outcome, files[0]);
   assert.equal(single.code, 1, single.out);
-  assert.equal(j.calls().at(-1).state.name, files[0], 'single-image checks retain the cited name too');
+  assert.equal(j.calls().at(-1).state.name, basename(files[0]), 'single-image checks retain the cited name too');
 });
 
 test('check reads the same Checks block from a file or from stdin', () => {
@@ -7508,7 +7508,8 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
   const proof = join(t.repo, '.proof', on.run.run_id);
   const paired = JSON.parse(calls[0].file.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
   for (const [key, value] of Object.entries(paired.state).filter(([key]) => key.startsWith('capture_'))) {
-    assert.equal(value.before_name, join(proof, 'before', basename(value.name)));
+    assert.equal(value.before_name, value.name);
+    assert.ok(!value.name.includes('/'), 'the cited basename is sent, never an owner or repository path');
     assert.ok(paired.questions[key].images.every(id => id.endsWith('__' + basename(value.name, '.png'))));
   }
   for (const cell of ['light', 'dark']) assert.deepEqual(readFileSync(join(proof, 'before', `home.${cell}.png`)), readFileSync(join(t.dir, `old.${cell}.png`)), `the ${cell} base capture is the base ref's page`);
