@@ -57,7 +57,7 @@ export type Config = {
 // The coding agents a user can set as agent.
 export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // The agents whose CLI can read an attached image with every tool off, so they judge through the answerer route;
-// claude judges through claude-code. An acp:<target> agent cannot be sent an image. codex cannot run tools-off, so it does not judge.
+// claude judges through claude-code. An acp:<target> agent cannot be sent an image. Codex image judging is not implemented.
 export const ANSWERER_JUDGES = ['opencode', 'pi', 'gemini'];
 // BYOKit key routes: a judge on the user's own API key, read from this environment variable, with no agent CLI.
 // openai:key needs judge.model; a route with a model here runs it when judge.model is empty (the free MiniMax route).

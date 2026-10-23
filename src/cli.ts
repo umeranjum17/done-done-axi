@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
-import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, editOnlyReason, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
+import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
 import { AGENTS, CHEAP, type Config, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
@@ -2897,7 +2897,7 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const agent = selectAgent(cfg);
   // As in maintain, only claude reads the repo with its own tools; every other agent gets the files from plain code.
   const toolless = agent.agent !== 'claude';
-  if (toolless && toollessReason(agent.agent)) return { status: `not written: ${toollessReason(agent.agent)}; set the verify skill agent to claude, opencode, pi or acp with done-done init --agent <agent> --model <model>`, failed: true };
+  if (toolless && toollessReason(agent.agent)) return { status: `not written: ${toollessReason(agent.agent)}; set the verify skill agent to claude, codex, opencode, pi or acp with done-done init --agent <agent> --model <model>`, failed: true };
   const context = repoContext(repo, cfg.skill);
   // Every schema-valid answer cites tracked files, so with none there is nothing to ask for.
   if (!context.files.size) return { status: "not written: the repo has no tracked files to cite; commit the repo's files, then re-run init", failed: true };
@@ -3605,9 +3605,7 @@ async function cmdDoctor(argv: string[]): Promise<number> {
     checks.push({ check: 'judge_choice', status: 'ok', detail: `${choice.route} (model ${choice.model}; from config) judges the author ${choice.author.agent} (model ${choice.author.model || 'none'}): ${apart}`, fix: '' });
   }
   if (values.probe && !agent) checks.push(unknownRow('probe'));
-  const toolless = agent?.path ? editOnlyReason(agent.agent) : '';
-  if (values.probe && agent && toolless) checks.push({ check: 'probe', status: 'warning', detail: `${toolless}; ${agent.agent} is not probed, its edit steps run through verify`, fix: '' });
-  else if (values.probe && agent) {
+  if (values.probe && agent) {
     const record = join(home(), 'agents', `probe-${new Date().toISOString().replace(/[:.]/g, '-')}-${agent.agent}.json`);
     const probe: AgentAnswer & { fix?: string } = !agent.path ? { ok: false, error: notFound, fix: installFix }
       : await askAgent({ ...agent, prompt: 'This is a connectivity probe from done-done doctor. Use no tools. Answer with ok set to true.', schema: PROBE_SCHEMA, cwd: repo ?? process.cwd(), tools: 'none', record, idleMs: PROBE_IDLE_MS });
