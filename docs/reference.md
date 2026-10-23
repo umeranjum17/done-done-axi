@@ -129,7 +129,20 @@ done-done journey enhance greet-umer "focus on empty input, long names and error
 
 It writes a complete `journeys/<name>.mjs`, updates that journey's command with a reviewable focus comment in `.done-done.yaml`, and appends the focus and checks to its verify feature (creating the feature and map entry when absent). Other journeys, feature-map entries, existing feature text, role marks, timeout and spend restrictions are retained. An existing canonical script must belong exclusively to this journey; a colliding feature must already name `done-done run <name>`. Otherwise nothing is written. A renamed answer is refused, as are symlinks and invalid scripts or source citations.
 
-The diff summary and immediate dirty-tree trial work exactly as for `add`; failed assertions return nonzero with changes left for review. A spend-gated journey is saved but not executed. Review and commit, then `done-done run <name>` records clean evidence with no generation or agent needed, including in CI. Improving several journeys from an instruction is a follow-up, not this command.
+The diff summary and immediate dirty-tree trial work exactly as for `add`; failed assertions return nonzero with changes left for review. A spend-gated journey is saved but not executed. Review and commit, then `done-done run <name>` records clean evidence with no generation or agent needed, including in CI. Use `journey improve` to apply one specific instruction rather than broadly deepening coverage.
+
+### Improve one journey with an instruction
+
+```sh
+done-done journey improve greet-umer "also assert the exact Unicode greeting for Zoë"
+done-done journey improve checkout "assert the toast text"
+```
+
+`improve <name> "<instruction>"` requires one existing lowercase kebab-case journey name and one nonblank plain instruction. It uses your configured agent and model, never chooses an agent, and refuses generation in CI. No Firstmate installation is needed; nothing generates or runs unless you invoke it.
+
+Like `enhance`, it supplies the current journey, script and verify feature to the read-only generator. Unlike broad enhancement, it asks for only the specific requested change, retaining existing steps and assertions. It writes a complete static `journeys/<name>.mjs`, adds an `Improved instruction` comment to the journey command in `.done-done.yaml`, and appends `Improved coverage` with the instruction and checks to the verify feature. Existing feature text, sibling journeys, map entries and journey settings are retained. It shares `add`/`enhance`'s source, syntax, collision, symlink and generation-change checks; failures report their cause without writing a recipe.
+
+It prints a diff summary and runs that saved journey once. A failed assertion returns nonzero and leaves the edits for review; an existing or newly declared spend restriction prevents the trial from running. The first run is dirty-tree evidence, not clean proof. Review the generated executable code: preservation and deterministic behavior are instructions to the generator, not semantic guarantees. Commit and replay with `done-done run <name>` for clean evidence; the saved recipe needs no agent or model in CI. This command targets one named journey, not a project-wide rewrite.
 
 ### Run a journey
 

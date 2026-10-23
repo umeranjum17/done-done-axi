@@ -219,7 +219,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
     more: [RUNS_TEXT],
   },
   journey: {
-    usage: [['done-done journey add "<description>"', 'use your configured agent to add a capture script, journey config and verify feature, print a diff summary, then run it once'], ['done-done journey enhance <name> ["<focus>"]', 'deepen one existing journey, preserve its checks and settings, print a diff summary, then run it once']],
+    usage: [['done-done journey add "<description>"', 'use your configured agent to add a capture script, journey config and verify feature, print a diff summary, then run it once'], ['done-done journey enhance <name> ["<focus>"]', 'deepen one existing journey, preserve its checks and settings, print a diff summary, then run it once'], ['done-done journey improve <name> "<instruction>"', 'apply one specific instruction to an existing journey, print a diff summary, then run it once']],
     flags: [],
     more: ['Run init first. Generation runs locally, never in CI, and never chooses an agent. Review and commit the generated files, then re-run for clean proof. A journey that spends is saved but not run: use verify for approval.'],
   },
@@ -2854,9 +2854,10 @@ function verifyFeatureMd(app: string, s: Scaffold, f: Feature): string {
 // Generation is read-only, like init. Only plain code writes the returned recipe; subsequent runs need no agent.
 async function cmdJourney(argv: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: argv, allowPositionals: true });
-  const enhance = positionals[0] === 'enhance', action = enhance ? 'enhance' : 'add';
-  if ((!enhance && (positionals[0] !== 'add' || positionals.length !== 2)) || (enhance && ![2, 3].includes(positionals.length)) || !positionals[1]?.trim() || positionals[2] === '') throw new UsageError('Use: done-done journey add "<description>" | done-done journey enhance <name> ["<focus>"]');
-  const request = enhance ? positionals[2]?.trim() || 'Add steps, edge cases, boundary sizes and states, and stronger checks on this path.' : positionals[1];
+  const action = positionals[0], improve = action === 'improve', named = action === 'enhance' || improve;
+  if ((!named && (action !== 'add' || positionals.length !== 2)) || (named && ![2, 3].includes(positionals.length)) || !positionals[1]?.trim() || positionals[2] === '' || (improve && !positionals[2]?.trim())) throw new UsageError('Use: done-done journey add "<description>" | done-done journey enhance <name> ["<focus>"] | done-done journey improve <name> "<instruction>"');
+  const request = named ? positionals[2]?.trim() || 'Add steps, edge cases, boundary sizes and states, and stronger checks on this path.' : positionals[1];
+  const label = improve ? 'Improved' : 'Enhanced';
   if (process.env.CI) throw new UsageError(`journey ${action} uses an agent to generate repo changes; run it locally, review and commit them, then run the saved journey in CI`);
   const repo = repoRoot(), cfg = loadConfig(repo);
   const config = join(repo, '.done-done.yaml'), index = join(repo, cfg.skill, 'features/README.md');
@@ -2865,11 +2866,11 @@ async function cmdJourney(argv: string[]): Promise<number> {
   if (!inside || cfg.skill.split(/[\\/]/).includes('..')) throw new UsageError(`journey ${action} needs a verify skill inside the repo`);
   const safePath = (p: string) => { if (symlinkOnPath(repo, p)) throw new UsageError(`${shown(repo, p)} is reached through a symlink; nothing written`); };
   for (const p of [config, index, join(repo, cfg.skill, 'SKILL.md'), join(repo, 'journeys')]) safePath(p);
-  const name = enhance ? positionals[1] : '';
-  if (enhance && !Object.hasOwn(cfg.journeys, name)) throw new UsageError(`unknown journey ${name}; nothing written`);
-  if (enhance && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(name)) throw new UsageError('enhance needs a lowercase kebab-case journey name');
+  const name = named ? positionals[1] : '';
+  if (named && !Object.hasOwn(cfg.journeys, name)) throw new UsageError(`unknown journey ${name}; nothing written`);
+  if (named && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(name)) throw new UsageError(`${action} needs a lowercase kebab-case journey name`);
   const priorScript = join(repo, 'journeys', `${name}.mjs`), priorFeature = join(dirname(index), `${name}.md`);
-  if (enhance) {
+  if (named) {
     for (const p of [priorScript, priorFeature]) safePath(p);
     if (existsSync(priorScript) && (cfg.journeys[name].command !== `node journeys/${name}.mjs` || Object.entries(cfg.journeys).some(([n, j]) => n !== name && j.command.includes(`journeys/${name}.mjs`)))) throw new UsageError(`${shown(repo, priorScript)} is not exclusive to this journey; nothing written`);
     if (existsSync(priorFeature) && !readFileSync(priorFeature, 'utf8').includes(`done-done run ${name}`)) throw new UsageError(`${shown(repo, priorFeature)} does not name this journey; nothing written`);
@@ -2882,8 +2883,8 @@ async function cmdJourney(argv: string[]): Promise<number> {
   const fields = ['name', 'title', 'source', 'script', 'checks', 'spends', 'blocker'];
   const schema = { type: 'object', properties: Object.fromEntries(fields.map(k => [k, STR])), required: fields, additionalProperties: false };
   const record = join(home(), 'agents', `journey-${action}-${randomBytes(8).toString('hex')}.json`);
-  const goal = enhance ? `Enhance ONLY the existing journey ${JSON.stringify(name)}. Keep that exact name. Focus: ${JSON.stringify(request)}.
-Preserve every existing drive step and assertion; add concrete deeper coverage on this same path, not another journey. Respect existing spend restrictions, timeout, role and matrix settings. Return the COMPLETE replacement script, not a patch.
+  const goal = named ? `${improve ? 'Improve' : 'Enhance'} ONLY the existing journey ${JSON.stringify(name)}. Keep that exact name. ${improve ? 'Instruction' : 'Focus'}: ${JSON.stringify(request)}.
+Preserve every existing drive step and assertion; ${improve ? 'apply only this specific instruction, without unrelated expansion' : 'add concrete deeper coverage on this same path'}, not another journey. Respect existing spend restrictions, timeout, role and matrix settings. Return the COMPLETE replacement script, not a patch.
 Existing journey: ${JSON.stringify(cfg.journeys[name])}
 Existing script:\n${repoText(priorScript)}\nExisting feature:\n${repoText(priorFeature)}` : `Add ONE journey for this user request: ${JSON.stringify(request)}.`;
   const a = await askAgent({ ...agent, cwd: repo, tools: toolless ? 'none' : 'read', record, schema, prompt: `${goal}
@@ -2898,7 +2899,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   const s = a.answer as Record<string, string>;
   if (s.blocker.trim()) throw new UsageError(`journey ${action} blocked: ${s.blocker}`);
   if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(s.name) || s.name === 'readme') throw new UsageError('the agent returned an invalid journey name');
-  if (enhance ? s.name !== name : Object.hasOwn(cfg.journeys, s.name)) throw new UsageError(enhance ? 'the agent renamed the journey; nothing written' : `journey ${s.name} already exists; nothing written`);
+  if (named ? s.name !== name : Object.hasOwn(cfg.journeys, s.name)) throw new UsageError(named ? 'the agent renamed the journey; nothing written' : `journey ${s.name} already exists; nothing written`);
   if (!s.title.trim() || !s.checks.trim() || !s.script.includes('DONE_DONE_EVIDENCE_ROOT')) throw new UsageError('the agent returned no title, checks or capture script; nothing written');
   if (absoluteInside(s.script, repo)) throw new UsageError('the agent embedded an absolute checkout path; nothing written');
   if (!context.files.has(s.source) || SECRET.test(s.source) || (toolless && !context.read.has(s.source))) throw new UsageError(`the agent cited an unavailable source: ${s.source}; nothing written`);
@@ -2911,23 +2912,23 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   const script = join(repo, 'journeys', `${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
   for (const p of [script, feature]) {
     safePath(p);
-    if (!enhance && existsSync(p)) throw new UsageError(`${shown(repo, p)} already exists; nothing written`);
+    if (!named && existsSync(p)) throw new UsageError(`${shown(repo, p)} already exists; nothing written`);
   }
   const originalConfig = readFileSync(config, 'utf8'), originalIndex = readFileSync(index, 'utf8');
   const doc = parseDocument(originalConfig);
   if (doc.get('journeys') == null) doc.set('journeys', doc.createNode({}));
-  if (!enhance) doc.setIn(['journeys', s.name], doc.createNode({}));
+  if (!named) doc.setIn(['journeys', s.name], doc.createNode({}));
   doc.setIn(['journeys', s.name, 'command'], `node journeys/${s.name}.mjs`);
   if (s.spends.trim()) doc.setIn(['journeys', s.name, 'spends'], [cfg.journeys[s.name]?.spends, s.spends.trim()].filter(Boolean).join('; '));
-  if (enhance) {
+  if (named) {
     const command = doc.getIn(['journeys', s.name, 'command'], true) as { commentBefore?: string };
-    command.commentBefore = [command.commentBefore, ` Enhanced focus: ${JSON.stringify(request)}`].filter(Boolean).join('\n');
+    command.commentBefore = [command.commentBefore, ` ${label} ${improve ? 'instruction' : 'focus'}: ${JSON.stringify(request)}`].filter(Boolean).join('\n');
   }
   const nextConfig = doc.toString({ lineWidth: 0 });
   loadConfig(repo, nextConfig);
   const featureText = `# ${s.title}\n\nRequest: ${request}\n\nSource: \`${s.source}\`, \`journeys/${s.name}.mjs\`.\n\n## Drive and capture\n\nRun \`done-done run ${s.name}\`. The committed script drives the app, checks the result and writes captures and steps.json into $DONE_DONE_EVIDENCE_ROOT.\n\n## Checks\n\n${s.checks}\n`;
-  const nextFeature = enhance && existsSync(feature) ? `${readFileSync(feature, 'utf8').trimEnd()}\n\n## Enhanced coverage\n\nFocus: ${request}\n\nSource: \`${s.source}\`.\n\n${s.checks}\n` : featureText;
-  const nextIndex = enhance && originalIndex.includes(`](${s.name}.md)`) ? originalIndex : `${originalIndex.trimEnd()}\n- [${s.title}](${s.name}.md): run \`done-done run ${s.name}\`\n`;
+  const nextFeature = named && existsSync(feature) ? `${readFileSync(feature, 'utf8').trimEnd()}\n\n## ${label} coverage\n\n${improve ? 'Instruction' : 'Focus'}: ${request}\n\nSource: \`${s.source}\`.\n\n${s.checks}\n` : featureText;
+  const nextIndex = named && originalIndex.includes(`](${s.name}.md)`) ? originalIndex : `${originalIndex.trimEnd()}\n- [${s.title}](${s.name}.md): run \`done-done run ${s.name}\`\n`;
   const files = new Map([[script, `${s.script.trim()}\n`], [feature, nextFeature], [index, nextIndex], [config, nextConfig]]);
   const originals = new Map([...files.keys()].map(p => [p, existsSync(p) ? readFileSync(p, 'utf8') : null]));
   const written: string[] = [];
@@ -2946,7 +2947,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
     }
     throw e;
   }
-  process.stderr.write(`${enhance ? 'Enhanced' : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
+  process.stderr.write(`${named ? label : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
   return cmdRun([s.name]);
 }
 
