@@ -1487,7 +1487,7 @@ const keepSkill = (repo, app) => {
   writeFileSync(join(repo, '.agents', 'skills', `done-done-verify-${app}`, 'SKILL.md'), `# done-done-verify-${app}\n`);
 };
 
-test('journey add and enhance generate reviewable recipes, run the app, and replay without an agent', () => {
+test('journey add, enhance and improve generate reviewable recipes, run the app, and replay without an agent', () => {
   const { repo, env, sh } = setup('app: notes\n');
   delete env.CI;
   const skill = join(repo, '.agents/skills/done-done-verify-notes');
@@ -1571,15 +1571,55 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + e
   assert.equal(clean.status, 0, clean.stdout + clean.stderr);
   assert.equal(JSON.parse(clean.stdout).dirty, false);
   assert.equal(s.calls().length, 1, 'enhanced replay never generates');
+  const improve = (...args) => run({}, 'journey', 'improve', ...args);
+  const instruction = 'also assert the exact Unicode greeting for Zoë';
+  for (const args of [[], [answer.name], [answer.name, '   '], [answer.name, instruction, 'extra'], ['missing', instruction]]) {
+    assert.equal(improve(...args).status, 2, 'improve requires one named journey and a nonblank instruction');
+  }
+  assert.equal(improve(answer.name, instruction).status, 2, 'improve never selects an agent');
+  writeFileSync(global, configured);
+  assert.equal(run({ CI: 'true' }, 'journey', 'improve', answer.name, instruction).status, 2);
+  assert.equal(s.calls().length, 1, 'invalid requests and CI never generate');
+  const improved = deeper.replace("writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + edge);", `const unicode = execFileSync(process.execPath, ['app.mjs', 'Zoë'], { encoding: 'utf8' });
+assert.equal(unicode, 'Hello Zoë\\n');
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + edge + unicode);`);
+  s = stubAgents(env, JSON.stringify({ ...answer, script: improved, checks: 'Keep greeting and empty name checks; Unicode greeting is exactly Hello Zoë.' }));
+  const i = improve(answer.name, instruction);
+  assert.equal(i.status, 0, i.stdout + i.stderr);
+  assert.equal(JSON.parse(i.stdout).dirty, true);
+  assert.match(i.stderr, /Improved journey greet-umer[\s\S]*Review these repo changes:[\s\S]*greet-umer.mjs/);
+  assert.match(s.calls()[0].stdin, /Improve ONLY[\s\S]*exact Unicode greeting[\s\S]*apply only this specific instruction/);
+  assert.ok(s.calls()[0].stdin.includes(deeper.trim()), 'improve receives the enhanced script');
+  const improvedYaml = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
+  assert.match(improvedYaml, /Enhanced focus:[\s\S]*Improved instruction:/);
+  assert.deepEqual(parse(improvedYaml), parse(yaml), 'settings and sibling are preserved');
+  assert.ok(readFileSync(join(skill, 'features/greet-umer.md'), 'utf8').startsWith(feature), 'previous checks stay in the feature');
+  assert.match(readFileSync(join(skill, 'features/greet-umer.md'), 'utf8'), /Improved coverage[\s\S]*Instruction: also assert the exact Unicode greeting/);
+  assert.equal(readFileSync(join(skill, 'features/README.md'), 'utf8').match(/greet-umer.md/g).length, 1);
+  sh('add', '-A'); sh('commit', '-qm', 'Improve Unicode check');
+  writeFileSync(global, '');
+  const improvedReplay = run({ CI: 'true' }, 'run', answer.name);
+  assert.equal(improvedReplay.status, 0, improvedReplay.stdout + improvedReplay.stderr);
+  assert.equal(JSON.parse(improvedReplay.stdout).dirty, false);
+  const capture = JSON.parse(improvedReplay.stdout).evidence.find(p => p.endsWith('greeting.txt'));
+  assert.match(readFileSync(capture, 'utf8'), /Hello Umer\nHello \nHello Zoë\n/);
+  assert.equal(s.calls().length, 1, 'improved replay never generates');
+  writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello " + (process.argv[2] ?? "Umer").normalize("NFD"));\n');
+  const unicodeFailure = run({}, 'run', answer.name);
+  assert.equal(unicodeFailure.status, 1, unicodeFailure.stdout + unicodeFailure.stderr);
+  assert.match(unicodeFailure.stderr, /AssertionError/, 'only the new Unicode assertion fails');
+  writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello " + (process.argv[2] ?? "Umer"));\n');
   writeFileSync(global, configured);
   s = stubAgents(env, JSON.stringify({ ...answer, name: 'renamed' }));
+  assert.equal(improve(answer.name, instruction).status, 2, 'improve cannot rename');
+  assert.equal(sh('status', '--porcelain').toString(), '', 'invalid improvement writes nothing');
   assert.equal(enhance(answer.name).status, 2, 'enhance cannot rename');
-  assert.match(s.calls()[0].stdin, /boundary sizes and states/);
+  assert.match(s.calls().at(-1).stdin, /boundary sizes and states/);
   assert.equal(sh('status', '--porcelain').toString(), '', 'bad answer writes nothing');
   // Spend restrictions survive even when generation returns an empty spends field.
   writeFileSync(join(repo, '.done-done.yaml'), yaml.replace('timeout: 45s', 'timeout: 45s\n    spends: one paid call'));
   s = stubAgents(env, JSON.stringify({ ...answer, script: deeper }));
-  const paid = enhance(answer.name, focus);
+  const paid = improve(answer.name, instruction);
   assert.equal(paid.status, 2, paid.stdout + paid.stderr);
   assert.match(paid.stdout + paid.stderr, /spends \(one paid call\)/);
   assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).journeys[answer.name].spends, 'one paid call');
@@ -1598,9 +1638,9 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + e
   assert.match(readFileSync(join(skill, 'features/other.md'), 'utf8'), /Run `done-done run other`/);
   // Reproduce the hosted producer: double-escaped source has literal backslash-n separators.
   // Native --check failure must retain its SyntaxError, not throw on Buffer stderr.
-  s = stubAgents(env, JSON.stringify({ ...answer, name: 'bad-script', script: script.replaceAll('\n', '\\n') }));
+  s = stubAgents(env, JSON.stringify({ ...answer, script: script.replaceAll('\n', '\\n') }));
   const beforeInvalid = sh('diff').toString();
-  const invalid = add('a malformed recipe');
+  const invalid = improve(answer.name, 'a malformed recipe');
   assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
   assert.match(JSON.parse(invalid.stdout).error, /invalid JavaScript[\s\S]*SyntaxError/);
   assert.doesNotMatch(invalid.stderr, /trim is not a function/);
