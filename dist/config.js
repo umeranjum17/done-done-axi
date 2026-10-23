@@ -67,6 +67,7 @@ const KEYS = {
     matrix: { scope: 'repo', type: 'matrix' },
     dom: { scope: 'repo', type: 'dom' },
     look: { scope: 'repo', type: 'look' },
+    approved_design: { scope: 'repo', type: 'approved_design' },
     base_ref: { scope: 'repo', type: 'string' },
     'evidence.root': { scope: 'repo', type: 'string' },
     'evidence.allow_dirty': { scope: 'repo', type: 'boolean' },
@@ -212,6 +213,28 @@ function apply(target, text, file, scope) {
             target[key] = { command: v.command, ready: has(r.url) ? { url: r.url } : { command: r.command }, ready_timeout: v.ready_timeout ?? '30s' };
             continue;
         }
+        if (key === 'approved_design') {
+            const fail = () => { throw new UsageError(`${file}: approved_design must be a non-empty list of unique {screen, size: <width>x<height> in pixels, theme, mock: <repo-relative PNG/JPEG>, capture: <unique PNG/JPEG filename>}`); };
+            const relativeImage = (p) => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
+            if (!Array.isArray(value) || !value.length)
+                fail();
+            const rows = value;
+            const ids = new Set(), names = new Set();
+            for (const r of rows) {
+                if (!isMap(r) || Object.keys(r).length !== 5 || !['screen', 'size', 'theme', 'mock', 'capture'].every(k => typeof r[k] === 'string' && r[k].trim()))
+                    fail();
+                if (!/^[1-9]\d*x[1-9]\d*$/.test(r.size) || !relativeImage(r.mock) || !relativeImage(r.capture) || /[\\/]/.test(r.capture))
+                    fail();
+                const id = JSON.stringify([r.screen, r.size, r.theme]);
+                if (ids.has(id) || names.has(r.capture))
+                    fail();
+                ids.add(id);
+                names.add(r.capture);
+            }
+            target.approved_design = rows;
+            target.from[key] = scope;
+            continue;
+        }
         if (key === 'dom') {
             const d = parseDom(value);
             if (typeof d === 'string')
@@ -289,6 +312,7 @@ function defaultConfig(repo) {
         matrix: null,
         dom: null,
         look: null,
+        approved_design: [],
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },

@@ -51,7 +51,9 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   outcome: <what a user can now do>
   repro: <command that failed before and passes now, or n/a; a fix PR needs one>
   proof: <the command or path that drove the real product; name the repo's done-done-verify-<app> skill, or say "no verify skill">
-  evidence: <the evidence file paths, or "not proven: <cause>">`;
+  evidence: <the evidence file paths, or "not proven: <cause>">
+  approved_design (.done-done.yaml): a non-empty manifest of {screen, size: <width>x<height>, theme, mock: <repo PNG/JPEG>, capture: <unique filename>};
+  every claim needs every listed live screen, paired with its mock and a passing design verdict; missing or unsure matches fail by screen/size/theme`;
 const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/runs/<app>/<run-id> (run.json, events.jsonl, logs/<step>.log,
   agents/<n>-<name>.json for each agent call) and goes on when the command that started it ends;
   verify steps: resolve, drive, check, judge (always; skipped only after a failed check), triage and fix (only with auto_fix.verify above 0), gate, receipt, report;
@@ -718,7 +720,8 @@ function loadRecords(cfg: Config): RunRecord[] {
 }
 
 // The judge block a receipt keeps: who judged, how apart from the author (recorded, never enforced), and each judged capture's verdict.
-type JudgeBlock = { route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
+type DesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; mock: string; mock_sha256: string; verdict: string };
+type JudgeBlock = { approved_design?: DesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -868,6 +871,16 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     if (rec.dirty && !cfg.evidence.allow_dirty) findings.push({ level: 'fail', why: `${name}: captured from a tree with uncommitted changes (run ${rec.run_id}); commit them, then capture again` });
     if (rec.exit !== null && rec.exit !== 0) findings.push({ level: 'fail', why: `${name}: its run command exited ${rec.exit} (run ${rec.run_id})` });
   }
+  // The approved inventory is the contract, not the subset the claim happened to cite. Enforce it on every
+  // claim when configured, so rewording a design-done/release outcome cannot bypass missing screens.
+  const approved = cfg.approved_design.map(entry => ({ entry, live: captures.filter(c => screen(c) && basename(cite(c.name)) === entry.capture) }));
+  const coverageFaults: string[] = [];
+  for (const { entry: e, live } of approved) {
+    const label = `${e.screen} / ${e.size} / ${e.theme}`;
+    if (live.length !== 1) coverageFaults.push(`${label}: ${live.length ? 'ambiguous live captures' : 'no live capture'} (${e.capture})`);
+    else if (`${live[0].media.w}x${live[0].media.h}` !== e.size) coverageFaults.push(`${label}: live capture is ${live[0].media.w}x${live[0].media.h}, not the approved size`);
+  }
+  for (const why of coverageFaults) findings.push({ level: 'fail', why: `approved design: ${why}` });
   // A head capture of a base_ref run with no base capture of its name is reported, then judged alone.
   for (const [c, inRoot, rec] of heads)
     if (!(c.before = befores.get(inRoot ?? '')))
@@ -906,6 +919,10 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     findings.push({ level: 'fail', why: `every evidence file was already used as proof of a different claim (claim id ${[...new Set(hashes.flatMap(others))].join(', ')}), not this one (claim id ${claimId}, from ${idFrom}); if it is the same claim, pass --claim-id with its id` });
   // A failed plain check is no verdict: the judge is not asked, so the check stops with every cause and no result.
   const failed = findings.filter((f) => f.level === 'fail');
+  if (coverageFaults.length) {
+    const rep = report(findings, files, { cfg, repo, claim: claim?.outcome, source: values.from, citationBase: values['citation-base'], warnings });
+    return { ...rep, claim: claim?.outcome, files, cited, runs: [...runs.values()], head: now, findings, warnings };
+  }
   if (failed.length || !claim) {
     const ctx = { cfg, repo, claim: claim?.outcome, source: values.from, citationBase: values['citation-base'] };
     throw new UsageError(`check: the judge was not asked, so there is no verdict: ${failed.map((f) => f.why).join('; ')}`, checkHelp(FAIL, findings, files, ctx)[0]);
@@ -936,7 +953,33 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   if (rows.omitted) judged.judged_omitted = rows.omitted;
   if (j.notJudged.length) judged.not_judged = j.notJudged;
   judged.note = 'PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not';
+  let matches: DesignMatch[] = [];
+  if (approved.length) {
+    const pairs = approved.map(({ entry, live }) => {
+      const path = resolve(repo, entry.mock);
+      let committed: Buffer;
+      try { committed = execFileSync('git', ['show', `${values['trusted-ref'] ?? now.commit}:${relative(repo, path)}`], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] }); }
+      catch { throw new UsageError(`approved design: ${entry.screen} / ${entry.size} / ${entry.theme}: approved mock is not committed: ${entry.mock}`); }
+      if (under(repo, realpathSync(path)) === null) throw new UsageError(`approved design: mock leaves the repo: ${entry.mock}`);
+      const mock = loadScreen(path);
+      if (mock.sha256 !== sha256(committed)) throw new UsageError(`approved design: approved mock differs from the committed reference: ${entry.mock}`);
+      return { ...live[0], mock };
+    });
+    for (const [i, p] of pairs.entries())
+      if (`${p.mock.media.w}x${p.mock.media.h}` !== approved[i].entry.size) throw new UsageError(`approved design: ${approved[i].entry.screen} / ${approved[i].entry.size} / ${approved[i].entry.theme}: mock has the wrong pixel size`);
+    const verdicts = await design(cfg, choice!, pairs, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+    matches = verdicts.map((v, i) => {
+      const { screen, size, theme } = approved[i].entry;
+      if (v.verdict !== 'pass') findings.push({ level: 'fail', why: `approved design: ${screen} / ${size} / ${theme}: ${v.verdict === 'unsure' ? 'match not proven: ' + v.reason : v.defects.map(d => `${d.kind}: ${d.where}`).join('; ')}`, file: v.path });
+      const mock = pairs[i].mock;
+      const mockPath = receiptPath(repo, cfg, cite(mock.name));
+      if (!cited.some(f => f.path === mockPath)) cited.push({ path: mockPath, sha256: mock.sha256 });
+      return { screen, size, theme, path: receiptPath(repo, cfg, cite(v.path)), sha256: pairs[i].sha256, mock: mockPath, mock_sha256: mock.sha256, verdict: v.verdict };
+    });
+    if (judgeBlock) judgeBlock.approved_design = matches;
+  }
   const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel, warnings });
+  if (matches.length) rep.result.design = matches;
   if (rep.code === PASS) {
     mkdirSync(dirname(ledger), { recursive: true });
     appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
@@ -996,6 +1039,7 @@ function receiptFault(rec: Receipt, short: string): string | null {
   const badJudge = !j || typeof j !== 'object' || typeof j.route !== 'string' || typeof j.model !== 'string' || !['agent', 'model', 'session-only'].includes(j.independence) || !Array.isArray(j.verdicts) || !j.verdicts.length
     || !j.verdicts.every((v) => v && v.verdict === 'pass' && rec.files.some((f) => f.path === v.path && f.sha256 === v.sha256));
   if (badJudge) return `receipt for ${short} has a malformed judge block`;
+  if (j.approved_design !== undefined && (!Array.isArray(j.approved_design) || !j.approved_design.length || !j.approved_design.every(v => v && v.verdict === 'pass' && [v.screen, v.size, v.theme].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256) && rec.files.some(f => f.path === v.mock && f.sha256 === v.mock_sha256)))) return `receipt for ${short} has a malformed approved-design verdict`;
   const code = runsFault(rec.runs);
   if (code) return `receipt for ${short} is no real-product proof: ${code}`;
   const steps = stepsFault(rec.runs, rec.claim);

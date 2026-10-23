@@ -120,6 +120,14 @@ function setup(projectYaml = JUDGED) {
   return { dir, repo, env, sh, dd, ddin, head, shots };
 }
 
+test('approved design coverage: real CLI names a missing screen, then passes the complete contract', () => {
+  const t = setup();
+  const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys', 'approved-design.mjs')], {
+    env: { ...t.env, DONE_DONE_EVIDENCE_ROOT: join(t.dir, 'evidence') }, encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
+
 // The 0.5.0 audit: fleet configs wrapped their test files in bash or node, and the rule read those as product drives.
 test('init refuses a journey that only runs a test or guard script by its file name or folder, and keeps real drives', () => {
   const { repo, env } = setup();
