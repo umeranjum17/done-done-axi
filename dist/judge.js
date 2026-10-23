@@ -10,7 +10,7 @@ const MAX_CALLS = 10; // model requests per check; later captures are unsure
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 9; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 10; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -33,8 +33,7 @@ const TEXT_OPTIONS = {
     unclear: 'The text cannot settle it: it is unreadable, or the outcome names nothing this output could show.',
 };
 // The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
-// capture, so every capture lists the parts the outcome names and the positions of the ones it shows. Each capture is its
-// own model call, so the check matches those parts by name, never by position.
+// capture. In a batch, capture_0 defines one shared list; every covers position refers to that list, not another label.
 const PARTS = 'If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, in the order the outcome names them, as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the position in parts (0 for the first, 1 for the next) of each part this capture itself shows.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION = {
@@ -200,10 +199,17 @@ export function prepare(c) {
 // with its cause, never a verdict: the command stops with no result and no receipt.
 // An answer the kit cannot read (all-zero probabilities, an option left out) would abstain on every question as if the
 // judge were unsure, so it is asked once more, and one that still cannot be read is an error too.
-export async function askJudge(cfg, be, choice, state, questions, images) {
+export async function askJudge(cfg, be, choice, state, questions, images, sharedParts = '') {
     const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
     let answers;
-    const resolved = (r) => Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, r[k])]));
+    const resolved = (r) => {
+        const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, r[k])]));
+        // One answer defines the identities before coverage is validated or blank/repeated labels are collapsed.
+        if (sharedParts)
+            for (const answer of Object.values(answers))
+                Object.assign(answer, { parts: lists(answers[sharedParts]).parts });
+        return answers;
+    };
     const malformed = (a) => Object.keys(questions).filter((k) => /^(malformed|no answer)/.test(a[k].reason ?? ''));
     // The parts rule reads the lists the answer carries, so a reply that leaves one out has not answered: without them the
     // rule would silently require no part.
@@ -231,9 +237,11 @@ export async function askJudge(cfg, be, choice, state, questions, images) {
         throw new UsageError(`judge: the judge did not answer: no parts and covers lists for ${noParts.join(', ')}, so the check cannot see which parts it shows`, again);
     return answers;
 }
-// A part's label as the check compares it: case, surrounding and repeated whitespace, and trailing punctuation are the
-// writing, not the part, so "1440 Wide." and " 1440  wide " are one part.
-const norm = (s) => s.trim().replace(/\s+/g, ' ').replace(/[\s.,;:!?]+$/, '').toLowerCase();
+// All rows in a check use one list. Labels are display text, never cross-reply identities.
+const missingParts = (judged) => {
+    const shown = new Set(judged.filter((r) => r.verdict === 'pass').flatMap((r) => r.covers ?? []));
+    return (judged[0]?.parts ?? []).filter((_, i) => !shown.has(i));
+};
 export const screen = (c) => c.media.type === 'png' || c.media.type === 'jpeg';
 // The judge reads screens as images and text captures (logs, JSON, CLI output) as text; video and other files are not judged.
 export const judgeable = (c) => screen(c) || c.media.type === 'text';
@@ -308,11 +316,11 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         if (before && 'mime' in before)
             images[beforeId] = before;
         state[id] = { ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
-        questions[id] = { ...base, images: 'text' in input ? [] : before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
+        questions[id] = { ...base, images: 'text' in input ? [] : before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS} Use one shared parts list for this entire request: define it in capture_0.parts, in outcome order. Every capture's covers indexes that shared list, never a separately worded or reordered list.`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
     }
     const call = join(records, `judge-${stamp}-1`);
     const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
-    const answers = await askJudge(cfg, be, choice, state, questions, images);
+    const answers = await askJudge(cfg, be, choice, state, questions, images, 'capture_0');
     const judged = rows.map(({ row, c }, i) => {
         const a = answers[`capture_${i}`];
         const shape = questions[`capture_${i}`];
@@ -320,17 +328,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         const cov = coverageOf(a);
         return { ...row, verdict: a.abstained ? 'unsure' : a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason: a.abstained ? `not confident enough (${a.reason})` : reason, ...(a.rationale && { seen: a.rationale }), ...(route !== 'openai:key' && cov?.parts.length ? cov : {}), cached: false };
     });
-    const named = new Map();
-    const shown = new Set();
-    for (const r of judged) {
-        for (const p of r.parts ?? [])
-            if (norm(p))
-                named.set(norm(p), named.get(norm(p)) ?? p.trim());
-        if (r.verdict === 'pass')
-            for (const i of r.covers ?? [])
-                shown.add(norm(r.parts?.[i] ?? ''));
-    }
-    const missing = [...named].filter(([n]) => !shown.has(n)).map(([, p]) => p);
+    const missing = missingParts(judged);
     writeCache(dir, key, { judged, missing, route, model });
     return { judged: [...judged, ...suffix], notJudged, choice, missing };
 }
@@ -398,17 +396,6 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
         judged.push(verdict);
     }
-    // Every distinct part any reply names must be covered by a passing capture.
-    const named = new Map(); // normalised label -> the label to show
-    const shown = new Set();
-    for (const r of judged) {
-        const parts = r.parts ?? [];
-        for (const p of parts)
-            if (norm(p))
-                named.set(norm(p), named.get(norm(p)) ?? p.trim());
-        if (r.verdict === 'pass')
-            for (const i of r.covers ?? [])
-                shown.add(norm(parts[i]));
-    }
-    return { judged, notJudged, choice, missing: [...named].filter(([n]) => !shown.has(n)).map(([, p]) => p) };
+    // Only openai:key can have several independent calls here; it returns no coverage fields.
+    return { judged, notJudged, choice, missing: missingParts(judged) };
 }

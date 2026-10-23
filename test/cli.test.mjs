@@ -2978,11 +2978,10 @@ test('three captures that each show one named part pass in one judge call, but a
   assert.equal(j.calls().length, 2, 'the full-set cache is invalidated by the third capture bytes');
 });
 
-test('a second capture that orders and writes the parts differently still covers each named part', () => {
+test('a second capture uses shared positions even when its redundant parts labels differ', () => {
   const j = judgeSetup(CORRECT);
-  // The second call lists the same two widths in the other order and writes the 1440 label with other case and a full
-  // stop. Read by position its covers[0] would credit 390 and leave 1440 missing, which is the phantom part this fixes.
-  const shows = { '"width":390': { parts: ['390 wide', '1440 wide'], covers: [0] }, '"width":1440': { parts: ['1440 WIDE.', '390 wide'], covers: [0] } };
+  // Only capture_0 defines the list. The second answer's redundant labels cannot redefine covers[1].
+  const shows = { '"width":390': { parts: ['390 wide', '1440 wide'], covers: [0] }, '"width":1440': { parts: ['1440 WIDE.', '390 wide'], covers: [1] } };
   j.stub(CORRECT, true, [], [], '', { shows });
   const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
   const w390 = join(j.dir, 'widths-390.json');
@@ -2993,15 +2992,15 @@ test('a second capture that orders and writes the parts differently still covers
   assert.equal(r.code, 0, r.out);
   const mixed = `.proof/${toon(r).run_id}`;
   const both = j.dd('check', '--outcome', 'the sent message shows at the bottom of the thread at 390 and 1440 wide', `${mixed}/widths-390.json`, `${mixed}/widths-1440.json`);
-  assert.equal(both.code, 0, 'each capture covers one of the two parts by name, so no part is missing');
+  assert.equal(both.code, 0, 'each capture covers one of the two shared positions');
   assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
 });
 
 test('a reply that repeats or blanks a part label still covers the part its covers position names', () => {
   const j = judgeSetup(CORRECT);
-  // The 390 call repeats the 1440 label before the one it shows, and the 1440 call puts a blank label in the middle. Read
-  // by the model's own positions both cover the right part; read by list position, both look covered by nothing.
-  const shows = { '"width":390': { parts: ['1440 wide', '1440 wide', '390 wide'], covers: [2] }, '"width":1440': { parts: ['390 wide', ' ', '1440 wide'], covers: [2] } };
+  // The shared list repeats a label before the one 390 shows. Resolve every covers position before collapsing it;
+  // the second answer's blank/reordered labels are not another list.
+  const shows = { '"width":390': { parts: ['1440 wide', '1440 wide', '390 wide'], covers: [2] }, '"width":1440': { parts: ['390 wide', ' ', '1440 wide'], covers: [0] } };
   j.stub(CORRECT, true, [], [], '', { shows });
   const cp = (from, name) => `node -e "require('node:fs').copyFileSync('${from}', process.env.DONE_DONE_EVIDENCE_ROOT + '/${name}')"`;
   const w390 = join(j.dir, 'widths-390.json');
@@ -3016,6 +3015,14 @@ test('a reply that repeats or blanks a part label still covers the part its cove
   const rows = toon(both).judge.judged;
   assert.deepEqual(rows.map((x) => [x.verdict, x.covers.map((i) => x.parts[i])]), [['pass', ['390 wide']], ['pass', ['1440 wide']]], 'each cached coverage names the part its reply showed');
   assert.ok(!(toon(both).findings ?? []).some((f) => /no passing capture shows/.test(f.why)), both.out);
+});
+
+test('five differently-worded part lists use shared identities through run, check, cache and receipt', () => {
+  const t = setup();
+  const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys', 'shared-parts.mjs')], {
+    env: { ...t.env, DONE_DONE_EVIDENCE_ROOT: join(t.dir, 'evidence') }, encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
 test('a judge reply that leaves out the coverage lists is asked again, then stops the check', () => {
