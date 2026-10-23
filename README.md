@@ -153,7 +153,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 ## Learn more
 
-- [Vision](VISION.md): the three-tool family, the rules they share, and where done-done goes next.
+- [Vision](VISION.md): who done-done is for, the problem, where it is going, what it is not, and the next milestones.
 - [Worked example: a CLI project](docs/example-cli.md): set up, one journey, check and receipt on a command-line tool.
 - [Worked example: create and maintain a verify skill](docs/example-create-maintain.md): init writes the skill, a source change makes it drift, maintain fixes it, then a real browser journey is judged.
 - [Full reference](docs/reference.md): every command and option, the Checks block rules, each file check, and both config files.
@@ -161,7 +161,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 
 ## What's next
 
-So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `affected` (the journeys a diff needs), `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: help writing the proof steps for your app.
+So far: `init`, `doctor`, `run` (including `--open` and `--close`), `check`, `receipt`, `affected` (the journeys a diff needs), `lint` (a no-model gate on a Checks block), `gate` (a no-model CI check of a committed receipt), `verify` (by journey or by your coding agent, with a gate you answer with `respond`), `maintain`, the capture judge (always on), the `design` visual check, the `look` step, the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`) and the opt-in session hooks for Claude Code, Codex, opencode, Gemini CLI and pi. Coming next: the [milestones in the vision](VISION.md#next-milestones).
 
 ## Develop
 
