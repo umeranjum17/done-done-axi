@@ -292,11 +292,67 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
   }
 }
 
+async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, captures: Capture[], records: string, dir: string): Promise<Judging> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const eligible = captures.filter(judgeable);
+  const notJudged = captures.filter((c) => !judgeable(c)).map((c) => c.name);
+  const selected = eligible;
+  const suffix: Judged[] = [];
+  const rows = selected.map((c) => {
+    const pair = c.before && judgeable(c.before) && screen(c.before) === screen(c) ? c.before : undefined;
+    return { c, pair, row: { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) } };
+  });
+  const { route, model } = choice;
+  const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.sha256, c.before?.sha256]), outcome, route, model, cfg.judge.floor])).digest('hex');
+  const hit = readCache(dir, key);
+  if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r: Judged) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r))))
+    return { judged: [...hit.judged.map((r: Judged) => ({ ...r, cached: true })), ...suffix], notJudged, choice, missing: hit.missing ?? [] };
+
+  const questions: Record<string, ChoiceQuestion> = {};
+  const images: Record<string, { mime: string; bytes: Buffer }> = {};
+  const state: Record<string, unknown> = { outcome };
+  for (const [i, { c, pair }] of rows.entries()) {
+    const id = `capture_${i}`;
+    const input = screen(c) ? prepare(c) : c.bytes.length > MAX_TEXT ? `${c.name} text exceeds ${MAX_TEXT} bytes` : { text: c.bytes.toString('utf8') };
+    const before = pair && (screen(pair) ? prepare(pair) : pair.bytes.length > MAX_TEXT ? `${pair.name} text exceeds ${MAX_TEXT} bytes` : { text: pair.bytes.toString('utf8') });
+    if (typeof input === 'string' || typeof before === 'string') throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${input}`, 'Capture it again as the error says, then re-run this command');
+    const base = 'text' in input ? before ? TEXT_PAIR : TEXT_QUESTION : before ? PAIR : QUESTION;
+    const beforeId = `before_${i}`;
+    const captureId = `capture_${i}`;
+    if ('mime' in input) images[captureId] = input;
+    if (before && 'mime' in before) images[beforeId] = before;
+    state[id] = { ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
+    questions[id] = { ...base, images: 'text' in input ? [] : before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS}`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
+  }
+  const call = join(records, `judge-${stamp}-1`);
+  const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
+  const answers = await askJudge(cfg, be, choice, state, questions, images);
+  const judged: Judged[] = rows.map(({ row, c }, i) => {
+    const a = answers[`capture_${i}`];
+    const shape = questions[`capture_${i}`];
+    const reason = a.personReason || a.rationale || shape.options[String(a.answer)] || '';
+    const cov = coverageOf(a);
+    return { ...row, verdict: a.abstained ? 'unsure' : a.answer === 'correct' ? 'pass' : a.answer === 'wrong' ? 'fail' : 'unsure', reason: a.abstained ? `not confident enough (${a.reason})` : reason, ...(a.rationale && { seen: a.rationale }), ...(route !== 'openai:key' && cov?.parts.length ? cov : {}), cached: false };
+  });
+  const named = new Map<string, string>();
+  const shown = new Set<string>();
+  for (const r of judged) {
+    for (const p of r.parts ?? []) if (norm(p)) named.set(norm(p), named.get(norm(p)) ?? p.trim());
+    if (r.verdict === 'pass') for (const i of r.covers ?? []) shown.add(norm(r.parts?.[i] ?? ''));
+  }
+  const missing = [...named].filter(([n]) => !shown.has(n)).map(([, p]) => p);
+  writeCache(dir, key, { judged, missing, route, model });
+  return { judged: [...judged, ...suffix], notJudged, choice, missing };
+}
+
 async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string): Promise<Judging> {
   const dir = join(home(), 'runs', cfg.app, 'judge');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const judged: Judged[] = [];
   const notJudged: string[] = [];
+  const batchChoice = captures.filter(judgeable).length > 1 ? choose() : undefined;
+  if (batchChoice && batchChoice.route !== 'openai:key')
+    return judgeBatch(cfg, batchChoice, outcome, captures, records, dir);
   let choice: JudgeChoice | undefined;
   let be: Judge | undefined;
   let calls = 0;
@@ -353,9 +409,7 @@ async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, 
     writeCache(dir, key, { verdict: verdict.verdict, reason: verdict.reason, ...seen, ...coverage, route, model });
     judged.push(verdict);
   }
-  // The parts rule matches by name, never by position: each capture is its own call, so a call that orders or labels the
-  // parts differently is still talking about the same part. Every distinct part any reply names must be covered by a
-  // capture that passes, and one no passing capture shows is missing, under the name the reply wrote.
+  // Every distinct part any reply names must be covered by a passing capture.
   const named = new Map<string, string>(); // normalised label -> the label to show
   const shown = new Set<string>();
   for (const r of judged) {
