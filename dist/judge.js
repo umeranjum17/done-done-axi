@@ -6,11 +6,11 @@ import { agentRun, askAgent, claudeAccount, notStartable } from './agents.js';
 import { home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
-const MAX_CALLS = 10; // model requests per check; later captures are unsure
+const MAX_CALLS = 10; // independent capture calls per check; oversized isolated sets are refused
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 13; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 14; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -208,7 +208,7 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
         // One answer defines the identities before coverage is validated or blank/repeated labels are collapsed.
         if (sharedParts)
             for (const answer of Object.values(answers))
-                Object.assign(answer, { parts: lists(answers[sharedParts]).parts });
+                Object.assign(answer, { parts: Array.isArray(sharedParts) ? sharedParts : lists(answers[sharedParts]).parts });
         return answers;
     };
     const malformed = (a) => Object.keys(questions).filter((k) => /^(malformed|no answer)/.test(a[k].reason ?? ''));
@@ -291,9 +291,8 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const eligible = captures.filter(judgeable);
     const notJudged = captures.filter((c) => !judgeable(c)).map((c) => c.name);
-    const selected = eligible;
-    const suffix = [];
-    const rows = selected.map((c) => {
+    const isolated = eligible.some(screen);
+    const rows = eligible.map((c) => {
         const pair = c.before && judgeable(c.before) && screen(c.before) === screen(c) ? c.before : undefined;
         return { c, pair, row: { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) } };
     });
@@ -301,7 +300,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, cfg.judge.floor])).digest('hex');
     const hit = readCache(dir, key);
     if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r))))
-        return { judged: [...hit.judged.map((r) => ({ ...r, cached: true })), ...suffix], notJudged, choice, missing: hit.missing ?? [] };
+        return { judged: hit.judged.map((r) => ({ ...r, cached: true })), notJudged, choice, missing: hit.missing ?? [] };
     const questions = {};
     const images = {};
     const state = { outcome };
@@ -310,7 +309,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         const input = screen(c) ? prepare(c) : c.bytes.length > MAX_TEXT ? `${c.name} text exceeds ${MAX_TEXT} bytes` : { text: c.bytes.toString('utf8') };
         const before = pair && (screen(pair) ? prepare(pair) : pair.bytes.length > MAX_TEXT ? `${pair.name} text exceeds ${MAX_TEXT} bytes` : { text: pair.bytes.toString('utf8') });
         if (typeof input === 'string' || typeof before === 'string')
-            throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${input}`, 'Capture it again as the error says, then re-run this command');
+            throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${typeof input === 'string' ? input : `its base capture ${pair.name}: ${before}`}`, 'Capture it again as the error says, then re-run this command');
         const base = 'text' in input ? before ? TEXT_PAIR : TEXT_QUESTION : before ? PAIR : QUESTION;
         const beforeId = pair && imageId(`before_${i}`, pair);
         const captureId = imageId(`capture_${i}`, c);
@@ -319,11 +318,28 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         if (beforeId && before && 'mime' in before)
             images[beforeId] = before;
         state[id] = { name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), ...(typeof input === 'object' && 'text' in input && { capture: input.text }) };
-        questions[id] = { ...base, images: 'text' in input ? [] : beforeId && before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS} Use one shared parts list for this entire request: define it in capture_0.parts, in outcome order. Every capture's covers indexes that shared list, never a separately worded or reordered list.`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
+        questions[id] = { ...base, images: 'text' in input ? [] : beforeId && before && 'mime' in before ? [beforeId, captureId] : [captureId], instructions: `${base.instructions} ${PARTS}${isolated ? ' Define parts for the ENTIRE outcome, including every separately named capture, not only the part this image shows. This list will be shared with later isolated calls.' : ' Use one shared parts list for this entire request: define it in capture_0.parts, in outcome order. Every capture\'s covers indexes that shared list, never a separately worded or reordered list.'}`, floor: cfg.judge.floor, ...(route === 'openai:key' ? {} : { answerFields: FIELDS }) };
     }
-    const call = join(records, `judge-${stamp}-1`);
-    const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
-    const answers = await askJudge(cfg, be, choice, state, questions, images, 'capture_0');
+    const answers = {};
+    if (isolated) {
+        // Images from different citations must never share a model context. A before/after pair stays together.
+        if (rows.length > MAX_CALLS)
+            throw new UsageError(`judge: one check sends at most ${MAX_CALLS} captures to the model, so cite fewer`, 'Split the claim into smaller checks');
+        let parts;
+        for (const [id, question] of Object.entries(questions)) {
+            const shape = parts ? { ...question, answerFields: ['covers'], instructions: `${question.instructions} The shared parts list is fixed in state.shared_parts. Return covers positions in that exact list; do not redefine it.` } : question;
+            const one = { [id]: shape };
+            const call = join(records, `judge-${stamp}-${Object.keys(answers).length + 1}`);
+            const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, one);
+            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts ?? ''));
+            parts ??= lists(answers[id]).parts;
+        }
+    }
+    else {
+        const call = join(records, `judge-${stamp}-1`);
+        const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
+        Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0'));
+    }
     const judged = rows.map(({ row, c }, i) => {
         const a = answers[`capture_${i}`];
         const shape = questions[`capture_${i}`];
@@ -333,7 +349,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     });
     const missing = missingParts(judged);
     writeCache(dir, key, { judged, missing, route, model });
-    return { judged: [...judged, ...suffix], notJudged, choice, missing };
+    return { judged, notJudged, choice, missing };
 }
 async function judgeOn(cfg, choose, outcome, captures, records) {
     // Check the account even on a verdict cache hit: a broken configured picker must never produce a pass.
