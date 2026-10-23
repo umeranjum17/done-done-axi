@@ -1072,6 +1072,17 @@ test('init works in a repo path with a space', () => {
   assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).app, 'my project');
 });
 
+test('after-commit opt-in drives actual Bash hooks around mapped and uncovered fixture commits', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'dd-commit-e2e-'));
+  try {
+    const r = spawnSync(process.execPath, [CLI, 'run', 'after-commit', '--json'], { cwd: dirname(dirname(CLI)), env: { ...process.env, DONE_DONE_HOME: join(tmp, 'home') }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const record = JSON.parse(r.stdout);
+    assert.equal(record.result, 'recorded');
+    assert.match(readFileSync(record.evidence[0], 'utf8'), /PASS mapped commit .*: greeting sealed; uncovered commit .*: core sealed and proposal only/);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
 test('init --hook claude adds a SessionStart hook that shows the bare state, merges, and never duplicates', () => {
   const { dir, repo, env, dd } = bareRepo();
   const settings = join(repo, '.claude', 'settings.json');

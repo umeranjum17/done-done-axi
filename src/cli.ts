@@ -13,7 +13,7 @@ import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUD
 import { AGENTS, CHEAP, type Config, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
-import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
+import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
 import { design, KINDS } from './design.js';
 import { checkMedia } from './media.js';
@@ -149,6 +149,8 @@ const FLAGS: Record<string, string> = {
   '--model <model>': 'with --agent: that agent\'s model, saved as agent_config.<agent>.model (opencode: provider/model)',
   '--judge <agent>': `the judge done-done starts (${JUDGES.join(' or ')}), saved as judge.route in ~/.done-done/config.yaml (any agent and model, the author's own too); without it, init asks in a terminal`,
   '--judge-model <model>': 'with --judge <agent>: the judge\'s model, saved as judge.model',
+  '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
+  '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
   '--hook <agent>': 'also add a SessionStart hook to .claude/settings.json (claude), .codex/hooks.json (codex) or .gemini/settings.json (gemini) that shows `done-done` to each session, or a plugin to .opencode/plugins (opencode) or an extension to .pi/extensions (pi) that adds it to the first message of each session (opt-in)',
 };
 // `more` is the reference text a command needs beyond its flags, shared with the top-level help.
@@ -160,6 +162,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor', 'set the coding agent done-done starts and its model (in a terminal, init asks when none is set)'],
       ['done-done init --judge pi --judge-model openai-codex/gpt-6-luna', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
       ['done-done init --hook claude', 'also show this repo\'s done-done state at each Claude Code session start'],
+      ['done-done init --hook claude --after-commit', 'also opt in to rerun affected journeys after a Bash commit; propose missing coverage without editing the skill'],
       ['done-done init --hook codex', 'also show this repo\'s done-done state at each Codex session start'],
       ['done-done init --hook opencode', 'also add this repo\'s done-done state to the first message of each opencode session'],
       ['done-done init --hook pi', 'also add this repo\'s done-done state to the first prompt of each pi session'],
@@ -168,7 +171,7 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done init --journey <name> --core -- <command...>', 'record the core user journey: the one thing a user cannot live without, end to end on the real target'],
       ['done-done init --journey upgrade --upgrade -- <command...>', 'record the release path: install the previous shipped version, upgrade over it in place, drive the core journey'],
     ],
-    flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--journey <name>', '--core', '--upgrade', '-- <command...>'],
+    flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--after-commit', '--journey <name>', '--core', '--upgrade', '-- <command...>'],
     more: [JOURNEYS_TEXT, CONFIG_TEXT],
   },
   doctor: {
@@ -260,6 +263,11 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   a "moved-from: <owner>/<repo>@<ref> <dst>=<src>" body line says came from a repo of the same owner; both are off by default.
   checks.generated_paths: ["gen/**", "*.snap"] adds your own globs to the generated files above; the default is none.
   Every run is appended to lint.log next to the store. Exit 0 PASS or WARN, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
+  },
+  'after-commit': {
+    usage: [['done-done after-commit [--before]', 'Claude Bash lifecycle hook; reads its event on stdin and reruns affected journey commands after a commit']],
+    flags: ['--before'],
+    more: ['Install only by opting in: done-done init --hook claude --after-commit. No agent or judge is selected or started; uncovered files produce a proposal outside the skill.'],
   },
   affected: {
     usage: [['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"]],
@@ -1248,7 +1256,7 @@ const STALE_MS = 60_000;
 const runsRoot = (app: string) => join(home(), 'runs', app);
 const verifySteps = (cfg: Config) => ['resolve', 'drive', 'check', 'judge', ...(cfg.auto_fix.verify ? ['triage', 'fix'] : []), 'gate', 'receipt', 'report'];
 // Commands an agent drive must not run: they answer a gate, write a receipt or start a run that can write one.
-const DRIVE_REFUSED = ['respond', 'receipt', 'verify', 'rerun', 'maintain'];
+const DRIVE_REFUSED = ['respond', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit'];
 // One agent drive may launch the app, drive it and save captures; past this it is killed with everything it started.
 const DRIVE_SCHEMA = {
   type: 'object',
@@ -2972,13 +2980,15 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
 // Claude Code reads it from the repo's .claude/settings.json, Codex from the repo's .codex/hooks.json
 // (project scope; Codex docs: <repo>/.codex/hooks.json, SessionStart, matcher omitted matches every start).
 const HOOK_COMMAND = 'command -v done-done >/dev/null && done-done || true';
+const COMMIT_BEFORE = 'if command -v done-done >/dev/null; then done-done after-commit --before; fi';
+const COMMIT_AFTER = 'if command -v done-done >/dev/null; then done-done after-commit; fi';
 // Gemini CLI reads a SessionStart hook from the repo's .gemini/settings.json (its hooks reference) but shows plain
 // stdout only to the person, so the state goes to the model as JSON hookSpecificOutput.additionalContext.
 // done-done runs on node, so node is on PATH whenever done-done is.
 const GEMINI_HOOK = `command -v done-done >/dev/null && done-done 2>/dev/null | node -e 'process.stdin.setEncoding("utf8");let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>s.trim()&&process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:s.trim()}})))' || true`;
 
 // A repo settings file with a SessionStart hook running `command` merged in, keeping every other key and hook; no text when it is already there.
-function sessionStartSettings(repo: string, rel: string, command: string, agent: string): { file: string; text?: string } {
+function sessionStartSettings(repo: string, rel: string, command: string, agent: string, afterCommit = false): { file: string; text?: string } {
   const file = join(repo, rel);
   const bad = (why: string) => new UsageError(`${rel} ${why}`, `Fix ${rel}, then re-run: done-done init --hook ${agent}`);
   const isObject = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -2992,11 +3002,15 @@ function sessionStartSettings(repo: string, rel: string, command: string, agent:
   }
   if (!isObject(settings)) throw bad('is not a JSON object');
   if (settings.hooks !== undefined && !isObject(settings.hooks)) throw bad('has "hooks" that is not an object');
-  const start = settings.hooks?.SessionStart ?? [];
-  if (!Array.isArray(start)) throw bad('has "hooks.SessionStart" that is not a list');
-  if (start.some((m) => Array.isArray(m?.hooks) && m.hooks.some((h: { command?: unknown }) => h?.command === command))) return { file };
-  settings.hooks = { ...settings.hooks, SessionStart: [...start, { hooks: [{ type: 'command', command }] }] };
-  return { file, text: `${JSON.stringify(settings, null, 2)}\n` };
+  let changed = false;
+  for (const [event, cmd] of [['SessionStart', command], ...(afterCommit ? [['PreToolUse', COMMIT_BEFORE], ['PostToolUse', COMMIT_AFTER]] : [])]) {
+    const hooks = settings.hooks?.[event] ?? [];
+    if (!Array.isArray(hooks)) throw bad(`has "hooks.${event}" that is not a list`);
+    if (hooks.some((m) => Array.isArray(m?.hooks) && m.hooks.some((h: { command?: unknown }) => h?.command === cmd))) continue;
+    settings.hooks = { ...settings.hooks, [event]: [...hooks, { ...(event !== 'SessionStart' && { matcher: 'Bash' }), hooks: [{ type: 'command', command: cmd, ...(event !== 'SessionStart' && { timeout: 600 }) }] }] };
+    changed = true;
+  }
+  return { file, ...(changed && { text: `${JSON.stringify(settings, null, 2)}\n` }) };
 }
 
 // A file init owns outright: written once, unchanged when identical, never overwritten when someone else's.
@@ -3260,13 +3274,14 @@ async function cmdInit(argv: string[]): Promise<number> {
   const dash = argv.indexOf('--');
   const { values } = parseArgs({
     args: dash < 0 ? argv : argv.slice(0, dash),
-    options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' } },
+    options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, 'after-commit': { type: 'boolean' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' } },
     allowPositionals: false,
   });
   const parts = dash < 0 ? [] : argv.slice(dash + 1);
   const journey = values.journey ?? null;
   if (values.hook !== undefined && !Object.hasOwn(HOOKS, values.hook))
     throw new UsageError(`--hook ${values.hook} is not supported; the supported values are ${Object.keys(HOOKS).join(', ')}`, `Run: done-done init --hook <${Object.keys(HOOKS).join('|')}>`);
+  if (values['after-commit'] && values.hook !== 'claude') throw new UsageError('--after-commit needs --hook claude', 'Run: done-done init --hook claude --after-commit');
   if (values.model !== undefined && values.agent === undefined) throw new UsageError('--model needs --agent', `Run: done-done init --agent <agent> --model ${values.model}`);
   if (values.agent !== undefined) checkChoice(values.agent, values.model ?? '');
   if (values['judge-model'] !== undefined && values.judge === undefined) throw new UsageError('--judge-model needs --judge', `Run: done-done init --judge <agent> --judge-model ${values['judge-model']}`);
@@ -3291,7 +3306,7 @@ async function cmdInit(argv: string[]): Promise<number> {
   if (cfg.skill.split(/[\\/]/).includes('..')) throw new UsageError(`verify skill ${cfg.skill} has a .. segment; use a path inside the repo`, 'Set skill to a repo-relative path in .done-done.yaml');
   const renamed = renameLegacySkill(repo, cfg);
   const spec = values.hook === undefined ? undefined : HOOKS[values.hook];
-  const hook = spec?.make(repo); // likewise validated before any write
+  const hook = values['after-commit'] ? sessionStartSettings(repo, '.claude/settings.json', HOOK_COMMAND, 'claude', true) : spec?.make(repo); // validated before any write
   // The agent: --agent, else with none set the user's pick in a terminal (asked before any write); never done-done's.
   const choice = values.agent !== undefined ? { agent: values.agent, model: values.model ?? '' } : !cfg.agent && interactive() ? await pick('agent', cfg) : undefined;
   if (choice) cfg.agent_config[choice.agent] = { ...cfg.agent_config[choice.agent], ...(choice.model && { model: choice.model }) };
@@ -3942,6 +3957,52 @@ function cmdAffected(argv: string[]): number {
   return fresh ? PASS : FAIL;
 }
 
+// Claude's opt-in Bash lifecycle hook compares HEAD before/after the exact tool call, not shell command text.
+async function cmdAfterCommit(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { before: { type: 'boolean' } } });
+  let event: any;
+  try { event = JSON.parse(readFileSync(0, 'utf8')); }
+  catch (e) { throw new UsageError(`after-commit needs a Claude hook JSON event: ${(e as Error).message}`); }
+  if (event?.tool_name !== 'Bash') return PASS;
+  if (typeof event.tool_use_id !== 'string' || !event.tool_use_id || typeof event.session_id !== 'string' || !event.session_id) throw new UsageError('after-commit needs session_id and tool_use_id');
+  if (event.hook_event_name !== (values.before ? 'PreToolUse' : 'PostToolUse')) throw new UsageError('after-commit: hook event does not match --before');
+  const repo = repoRoot(), cfg = loadConfig(repo);
+  const state = join(home(), 'hooks', `${sha256(Buffer.from(JSON.stringify([repo, event.session_id, event.tool_use_id])))}.json`);
+  const current = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repo, encoding: 'utf8' });
+  if (values.before) {
+    mkdirSync(dirname(state), { recursive: true });
+    writeFileSync(state, JSON.stringify({ commit: current.status === 0 ? current.stdout.trim() : null }));
+    return PASS;
+  }
+  if (!existsSync(state)) return PASS; // no paired start, or this event was already handled
+  const before = JSON.parse(readFileSync(state, 'utf8')).commit;
+  rmSync(state);
+  if (current.status !== 0) return PASS;
+  const h = head(repo);
+  if (before === h.commit || !/^commit(?:\s|:)/.test(git(repo, 'reflog', '-1', '--format=%gs'))) return PASS;
+  if (h.dirty) throw new UsageError('after-commit: tracked changes remain; commit them before capturing proof', 'Run the affected journeys from a clean commit: done-done affected');
+  const changed = git(repo, ...(before ? ['diff', '--name-only', '--no-renames', '-z', before, 'HEAD'] : ['diff-tree', '--root', '--no-commit-id', '-r', '--name-only', '-z', 'HEAD'])).split('\0').filter((p) => p && !p.startsWith(`${GATE_DIR}/`) && !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g)));
+  const m = mapDiff(repo, cfg, changed, git(repo, 'ls-files', '-z').split('\0').filter(Boolean));
+  let proposal: string | undefined;
+  if (m.unmapped.length) {
+    proposal = join(cfg.evidence.root, '.done-done', 'proposals', `${h.commit}.md`);
+    mkdirSync(dirname(proposal), { recursive: true });
+    writeFileSync(proposal, journeyProposal(cfg.skill, h.commit, m.unmapped, m.journeys.map((j) => j.name)));
+  }
+  emit({ command: 'after-commit', head: h.commit, journeys: m.journeys.map((j) => j.name), features: m.features.map((f) => f.name), ...(proposal && { proposal: citable(repo, proposal) }), help: ['Proposal only: review and apply it yourself; no verify skill file was changed. Runs capture evidence, not a judged pass or receipt.'] });
+  let code = PASS;
+  for (const j of m.journeys) {
+    if (head(repo).commit !== h.commit) throw new UsageError('after-commit: HEAD moved before the next journey; stopped');
+    const result = await cmdRun([j.name]);
+    if (result !== PASS) code = result;
+  }
+  if (m.features.length || (!m.journeys.length && m.fallback)) {
+    emit({ command: 'after-commit', result: 'needs-recipe', help: ['No command can drive these features automatically. Record a real journey with done-done init --journey <name> -- <command>, or ask the user to choose an agent and outcome for done-done verify --feature <name>.'] });
+    return INCONCLUSIVE;
+  }
+  return code;
+}
+
 // Bare `done-done`: orient a new user or agent with the config state and the next step.
 function cmdBare(): number {
   let repo: string;
@@ -4020,6 +4081,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'lint') return cmdLint(rest);
     if (cmd === 'gate') return cmdGate(rest);
     if (cmd === 'affected') return cmdAffected(rest);
+    if (cmd === 'after-commit') return await cmdAfterCommit(rest);
     if (cmd === 'status') return cmdStatus(rest);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);
