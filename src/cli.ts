@@ -109,6 +109,7 @@ const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME mo
   agent (either file): claude, codex, opencode, pi, gemini or acp:<target>, set by the user (done-done init --agent); done-done never picks one.
   global only: agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
   (extra flags), agent_path_override.<agent> (binary), acpx_path, agent_timeout (one agent call, default 30m; a streaming agent that prints nothing for 5m is stopped early),
+  judge.account_command (optional shell command printing a Claude account pick; exported CLAUDE_CONFIG_DIR wins; failure stops the call),
   evidence.local_root, judge.{route,model,floor} (the judge and shared confidence floor, set by the user with
   init --judge; never picked). done-done doctor shows where each agent setting came from.`;
 
@@ -958,7 +959,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     findings.push({ level: 'inconclusive', why: `the outcome names ${part}, but no passing capture shows it: capture ${part} and cite that capture` });
   const rows = cap<Judged>(j.judged);
   const { choice } = j;
-  const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), judged: rows.items.map(({ sha256, ...r }) => r) };
+  const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
   if (choice) {
     const byHash = new Map(captures.map((c) => [c.sha256, receiptPath(repo, cfg, cite(c.name))]));
     judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };

@@ -2765,7 +2765,7 @@ const img = images[0] && Buffer.from(images[0].source.data, 'base64');
 const prompt = content.at(-1).text;
 const begin = 'BEGIN DATA (JSON)\\n';
 const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prompt.indexOf('\\nEND DATA'))).state;
-appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
+appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, shed: Object.hasOwn(process.env, 'DD_POOL_SHED'), apiKey: Object.hasOwn(process.env, 'ANTHROPIC_API_KEY'), argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
@@ -2850,6 +2850,69 @@ test('judge pass exits 0, sends one downscaled image and the outcome only, and a
   const records = readdirSync(agents).filter((n) => n.startsWith('judge-'));
   assert.equal(records.length, 1, 'the claude-code route writes one call record for the whole check');
   assert.doesNotMatch(readFileSync(join(agents, records[0]), 'utf8'), /BEGIN DATA/, 'a call record never holds the prompt');
+});
+
+test('Claude account command routes check and receipt, preserves explicit accounts and fails closed', () => {
+  const t = judgeSetup(CORRECT);
+  delete t.env.CLAUDE_CONFIG_DIR;
+  t.env.DD_POOL_SHED = 'synthetic';
+  t.env.ANTHROPIC_API_KEY = 'synthetic';
+  const folder = join(t.dir, 'pool');
+  mkdirSync(folder);
+  const pick = join(t.dir, 'pick');
+  const picks = join(t.dir, 'picks');
+  const config = join(t.env.DONE_DONE_HOME, 'config.yaml');
+  const original = readFileSync(config, 'utf8');
+  const selected = { ok: true, id: 'pool-test', set: { CLAUDE_CONFIG_DIR: folder }, unset: ['DD_POOL_SHED', 'ANTHROPIC_API_KEY'] };
+  const picker = (value, exit = 0) => writeFileSync(pick, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(picks)}, 'pick\\n');\nconsole.log(${JSON.stringify(typeof value === 'string' ? value : JSON.stringify(value))}); process.exit(${exit});\n`, { mode: 0o755 });
+  picker(selected);
+  writeFileSync(config, original.replace('judge:\n', `judge:\n  account_command: ${JSON.stringify(pick)}\n`));
+  const { files } = t.shots('home and settings render');
+  for (const cmd of ['check', 'receipt']) {
+    const r = t.dd(cmd, '--outcome', 'home and settings render', ...files);
+    assert.equal(r.code, 0, r.out);
+    assert.equal(toon(r).judge.detail, 'Claude account pool-test');
+    assert.doesNotMatch(toon(r).judge.detail, /pool\//);
+  }
+  assert.equal(t.calls()[0].configDir, folder);
+  assert.equal(t.calls()[0].shed, false, 'unset removes inherited names, not just their values');
+  assert.equal(t.calls()[0].apiKey, false);
+  // A cached pass must not bypass a failed account command in a later process.
+  for (const [value, exit, error] of [
+    [{ ok: false, reason: 'pool unavailable' }, 19, /pool unavailable/],
+    ['not JSON', 0, /invalid JSON/],
+    [{ ...selected, ok: false }, 0, /ok must be true/],
+    [{ ...selected, set: { CLAUDE_CONFIG_DIR: 'relative' } }, 0, /absolute existing folder/],
+    [{ ...selected, set: { CLAUDE_CONFIG_DIR: pick } }, 0, /absolute existing folder/],
+    [{ ...selected, set: { CLAUDE_CONFIG_DIR: join(folder, 'missing') } }, 0, /absolute existing folder/],
+    [{ ...selected, unset: 'DD_POOL_SHED' }, 0, /unset must be a list/],
+    [{ ...selected, unset: ['BAD=NAME'] }, 0, /unset must be a list/],
+    [{ ...selected, unset: ['CLAUDE_CONFIG_DIR'] }, 0, /cannot unset CLAUDE_CONFIG_DIR/],
+    [{ ...selected, id: 'bad\nid' }, 0, /account id/],
+  ]) {
+    picker(value, exit);
+    const before = t.calls().length;
+    for (const cmd of ['check', 'receipt']) {
+      const r = t.dd(cmd, '--outcome', 'home and settings render', ...files);
+      assert.equal(r.code, 2, r.out);
+      assert.equal(toon(r).result, undefined);
+      assert.match(toon(r).error, /judge.account_command/);
+      assert.match(toon(r).error, error);
+    }
+    assert.equal(t.calls().length, before, 'failed picks never start Claude');
+  }
+  const count = readFileSync(picks, 'utf8');
+  t.env.CLAUDE_CONFIG_DIR = join(t.dir, 'explicit');
+  const explicit = t.dd('check', '--outcome', 'home and settings render explicitly', ...files);
+  assert.equal(explicit.code, 0, explicit.out);
+  assert.equal(t.calls().at(-1).configDir, t.env.CLAUDE_CONFIG_DIR);
+  assert.equal(readFileSync(picks, 'utf8'), count, 'caller account bypasses even a broken picker');
+  delete t.env.CLAUDE_CONFIG_DIR;
+  writeFileSync(config, original);
+  const ambient = t.dd('check', '--outcome', 'home and settings render normally', ...files);
+  assert.equal(ambient.code, 0, ambient.out);
+  assert.equal(t.calls().at(-1).configDir, null);
+  assert.equal(t.calls().at(-1).shed, true);
 });
 
 test('judge wrong screen fails with exit 1, unsure and low confidence are inconclusive with exit 3', () => {
@@ -3456,7 +3519,7 @@ test('verify with no journey: the author agent drives the verify skill feature, 
     writeFileSync(join(s.bin, 'claude'), `#!${process.execPath}
 const { appendFileSync, copyFileSync, readFileSync, writeFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
-appendFileSync(${JSON.stringify(join(s.bin, 'calls.jsonl'))}, JSON.stringify({ agent: 'claude', argv: process.argv.slice(2), stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), evidence: process.env.DONE_DONE_EVIDENCE_ROOT, tmp: process.env.TMPDIR }) + '\\n');
+appendFileSync(${JSON.stringify(join(s.bin, 'calls.jsonl'))}, JSON.stringify({ agent: 'claude', argv: process.argv.slice(2), stdin: readFileSync(0, 'utf8'), cwd: process.cwd(), configDir: process.env.CLAUDE_CONFIG_DIR, shed: Object.hasOwn(process.env, 'DD_POOL_SHED'), evidence: process.env.DONE_DONE_EVIDENCE_ROOT, tmp: process.env.TMPDIR }) + '\\n');
 if (process.env.DRIVE === 'text') writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/count.json', JSON.stringify({ notes: 1 }));
 else copyFileSync(${JSON.stringify(join(t.dir, 'screen.png'))}, process.env.DONE_DONE_EVIDENCE_ROOT + '/note.png');
 writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/steps.json', JSON.stringify({ ...${JSON.stringify(STEPS)}, result: process.env.DD_OUTCOME || 'x' }));
@@ -3485,7 +3548,11 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.equal(unset.code, 2, unset.out);
   assert.match(unset.out, /no agent is set: ask the user which agent to use/);
   assert.equal(right.calls().length, 0, 'no agent was started');
-  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
+  const pick = join(t.dir, 'pick');
+  writeFileSync(pick, `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify({ ok: true, id: 'drive-test', set: { CLAUDE_CONFIG_DIR: t.dir }, unset: ['DD_POOL_SHED'] }))});\n`, { mode: 0o755 });
+  delete right.env.CLAUDE_CONFIG_DIR;
+  right.env.DD_POOL_SHED = 'synthetic';
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: claude\njudge:\n  route: answerer:opencode\n  account_command: ${JSON.stringify(pick)}\n`);
   const ok = verify(right.env, 'the note Umer added shows in the list');
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual([ok.o.result, ok.o.journey, ok.o.feature, ok.o.author], ['pass', null, 'add-note', 'claude (model claude-haiku-5-5)']);
@@ -3497,6 +3564,8 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.deepEqual(json(covered).features.map((f) => f.name), ['add-note']);
   const [drive, ...judged] = right.calls();
   assert.equal(drive.agent, 'claude');
+  assert.equal(drive.configDir, t.dir, 'verify drives Claude on the configured pool account');
+  assert.equal(drive.shed, false);
   assert.equal(drive.cwd, t.repo, 'the drive runs in the repo');
   assert.equal(drive.evidence, join(t.repo, '.proof', ok.o.run_id), "the drive gets the run's own evidence folder");
   const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', ok.o.run_id);
@@ -3511,6 +3580,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   assert.ok(!judged[0].file.includes('done-done-verify-notes'), 'the judge sees the claim and the capture, not the recipe or the drive');
   assert.equal(JSON.parse(readFileSync(join(runDir, 'agents', 'drive.json'), 'utf8')).ok, true, 'the drive call leaves a record');
   assert.equal(t.dd('receipt', '--verify', t.head()).code, 0);
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: claude\njudge:\n  route: answerer:opencode\n');
   // A wrong claim parks at the gate; approve never moves it past its judge, fix ends the run fail, and skip ends it fail too.
   const wrong = agents({ correct: 0.04, wrong: 0.93, unclear: 0.03 });
   const bad = verify(wrong.env, 'the note list is sorted by date');
@@ -4876,7 +4946,7 @@ const rawAnswer = ${JSON.stringify(answer === 'error' ? {} : (() => { try { retu
 const batchKeys = [...new Set([...(stdin + ' ' + file).matchAll(/capture_\\d+/g)].map((m) => m[0]))];
 const resolvedAnswer = batchKeys.length && rawAnswer.relevance ? Object.fromEntries(batchKeys.map((k) => [k, rawAnswer.relevance])) : rawAnswer;
 const attached = argv.filter((a, i) => argv[i - 1] === '-f').slice(1).map((f) => readFileSync(f).subarray(1, 4).toString());
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({ agent: ${JSON.stringify(name)}, argv, stdin, file, attached, permission: process.env.OPENCODE_PERMISSION, cwd: process.cwd() }) + '\\n');
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ agent: ${JSON.stringify(name)}, argv, stdin, file, attached, permission: process.env.OPENCODE_PERMISSION, configDir: process.env.CLAUDE_CONFIG_DIR, shed: Object.hasOwn(process.env, 'DD_POOL_SHED'), cwd: process.cwd() }) + '\\n');
 ${reply}
 `, { mode: 0o755 });
   stub('claude', `process.exitCode = ${JSON.stringify(answer)} === 'error' ? 1 : 0;
@@ -5766,8 +5836,8 @@ test('maintain reports an untracked symlink retargeted during a run as a repo ch
   assert.match(m.reason, /^repo-changed: /);
 });
 
-test('maintain runs a reader with no user settings or MCP servers', () => {
-  const { repo, env, sh } = setup();
+test('maintain runs isolated readers and shares one account pick with reconcile', () => {
+  const { dir, repo, env, sh } = setup();
   const s = stubAgents(env, JSON.stringify({ drift: [], recipe: 'open it', recipes: [], missing: [] }));
   const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
   mkdirSync(join(skill, 'features'), { recursive: true });
@@ -5776,8 +5846,23 @@ test('maintain runs a reader with no user settings or MCP servers', () => {
   writeFileSync(join(skill, 'features', 'home.md'), '# Home\n');
   sh('add', '-A');
   sh('commit', '-qm', 'skill');
+  const pick = join(dir, 'pick');
+  const picks = join(dir, 'picks');
+  writeFileSync(pick, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(picks)}, 'pick\\n');\nconsole.log(${JSON.stringify(JSON.stringify({ ok: true, id: 'reader-test', set: { CLAUDE_CONFIG_DIR: dir }, unset: ['DD_POOL_SHED'] }))});\n`, { mode: 0o755 });
+  const config = join(env.DONE_DONE_HOME, 'config.yaml');
+  writeFileSync(config, readFileSync(config, 'utf8').replace('judge:\n', `judge:\n  account_command: ${JSON.stringify(pick)}\n`));
+  delete s.env.CLAUDE_CONFIG_DIR;
+  s.env.DD_POOL_SHED = 'synthetic';
   const r = doctorIn(repo, s.env, 'maintain', '--foreground');
   assert.equal(r.code, 0, r.out);
+  assert.equal(s.calls().length, 2, 'reader and reconcile both use Claude');
+  assert.ok(s.calls().every(c => c.configDir === dir && c.shed === false));
+  assert.equal(readFileSync(picks, 'utf8'), 'pick\n', 'one pick across both agent calls');
+  writeFileSync(pick, '#!/bin/sh\necho \'{"ok":false,"reason":"pool unavailable"}\'\nexit 1\n');
+  const failed = doctorIn(repo, s.env, 'maintain', '--foreground');
+  assert.notEqual(failed.code, 0, failed.out);
+  assert.match(failed.out, /judge.account_command.*pool unavailable/);
+  assert.equal(s.calls().length, 2, 'maintain never starts Claude after a failed pick');
   const reader = s.calls()[0].argv;
   assert.deepEqual([reader[reader.indexOf('--tools') + 1], reader[reader.indexOf('--setting-sources') + 1], reader.includes('--strict-mcp-config')], ['Read,Grep,Glob', '', true]);
 });

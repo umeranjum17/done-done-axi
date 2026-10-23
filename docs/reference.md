@@ -734,7 +734,10 @@ judge:                                # done-done's own judge; check, receipt, v
   model: ''                           # default: that agent's agent_config model, or openai-codex/gpt-6-luna for pi
   floor: 0.7                          # every judge's pick must reach this probability to count; below it the verdict is unsure (inconclusive), never a pass
   # env_file: ~/.config/done-done/judge.env  # KEY=value lines (a provider API key) handed to the judge for names your shell has not exported; the key stays in that file
+  # account_command: account-picker pick claude --json  # optional shell command for Claude judge and agent calls (verify/maintain too), once per process; exported CLAUDE_CONFIG_DIR wins
 ```
+
+`judge.account_command` must print one JSON object: `{"ok":true,"id":"pool-1","set":{"CLAUDE_CONFIG_DIR":"/absolute/existing/folder"},"unset":["ANTHROPIC_API_KEY"]}`. Only the selected folder is set, and each `unset` name is deleted from the spawned environment; it cannot unset `CLAUDE_CONFIG_DIR`. The detail names only the account id. A failed or invalid pick stops the call with its cause and no verdict, never falling back to the default login. Unset, it preserves normal Claude sign-in behavior; other agents and API-key routes do not run it.
 
 An `agent_config` entry merges with the defaults field by field, so `claude: { model: claude-sonnet-5-5 }` keeps `effort: low`; the other maps merge entry by entry. `done-done doctor` shows which file set each agent setting.
 

@@ -161,6 +161,7 @@ Another fleet works the same way: add the include text to whatever your workers 
 - [Worked example: a CLI project](docs/example-cli.md): set up, one journey, check and receipt on a command-line tool.
 - [Worked example: create and maintain a verify skill](docs/example-create-maintain.md): init writes the skill, a source change makes it drift, maintain fixes it, then a real browser journey is judged.
 - [Full reference](docs/reference.md): every command and option, the Checks block rules, each file check, and both config files.
+- [Config reference](docs/reference.md#config): optional global `judge.account_command` selects a pooled Claude account for judge and agent calls; an exported `CLAUDE_CONFIG_DIR` wins, and a failed pick stops the call.
 - [Report a problem or ask a question](https://github.com/umeranjum17/done-done-axi/issues)
 
 ## What's next
