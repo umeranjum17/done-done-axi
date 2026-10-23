@@ -2801,6 +2801,7 @@ const SCAFFOLD_SCHEMA = {
     type: 'object',
     properties: {
         surface: STR,
+        first_release: { type: 'boolean' },
         launch: { type: 'object', properties: { steps: STR, source: STR, safe: { type: 'boolean' }, why: STR }, required: ['steps', 'source', 'safe', 'why'], additionalProperties: false },
         ready: STR,
         harness: STR,
@@ -2808,7 +2809,7 @@ const SCAFFOLD_SCHEMA = {
         isolate: STR,
         features: { type: 'array', minItems: 1, items: { type: 'object', properties: { title: STR, reach: STR, drive: STR, source: STR, capture: { type: 'string', enum: ['screenshot', 'text'] }, core: { type: 'boolean' }, upgrade: { type: 'boolean' } }, required: ['title', 'reach', 'drive', 'source', 'capture', 'core', 'upgrade'], additionalProperties: false } },
     },
-    required: ['surface', 'launch', 'ready', 'harness', 'observe', 'isolate', 'features'],
+    required: ['surface', 'first_release', 'launch', 'ready', 'harness', 'observe', 'isolate', 'features'],
     additionalProperties: false,
 };
 const NO_EDIT = 'The drive changes no repo file: note findings in the run\'s report; after the drive, run done-done maintain to see what drifted, then fix the skill';
@@ -2881,8 +2882,9 @@ A proof drives the running product the way a user does: a test suite, typecheck,
 - observe: the proof to capture: screenshots of the resulting state, terminal transcripts and exit codes, response bodies, files written.
 - isolate: how each run keeps its own instance and state, and never drives a session or account the user owns.
 - features: up to ${MAX_FEATURES} things a user does with the app, the most important first, each {title, reach: how a user gets there, drive: the concrete steps through the repo's real handles (the command and its arguments, the route, the page label, the journey name), source: the repo file that shows the feature, capture: screenshot for a screen, text for output, core, upgrade}.
+- first_release: true only when the repo explicitly says no earlier release yet; false when an earlier version shipped or you cannot tell. This records upgrade proof as pending, never as passed. Do not invent a previous version or an upgrade drive when none exists.
 - core: true on exactly one feature, listed first: the core user journey, the one thing a user cannot live without, driven end to end on the real target the way a user does it (for a remote terminal app: pair, open a pane, type, see the output), never a part of it or a setting. Every other feature has core false.
-${ships.length ? `- upgrade: this app ships an installable or upgradable artifact (${ships.slice(0, 3).join('; ')}), so users get each release by upgrading over the version they have. Set upgrade true on one feature whose drive installs the previous shipped version, upgrades over it in place the way a user does (install the new APK over the old one, update the host or CLI package in place), then drives the core journey; a fresh install alone is no release proof. It may be the core feature itself when its drive does all of that.` : '- upgrade: false on every feature: no tracked file shows the app ships an installable or upgradable artifact.'}
+${ships.length ? `- upgrade: this app ships an installable or upgradable artifact (${ships.slice(0, 3).join('; ')}), so users get each release by upgrading over the version they have. Set upgrade true on one feature whose drive installs the previous shipped version, upgrades over it in place the way a user does (install the new APK over the old one, update the host or CLI package in place), then drives the core journey; a fresh install alone is no release proof. It may be the core feature itself when its drive does all of that. Exception: when first_release is true, upgrade may be false on every feature; the skill will record the upgrade journey as pending until there is a published version to upgrade from.` : '- upgrade: false on every feature: no tracked file shows the app ships an installable or upgradable artifact.'}
 Each source is one path exactly as the tracked file list spells it, with no other words (scripts/verify/drive.sh, never a list or a note); launch.source may be empty only when safe is false.
 
 ${context}`;
@@ -2926,7 +2928,7 @@ function scaffoldProblem(a, tracked, shown, ships) {
     const cores = kept.filter((f) => f.core).length;
     if (cores !== 1)
         return `names ${cores} core journeys among its first ${MAX_FEATURES} features, and the skill needs exactly one: the one thing a user cannot live without, end to end on the real target`;
-    if (ships.length && !kept.some((f) => f.upgrade))
+    if (ships.length && !kept.some((f) => f.upgrade) && s.first_release !== true)
         return `names no upgrade journey, and the app ships an installable artifact (${ships.slice(0, 3).join('; ')}): a fresh install alone is no release proof`;
     return '';
 }
@@ -2969,7 +2971,7 @@ ${found.join('\n')}
 ## Core journey
 
 ${link(core)} is the core user journey: the one thing a user cannot live without. A proof that the app works drives it end to end on the real target; a proof of another feature alone does not show the app works.
-${ships.length ? `\n## Release proof\n\nThis app ships an installable artifact (${ships.slice(0, 3).join('; ')}), and users get a release by upgrading over the version they have. ${link(upgrade)} is the release proof: install the previous shipped version, upgrade over it in place, then drive the core journey. A fresh install alone is no release proof.\n` : ''}
+${ships.length ? `\n## Release proof\n\nThis app ships an installable artifact (${ships.slice(0, 3).join('; ')}), and users get a release by upgrading over the version they have. ${upgrade ? `${link(upgrade)} is the release proof: install the previous shipped version, upgrade over it in place, then drive the core journey. A fresh install alone is no release proof.` : 'Upgrade journey pending: no earlier release yet. Before the next release, install the first published version, upgrade over it in place, then drive the core journey. This is not upgrade proof; doctor still reports the missing upgrade journey until one is named.'}\n` : ''}
 ## Evidence
 
 What to capture: ${clause(s.observe)}. Exercise the real user path, not internal setters; done-done's judge checks every capture in the run folder against the outcome, so save only captures of the resulting state there and keep any of earlier steps outside it; verify side effects alongside what is visible. Evidence goes to the run folder \`done-done run\` prints.
