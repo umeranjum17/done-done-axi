@@ -2907,6 +2907,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   if (repoState(repo) !== before) throw new UsageError('the repo changed during generation; no recipe was written; review the changes before retrying');
   if (!a.ok) throw new UsageError(`${agent.agent} did not generate a journey: ${a.error}; record ${a.record ?? record}`);
   const s = a.answer as Record<string, string>;
+  for (const field of ['blocker', 'spends']) if (!/[\p{L}\p{N}]/u.test(s[field])) s[field] = '';
   if (s.blocker.trim()) throw new UsageError(`journey ${action} blocked: ${s.blocker}`);
   if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(s.name) || s.name === 'readme') throw new UsageError('the agent returned an invalid journey name');
   if (named ? s.name !== name : Object.hasOwn(cfg.journeys, s.name)) throw new UsageError(named ? 'the agent renamed the journey; nothing written' : `journey ${s.name} already exists; nothing written`);

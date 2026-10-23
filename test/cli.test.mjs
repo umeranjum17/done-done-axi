@@ -1505,7 +1505,7 @@ assert.equal(out, 'Hello Umer\\n');
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out);
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: {version: '1'}, start: 'fresh CLI', steps: ['run the greeting command'], result: out }));
 `;
-  const answer = { name: 'greet-umer', title: 'Greet Umer', source: 'app.mjs', script, checks: 'Greeting equals Hello Umer.', spends: '', blocker: '' };
+  const answer = { name: 'greet-umer', title: 'Greet Umer', source: 'app.mjs', script, checks: 'Greeting equals Hello Umer.', spends: '""', blocker: '`' };
   let s = stubAgents(env, JSON.stringify(answer));
   const run = (extra, ...args) => spawnSync(process.execPath, [CLI, ...args, '--json'], { cwd: repo, env: { ...s.env, PATH: `${s.env.PATH}:${process.env.PATH}`, ...extra }, encoding: 'utf8' });
   const add = (...args) => run({}, 'journey', 'add', ...args);
@@ -1646,6 +1646,48 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + e
   assert.doesNotMatch(invalid.stderr, /trim is not a function/);
   assert.equal(sh('diff').toString(), beforeInvalid, 'native syntax rejection leaves config and skill untouched');
   assert.equal(existsSync(join(repo, 'journeys/bad-script.mjs')), false);
+  s = stubAgents(env, JSON.stringify({ ...answer, blocker: '需要 approval' }));
+  const blocked = improve(answer.name, instruction);
+  assert.equal(blocked.status, 2, blocked.stdout + blocked.stderr);
+  assert.match(JSON.parse(blocked.stdout).error, /blocked: 需要 approval/);
+  assert.equal(sh('diff').toString(), beforeInvalid, 'a real blocker still prevents all writes');
+});
+
+test('journey-improve replays the enhanced negative control beside its relative app path', () => {
+  const { repo, dir, env } = setup('app: notes\n');
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ version: '1' }));
+  delete env.CI;
+  const s = stubAgents(env);
+  const script = `import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+const names = NAMES;
+let capture = '';
+for (const name of names) {
+  const output = execFileSync(process.execPath, [fileURLToPath(new URL('../app.mjs', import.meta.url)), 'greet', name], { encoding: 'utf8' });
+  assert.equal(output, 'Hello ' + name + '\\n');
+  capture += output;
+}
+writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/greeting.txt', capture);
+writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/steps.json', JSON.stringify({ target: { version: '1' }, start: 'fresh CLI', steps: ['greet each name'], result: capture }));
+`;
+  writeFileSync(join(s.bin, 'claude'), `#!${process.execPath}
+const prompt = require('node:fs').readFileSync(0, 'utf8');
+const names = prompt.includes('Improve ONLY') ? ['Umer', '', 'Zoë'] : prompt.includes('Enhance ONLY') ? ['Umer', ''] : ['Umer'];
+const answer = { name: 'greet-umer', title: 'Greet Umer', source: 'app.mjs', checks: 'Exact greeting for each name', spends: '', blocker: '', script: ${JSON.stringify(script)}.replace('NAMES', JSON.stringify(names)) };
+console.log(JSON.stringify({ type: 'result', structured_output: answer }));
+`, { mode: 0o755 });
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), JSON.stringify({ agent: 'claude', agent_path_override: { claude: join(s.bin, 'claude') } }));
+  const out = join(dir, 'journey-evidence');
+  mkdirSync(out);
+  const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys/journey-add.mjs'), '--improve'], {
+    cwd: repo, env: { ...env, DONE_DONE_TEST_CLI: CLI, DONE_DONE_EVIDENCE_ROOT: out }, encoding: 'utf8', maxBuffer: 8 << 20,
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const log = readFileSync(join(out, 'journey-improve.log'), 'utf8');
+  assert.match(log, /Enhanced baseline against Zoë-only regression:[\s\S]*exit: 0/);
+  assert.match(log, /PASS:[\s\S]*a regression only in the instructed Unicode check failed/);
 });
 
 test("init has the agent write the verify skill from the repo's own proof path, not the start script", () => {

@@ -67,10 +67,10 @@ try {
   for (const file of replay.evidence) say(`Capture ${file}:\n${readFileSync(file, 'utf8')}`);
   writeFileSync(join(repo, 'app.mjs'), improve ? source.replace('(process.argv[3] ?? "Umer")', '(process.argv[3] === "Zoë" ? "Zoë".normalize("NFD") : (process.argv[3] ?? "Umer"))') : enhance ? source.replace('?? "Umer"', '|| "Umer"') : source.replace('Hello ', 'Wrong '));
   if (improve) {
-    writeFileSync(join(repo, 'enhanced-baseline.mjs'), enhancedScript);
+    writeFileSync(join(repo, 'journeys/enhanced-baseline.mjs'), enhancedScript);
     const baselineOut = join(tmp, 'baseline-evidence');
     mkdirSync(baselineOut);
-    const baseline = spawnSync(process.execPath, ['enhanced-baseline.mjs'], { cwd: repo, env: { ...env, DONE_DONE_EVIDENCE_ROOT: baselineOut }, encoding: 'utf8' });
+    const baseline = spawnSync(process.execPath, ['journeys/enhanced-baseline.mjs'], { cwd: repo, env: { ...env, DONE_DONE_EVIDENCE_ROOT: baselineOut }, encoding: 'utf8' });
     say(`Enhanced baseline against Zoë-only regression:\n${baseline.stdout}${baseline.stderr}\nexit: ${baseline.status}`);
     assert.equal(baseline.status, 0, 'all pre-improvement checks still pass');
   }
