@@ -5310,20 +5310,7 @@ test('doctor --probe asks gemini with the prompt on stdin, and reports a signed-
   assert.match(probe.fix, /Check that gemini is signed in and can use model flash-lite/);
 });
 
-test('doctor --probe shows codex as a warning, not a failure: codex cannot run tool-less, so it asks nothing', () => {
-  const { repo, env } = setup();
-  mkdirSync(env.DONE_DONE_HOME, { recursive: true });
-  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: codex\nagent_config:\n  codex: { model: gpt-test, effort: low }\n${judgeYaml(env)}`);
-  const s = stubPiGemini(env);
-  const r = doctorIn(repo, s.env, 'doctor', '--probe');
-  assert.equal(r.code, 0, r.out);
-  const d = toon(r);
-  assert.match(d.checks.find((x) => x.check === 'agent').detail, /^codex \(model gpt-test; from config\) at /);
-  const probe = d.checks.find((x) => x.check === 'probe');
-  assert.equal(probe.status, 'warning');
-  assert.match(probe.detail, /^codex cannot run tool-less: with your config\.toml it keeps its MCP tools/);
-  assert.deepEqual(s.calls(), [], 'no tool-less call reaches codex');
-});
+// Codex init and doctor --probe are exercised with the installed CLI by journeys/agents-live.mjs.
 
 test('doctor warns that pi has no permission gate', () => {
   const { repo, env } = setup();
@@ -5364,13 +5351,11 @@ test('gemini edit steps run with auto_edit, never yolo, and read steps stay in p
   assert.equal(edit.argv[edit.argv.indexOf('--approval-mode') + 1], 'auto_edit');
   assert.equal(read.argv[read.argv.indexOf('--approval-mode') + 1], 'plan');
   assert.ok(!edit.argv.includes('--skip-trust') && !read.argv.includes('--skip-trust'), 'a repo step keeps Gemini trust gate');
-  // A codex edit step writes only the repo and the run's folders, and keeps the user's own codex config; a read step is refused.
+  // A codex edit step writes only the repo and the run's folders, and keeps the user's own codex config.
   process.env.PATH = s.env.PATH;
-  let refused;
   try {
     const codex = { ...call, agent: 'codex', model: 'gpt-test', path: join(s.env.PATH, 'codex') };
     await askAgent({ ...codex, tools: 'edit', dirs: ['/evidence/run-1', '/scratch'] });
-    refused = await askAgent({ ...codex, tools: 'read' });
   } finally {
     process.env.PATH = old;
   }
@@ -5380,9 +5365,7 @@ test('gemini edit steps run with auto_edit, never yolo, and read steps stay in p
   // codex's sandbox ends a command's background processes with it, so its edit prompt says to drive within one command.
   assert.match(codexEdit.stdin, /^p\n\nYour shell sandbox ends every process a command started, background ones too, when that command ends\. So start what a task needs \(an app, a server, a browser bridge\), use it, save what it produces and stop it within one shell command/);
   assert.match(edit.stdin, /^p\n\nAnswer with only one JSON object/, 'other agents get no such note');
-  assert.equal(refused.ok, false);
-  assert.match(refused.error, /^codex cannot run tool-less/);
-  assert.equal(s.calls().length, 3, 'a refused read step starts no codex');
+  assert.equal(s.calls().length, 3, 'one call per edit/read step');
 });
 
 test('a codex edit step shows the API error codex wrote, as the other agents do', async () => {

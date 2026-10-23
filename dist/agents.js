@@ -255,16 +255,34 @@ const ADAPTERS = {
     // answer, and --ephemeral keeps no session. An edit step runs in codex's workspace-write sandbox, which writes only the
     // repo, the run's folders (--add-dir) and $TMPDIR; it may use the network, since the drive launches the app and talks
     // to it, and it keeps the user's config.toml. Without a model, codex runs its own default.
-    // A tool-less call is refused: codex with the user's config.toml kept its MCP server, which read a
-    // canary file outside the folder, and --disable does not turn off its multi-agent tools.
+    // Readers keep normal authentication but not user config (MCP), instructions or tools. Feature flags alone
+    // are insufficient: the bundled model catalog can force code-mode, collaboration and apply_patch back on.
+    // Copy only that public catalog into this call's scratch folder and remove its tool capabilities too.
     codex: {
         streams: true,
-        editOnly: 'codex cannot run tool-less: with your config.toml it keeps its MCP tools, which read files outside the folder',
+        files: (c) => {
+            if (c.tools === 'edit')
+                return {};
+            const r = spawnSync(c.path, ['debug', 'models', '--bundled'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 16 << 20 });
+            if (r.status !== 0)
+                throw new Error(`codex tool-less setup: ${r.error?.message || r.stderr || `debug models --bundled exited ${r.status}`}; update Codex CLI`);
+            const catalog = JSON.parse(r.stdout);
+            if (!Array.isArray(catalog.models) || !catalog.models.length || (c.model && !catalog.models.some((m) => m.slug === c.model)))
+                throw new Error(`codex tool-less setup: bundled catalog does not list ${c.model || 'any model'}; choose a model from codex debug models --bundled`);
+            for (const m of catalog.models)
+                Object.assign(m, { shell_type: 'disabled', apply_patch_tool_type: null, tool_mode: 'direct', multi_agent_version: null, experimental_supported_tools: [], supports_search_tool: false });
+            return { 'models.json': JSON.stringify(catalog) };
+        },
         // Each sandboxed command runs in its own process namespace, so a server or browser bridge started in the
         // background by one command was gone by the next one, and a drive that launched the app and then browsed it captured nothing.
         editNote: 'Your shell sandbox ends every process a command started, background ones too, when that command ends. So start what a task needs (an app, a server, a browser bridge), use it, save what it produces and stop it within one shell command (a script in $TMPDIR is fine).',
-        argv: (c) => ['exec', '--json', '--ephemeral', ...(c.model ? ['-m', c.model] : []),
-            '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', ...(c.dirs ?? []).flatMap((d) => ['--add-dir', d])],
+        argv: (c, dir) => [...(c.tools === 'edit' ? [] : ['--no-daemon']), 'exec', '--json', '--ephemeral', ...(c.model ? ['-m', c.model] : []),
+            ...(c.tools === 'edit' ? ['--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', ...(c.dirs ?? []).flatMap((d) => ['--add-dir', d])] : [
+                '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only',
+                '-c', 'project_doc_max_bytes=0', '-c', `model_catalog_json=${JSON.stringify(join(dir, 'models.json'))}`,
+                '-c', 'web_search="disabled"', '-c', 'tools.update_plan.enabled=false', '-c', 'tools.experimental_request_user_input.enabled=false',
+                ...['shell_tool', 'multi_agent', 'apps', 'plugins', 'skill_search', 'tool_suggest', 'image_generation', 'view_image', 'sleep_tool', 'goals'].flatMap((f) => ['--disable', f]),
+            ])],
         answer: (out, c) => {
             let text = '';
             let failed = '';
@@ -335,11 +353,9 @@ export function knownAgentOf(agent) {
     return AGENTS.find((a) => target === a || (target.startsWith(a) && !/[A-Za-z0-9]/.test(target[a.length]))) ?? agent;
 }
 const adapterFor = (agent) => (agent.startsWith('acp:') ? ACP : Object.hasOwn(ADAPTERS, agent) ? ADAPTERS[agent] : undefined);
-// Why an agent cannot run a tool-less call, '' when it can.
-export const editOnlyReason = (agent) => adapterFor(agent)?.editOnly ?? '';
 // Why an agent cannot read a repo tool-less from text plain code gathers, '' when it can: gemini's none mode is a
 // read-only plan mode, not tool-free.
-export const toollessReason = (agent) => (agent === 'gemini' ? 'gemini cannot read tool-less yet, since its none mode is read-only plan mode, not tool-free' : editOnlyReason(agent));
+export const toollessReason = (agent) => (agent === 'gemini' ? 'gemini cannot read tool-less yet, since its none mode is read-only plan mode, not tool-free' : '');
 // A binary from config: a bare name is looked up on PATH, an absolute path is used when it is an executable file.
 export const findBin = (bin) => (isAbsolute(bin) ? (isExecutable(bin) ? bin : '') : onPath(bin));
 // The binary that starts an agent: agent_path_override.<agent>, else its name on PATH. An acp:<target> agent starts
@@ -508,16 +524,14 @@ export async function askAgent(c) {
         cwd = c.tools === 'none' ? dir : c.cwd;
         if (!adapter)
             throw new Error(`no adapter for ${c.agent} yet`);
-        if (adapter.editOnly && c.tools !== 'edit')
-            throw new Error(adapter.editOnly);
+        const bin = c.path;
+        if (!bin)
+            throw new Error(c.agent.startsWith('acp:') ? `${c.agent} needs acpx, and acpx is not startable; ${ACPX_INSTALL}` : notStartable(c.agent, c.override));
         if (adapter.readsImages)
             for (const i of c.images ?? [])
                 writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
         for (const [name, text] of Object.entries(adapter.files?.(c) ?? {}))
             writeFileSync(join(dir, name), text, { mode: 0o600 });
-        const bin = c.path;
-        if (!bin)
-            throw new Error(c.agent.startsWith('acp:') ? `${c.agent} needs acpx, and acpx is not startable; ${ACPX_INSTALL}` : notStartable(c.agent, c.override));
         let lastError = '';
         for (;;) {
             attempts++;

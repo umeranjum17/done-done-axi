@@ -37,6 +37,12 @@ You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in 
 2. **Set up your repo.** `init` asks you, in a terminal, which coding agent drives your app and which judge checks it. done-done never picks either for you. It then writes a minimal `.done-done.yaml` and a verify skill: how to launch and drive your app. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
 3. **Get your first result.** Say what works now, in plain words. `verify` has your agent drive the real product the way a user does and save screenshots or output. A fresh judge checks whether each capture shows your claim. A pass names the capture and writes a receipt for this commit. Anything else stops at a gate with the judge's reason, and `done-done respond` answers it. No judge pass, no receipt.
 
+Optional setup check: `done-done doctor --probe` requires a real answer from your chosen agent; it checks setup, not whether your app works.
+
+For a signed-in Claude Code setup, pass `--agent claude --model claude-haiku-5-5 --judge claude --judge-model claude-haiku-5-5` to `init`. For Codex, use `--agent codex --model gpt-6.1-sol` with that same judge. Codex readers and probes require a CLI with `exec --ignore-user-config` and `debug models --bundled`: they keep your login, but disable MCP, project instructions and model-provided tools; edit/drive steps keep your normal Codex config. Codex is not a judge route.
+
+For OpenCode, choose an already-authorized model from `opencode models` using `--agent opencode --model <provider/model>`. **Known free-tier gap:** `opencode/deepseek-v4.1-flash-free` returns HTTP 403 for done-done's tools-off calls, so `init` and probes cannot use it; `opencode/muse-spark-1.3-contributor-free` may be absent from the installed catalog. Use a compatible model already covered by your plan, not a new account or unexpected API spend. OpenCode's free tier is not currently an end-to-end supported setup.
+
 No result? `done-done doctor` changes nothing and names each missing piece, such as a verify skill `init` could not write, with the exact command that fixes it. Commit `.done-done.yaml` and the verify skill so later runs and your teammates use the same recipe. You choose the agents and models; captures go to your chosen judge's provider, on your own plan or key. [Manual CLI](#manual-cli) walks through recording a journey, checking it and saving a receipt.
 
 ## Why
