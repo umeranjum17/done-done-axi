@@ -11,7 +11,7 @@
 
 A command-line check of real screenshots, recordings and output.
 
-For developers using coding agents. Tests can pass while the app is still broken.
+For developers using coding agents, alone or in a [Firstmate](#use-with-firstmate-or-another-agent-fleet) fleet. Tests can pass while the app is still broken.
 
 <img src="docs/media/demo.png" width="320" alt="Real sample app: Release checklist shows Capture the real app checked and Done. The actual claude-haiku-5-5 judge passes that captured screenshot at sample commit 08d635e46a98.">
 
