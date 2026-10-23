@@ -108,7 +108,7 @@ done-done journey add "sign in then post a card from the phone"
 
 Run `init` first and commit the app's source so the generator can read it. `journey add` uses exactly your configured `agent`, model and agent settings, like init's verify scaffold; no agent is chosen for you. It supports the same read-only generators as init (claude, codex, opencode, pi and ACP; gemini reports its unsupported tool-less mode). No Firstmate installation is needed. Nothing generates or runs until you invoke the command. Generation refuses CI; run it locally instead.
 
-The agent reads the repository context and existing verify skill and returns one static Node ESM capture script with assertions, expected results and a tracked source citation. A blocker or invalid answer writes nothing. Plain code checks the citation and script syntax, preserves existing config comments and feature entries, and adds:
+The agent reads the repository context and existing verify skill and returns one static Node ESM capture script with assertions, expected results and a tracked source citation. A blocker or invalid answer writes nothing. A script syntax failure reports the native JavaScript error and generator call-record location instead of crashing while formatting stderr. Plain code checks the citation and script syntax, preserves existing config comments and feature entries, and adds:
 
 - `journeys/<name>.mjs`: drive steps, checks, actual captures and `steps.json`;
 - `.done-done.yaml`: `journeys.<name>.command: node journeys/<name>.mjs`;

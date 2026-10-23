@@ -1596,6 +1596,16 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + e
   assert.equal(custom.status, 0, custom.stdout + custom.stderr);
   assert.equal(parse(readFileSync(join(repo, '.done-done.yaml'), 'utf8')).journeys.other.command, 'node journeys/other.mjs');
   assert.match(readFileSync(join(skill, 'features/other.md'), 'utf8'), /Run `done-done run other`/);
+  // Reproduce the hosted producer: double-escaped source has literal backslash-n separators.
+  // Native --check failure must retain its SyntaxError, not throw on Buffer stderr.
+  s = stubAgents(env, JSON.stringify({ ...answer, name: 'bad-script', script: script.replaceAll('\n', '\\n') }));
+  const beforeInvalid = sh('diff').toString();
+  const invalid = add('a malformed recipe');
+  assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
+  assert.match(JSON.parse(invalid.stdout).error, /invalid JavaScript[\s\S]*SyntaxError/);
+  assert.doesNotMatch(invalid.stderr, /trim is not a function/);
+  assert.equal(sh('diff').toString(), beforeInvalid, 'native syntax rejection leaves config and skill untouched');
+  assert.equal(existsSync(join(repo, 'journeys/bad-script.mjs')), false);
 });
 
 test("init has the agent write the verify skill from the repo's own proof path, not the start script", () => {

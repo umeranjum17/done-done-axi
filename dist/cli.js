@@ -3050,6 +3050,7 @@ Existing script:\n${repoText(priorScript)}\nExisting feature:\n${repoText(priorF
     const a = await askAgent({ ...agent, cwd: repo, tools: toolless ? 'none' : 'read', record, schema, prompt: `${goal}
 Read only; never edit files, run commands or drive the app during generation. Use only the real handles in the supplied repository source. Never open secret-looking files or include secret values. Return blocker with the real cause if this cannot be driven safely; leave blocker empty otherwise.
 Return name (lowercase kebab-case), title, source (one tracked non-secret file shown below), script (a complete Node ESM capture script), checks (the concrete assertions and expected user-visible result), spends (empty unless it uses a paid service or sends/posts externally), blocker. Empty spends/blocker means a zero-character JSON string, not a string containing quote characters. Generation cost itself is not a journey spend.
+Return script as source text, not JSON.stringify(source). After the JSON response is decoded, JavaScript statements must have actual newline separators, not literal backslash-n sequences. Do not double-escape the source.
 The script runs from the repo root as node journeys/<name>.mjs. Drive the REAL app the way a user does, not tests, typechecks, lint or builds. Use isolated temporary state and clean up only what the script started. Use Umer for demo data. No installed app state or real accounts. Reuse existing proof handles where possible.
 The saved script MUST be deterministic and self-contained: no agents, model calls, done-done verify, generation or Firstmate dependency at runtime. Use node:assert/strict to check actual output/side effects; a failed check must exit nonzero. Write captures of the actual resulting state into process.env.DONE_DONE_EVIDENCE_ROOT, never invented output. Write steps.json there (${STEPS_SHAPE}) from the actual drive. Honour DONE_DONE_BASE_URL and matrix env when configured; screenshot/page-check records for visual flows. Do not embed absolute checkout paths.
 Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature map:\n${repoText(index)}\n\n${context.text}` });
@@ -3071,7 +3072,12 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
     if (!context.files.has(s.source) || SECRET.test(s.source) || (toolless && !context.read.has(s.source)))
         throw new UsageError(`the agent cited an unavailable source: ${s.source}; nothing written`);
     // Parse, never execute, before touching any project file.
-    execFileSync(process.execPath, ['--check', '--input-type=module'], { input: s.script, stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+        execFileSync(process.execPath, ['--check', '--input-type=module'], { input: s.script, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    }
+    catch (e) {
+        throw new UsageError(`the agent returned invalid JavaScript; nothing written: ${String(e.stderr || e.message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
+    }
     const script = join(repo, 'journeys', `${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
     for (const p of [script, feature]) {
         safePath(p);
@@ -4517,7 +4523,7 @@ async function main(argv) {
         throw new UsageError(`unknown command ${cmd}`);
     }
     catch (e) {
-        const msg = (e.stderr || e.message || String(e)).trim();
+        const msg = String(e.stderr || e.message || e).trim();
         emit({ command: sub ?? 'done-done', error: msg, help: e instanceof UsageError && e.help ? [e.help] : errorHelp(msg, sub) });
         return USAGE;
     }
