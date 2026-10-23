@@ -616,6 +616,49 @@ test('videos are probed for real frames', { skip: spawnSync('ffmpeg', ['-version
   const cut = dd('check', '--outcome', 'cut clip', `.proof/${id}/cut.mp4`);
   assert.equal(cut.code, 2, cut.out);
   assert.match(cut.out, /does not decode/);
+
+  // A still and an explicitly extracted recording frame prove different named parts of one claim.
+  // done-done probes the recording; it must not silently extract or judge additional frames.
+  const j = judgeSetup(CORRECT);
+  const outcome = 'changed.png shows the Changed state; clip-frame.png shows the next screen from clip.mp4';
+  const opened = toon(j.dd('run', '--open')).run_id;
+  const folder = `.proof/${opened}`;
+  const root = join(j.repo, folder);
+  writeFileSync(join(root, 'changed.png'), screen(7));
+  cpSync(out, join(root, 'clip.mp4'));
+  execFileSync('ffmpeg', ['-v', 'error', '-i', join(root, 'clip.mp4'), '-frames:v', '1', join(root, 'clip-frame.png')]);
+  writeFileSync(join(root, 'steps.json'), stepsOf(outcome));
+  assert.equal(j.dd('run', '--close', opened).code, 0);
+  const files = ['changed.png', 'clip-frame.png', 'clip.mp4'].map(n => `${folder}/${n}`);
+  const checked = j.dd('check', '--outcome', outcome, ...files);
+  assert.equal(checked.code, 0, checked.out);
+  assert.deepEqual(toon(checked).judge.not_judged, [files[2]]);
+  const call = j.calls()[0];
+  assert.equal(call.images, 2);
+  assert.deepEqual([call.state.capture_0.name, call.state.capture_1.name], files.slice(0, 2), 'each image retains its cited name, not just a generic capture index');
+  const data = JSON.parse(call.prompt.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
+  assert.deepEqual(data.questions.capture_0.images, ['capture_0__changed']);
+  assert.deepEqual(data.questions.capture_1.images, ['capture_1__clip-frame']);
+  assert.equal(j.dd('check', '--outcome', outcome, ...files).code, 0);
+  assert.equal(j.calls().length, 1, 'the exact named batch is cached');
+
+  // Identical bytes in identical argument order, but their names now assign them to the wrong parts.
+  const swapped = toon(j.dd('run', '--open')).run_id;
+  const swappedFolder = `.proof/${swapped}`;
+  cpSync(join(root, 'changed.png'), join(j.repo, swappedFolder, 'clip-frame.png'));
+  cpSync(join(root, 'clip-frame.png'), join(j.repo, swappedFolder, 'changed.png'));
+  cpSync(join(root, 'clip.mp4'), join(j.repo, swappedFolder, 'clip.mp4'));
+  writeFileSync(join(j.repo, swappedFolder, 'steps.json'), stepsOf(outcome));
+  assert.equal(j.dd('run', '--close', swapped).code, 0);
+  j.stub({ correct: 0.02, wrong: 0.96, unclear: 0.02 });
+  const wrong = j.dd('check', '--outcome', outcome, ...['clip-frame.png', 'changed.png', 'clip.mp4'].map(n => `${swappedFolder}/${n}`));
+  assert.equal(wrong.code, 1, wrong.out);
+  assert.equal(j.calls().length, 2, 'renaming cannot reuse the true batch verdict or its old paths');
+  assert.ok(toon(wrong).judge.judged.every(r => r.path.startsWith(swappedFolder) && !r.cached));
+
+  const single = j.dd('check', '--outcome', outcome, files[0]);
+  assert.equal(single.code, 1, single.out);
+  assert.equal(j.calls().at(-1).state.name, files[0], 'single-image checks retain the cited name too');
 });
 
 test('check reads the same Checks block from a file or from stdin', () => {
@@ -3866,7 +3909,7 @@ test('a pi judge on a claude-bridge model loads only that provider extension: th
   const judged = s.calls().filter((c) => c.agent === 'pi');
   assert.equal(judged.length, 1, 'one tools-off call covers both captures');
   for (const c of judged) {
-    assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', 'npm:pi-claude-bridge', '--model', 'claude-bridge/claude-haiku-4-5', `@${join(c.cwd, 'capture_0.png')}`, `@${join(c.cwd, 'capture_1.png')}`]);
+    assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', 'npm:pi-claude-bridge', '--model', 'claude-bridge/claude-haiku-4-5', `@${join(c.cwd, 'capture_0__home.png')}`, `@${join(c.cwd, 'capture_1__settings.png')}`]);
   }
 });
 
@@ -3898,9 +3941,9 @@ test('verify through pi and gemini: each judges tools-off with the capture attac
       assert.match(c.stdin, new RegExp(`home and settings render for ${judge}`));
       assert.ok(!c.argv.some((a) => a.includes('home and settings render') || a.includes('.proof')), 'the outcome goes on stdin, never argv or a path');
       assert.notEqual(c.cwd, t.repo, 'the judge runs in a scratch folder, never the repo');
-      if (judge === 'pi') assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--model', model, `@${join(c.cwd, 'capture_0.png')}`, `@${join(c.cwd, 'capture_1.png')}`]);
+      if (judge === 'pi') assert.deepEqual(c.argv, ['-p', '--mode', 'json', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--model', model, `@${join(c.cwd, 'capture_0__home.png')}`, `@${join(c.cwd, 'capture_1__settings.png')}`]);
       else {
-        assert.deepEqual(c.argv, ['-p', 'Follow the instructions on stdin. @capture_0.png @capture_1.png', '-o', 'json', '-m', model, '--approval-mode', 'plan', '--policy', join(c.cwd, 'deny-all.toml'), '--skip-trust']);
+        assert.deepEqual(c.argv, ['-p', 'Follow the instructions on stdin. @capture_0__home.png @capture_1__settings.png', '-o', 'json', '-m', model, '--approval-mode', 'plan', '--policy', join(c.cwd, 'deny-all.toml'), '--skip-trust']);
         assert.match(c.policy, /toolName = "\*"\ndecision = "deny"/, 'every tool is denied');
       }
     }
@@ -3909,7 +3952,7 @@ test('verify through pi and gemini: each judges tools-off with the capture attac
     assert.deepEqual([judgeLog.route, judgeLog.model, judgeLog.independence], [`answerer:${judge}`, model, 'agent']);
     for (const n of readdirSync(join(runDir, 'agents'))) {
       const rec = JSON.parse(readFileSync(join(runDir, 'agents', n), 'utf8'));
-      assert.deepEqual([rec.agent, rec.tools, rec.images], [judge, 'none', ['capture_0.png', 'capture_1.png']], 'the record names both captures and keeps no image bytes');
+      assert.deepEqual([rec.agent, rec.tools, rec.images], [judge, 'none', ['capture_0__home.png', 'capture_1__settings.png']], 'the record names both captures and keeps no image bytes');
     }
     // A wrong screen parks the run at the gate (exit 4), not a fail.
     const bad = verify(agents({ correct: 0.04, wrong: 0.93, unclear: 0.03 }).env, `the settings page shows dark mode on for ${judge}`);
@@ -7463,6 +7506,11 @@ test('base_ref pairs each cell with its base capture in one judge request, and r
   const calls = s.calls().slice(1);
   assert.ok(calls.length === 1 && calls[0].attached.join() === 'PNG,PNG,PNG,PNG' && calls[0].file.includes('base ref'), 'one request holds every before and after image');
   const proof = join(t.repo, '.proof', on.run.run_id);
+  const paired = JSON.parse(calls[0].file.split('BEGIN DATA (JSON)\n')[1].split('\nEND DATA')[0]);
+  for (const [key, value] of Object.entries(paired.state).filter(([key]) => key.startsWith('capture_'))) {
+    assert.equal(value.before_name, join(proof, 'before', basename(value.name)));
+    assert.ok(paired.questions[key].images.every(id => id.endsWith('__' + basename(value.name, '.png'))));
+  }
   for (const cell of ['light', 'dark']) assert.deepEqual(readFileSync(join(proof, 'before', `home.${cell}.png`)), readFileSync(join(t.dir, `old.${cell}.png`)), `the ${cell} base capture is the base ref's page`);
   const judged = decode(readFileSync(join(t.env.DONE_DONE_HOME, 'runs', 'notes', on.run.run_id, 'logs', 'judge.log'), 'utf8')).judged;
   assert.deepEqual(judged.map((j) => [basename(j.path), j.before.replace(`${proof}/`, '')]).sort(), [['home.dark.png', 'before/home.dark.png'], ['home.light.png', 'before/home.light.png']], 'pairs by screen name and cell');
