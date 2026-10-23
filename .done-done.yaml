@@ -16,6 +16,8 @@ journeys:
     command: node journeys/create-maintain.mjs
   approved-design:
     command: node journeys/approved-design.mjs
+  init-first-release:
+    command: node journeys/init-first-release.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

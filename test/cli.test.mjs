@@ -1436,7 +1436,7 @@ function shapeRepo(kind, name) {
     writeFileSync(join(repo, '.done-done.yaml'), `app: ${name}\njourneys:\n  add:\n    command: scripts/verify/drive.sh add milk > $DONE_DONE_EVIDENCE_ROOT/\${RUN_ID}.log\n`);
     writeFileSync(join(repo, 'README.md'), `# ${name}\n\nnpm start runs the engine on your own account.\n`);
   } else {
-    // private: an unpublished CLI, so it ships no installable artifact and needs no upgrade journey (kind 'shipped' publishes it).
+    // private packages need no upgrade journey; kind 'shipped' has a public installable bin.
     writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, ...(kind !== 'shipped' && { private: true }), bin: { [name]: 'bin/cli.js' }, dependencies: { commander: '^12.0.0' } }));
     mkdirSync(join(repo, 'bin'));
     writeFileSync(join(repo, 'bin', 'cli.js'), `#!/usr/bin/env node\nprogram.command('add').command('list');\n`);
@@ -1457,6 +1457,7 @@ function shapeRepo(kind, name) {
 // A feature without core or upgrade gets core on the first one only and upgrade on none, as the schema requires both.
 const scaffoldAnswer = (over = {}) => JSON.stringify(withRoles({
   surface: 'CLI',
+  first_release: false,
   launch: { steps: 'ENGINE=stub ENGINE_HOME="$(mktemp -d)" scripts/verify/drive.sh up', source: 'scripts/verify/drive.sh', safe: true, why: 'the stub engine with a throwaway ENGINE_HOME, as scripts/verify/drive.sh runs it.' },
   ready: 'the command exits 0',
   harness: 'a terminal (tmux or PTY)',
@@ -1550,6 +1551,45 @@ test('init has the agent name the core journey and, for a CLI users install, an 
   const d = toon(doctorIn(repo, ok.r.env ?? env, 'doctor'));
   assert.equal(d.checks.find((c) => c.check === 'core_journey').detail, 'feature map entry [Add a note](add-a-note.md) is the core user journey');
   assert.match(d.checks.find((c) => c.check === 'upgrade_journey').detail, /^feature map entry \[Upgrade in place\]\(upgrade-in-place\.md\) upgrades in place/);
+});
+
+test('first-release npm bin init writes a skill, maintain reads it and affected maps a source change', () => {
+  const { repo, env, sh } = shapeRepo('shipped', 'hello-umer');
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'hello-umer', version: '0.1.0', bin: { 'hello-umer': 'bin/cli.js' } }));
+  writeFileSync(join(repo, 'bin', 'cli.js'), '#!/usr/bin/env node\n// No earlier release yet. This is the first release.\nconsole.log("Hello Umer");\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'First-release CLI');
+  const s = stubAgents(env, scaffoldAnswer({
+    first_release: true,
+    launch: { steps: 'node bin/cli.js', source: 'bin/cli.js', safe: true, why: 'prints a greeting without reading or writing user state' },
+    features: [{ title: 'Greet Umer', reach: 'the hello-umer command', drive: 'run node bin/cli.js and see Hello Umer', source: 'bin/cli.js', capture: 'text' }],
+  }));
+  const init = doctorIn(repo, s.env, 'init');
+  assert.equal(init.code, 0, init.out);
+  assert.equal(toon(init).verify_skill, 'written by claude');
+  assert.match(s.calls()[0].stdin, /first_release: true only when the repo explicitly says no earlier release yet/);
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-hello-umer');
+  assert.match(readFileSync(join(skill, 'SKILL.md'), 'utf8'), /Upgrade journey pending: no earlier release yet\. Before the next release, install the first published version, upgrade over it in place, then drive the core journey\./);
+  assert.doesNotMatch(readFileSync(join(skill, 'features', 'README.md'), 'utf8'), /\(upgrade journey\)/, 'pending is not a fabricated upgrade proof');
+  sh('add', '-A');
+  sh('commit', '-qm', 'Add verification skill');
+  const base = sh('rev-parse', 'HEAD').toString().trim();
+  const m = doctorIn(repo, s.env, 'maintain', '--foreground');
+  assert.deepEqual([m.code, toon(m).result, toon(m).findings?.length ?? 0], [0, 'clean', 0], m.out);
+  writeFileSync(join(repo, 'bin', 'cli.js'), '#!/usr/bin/env node\nconsole.log("Welcome Umer");\n');
+  sh('commit', '-qam', 'Change greeting');
+  const changed = doctorIn(repo, s.env, 'affected', base);
+  assert.equal(changed.code, 1, changed.out); // correctly asks for fresh proof, not a setup failure
+  const a = toon(changed);
+  assert.deepEqual(a.changed, ['bin/cli.js']);
+  assert.deepEqual(a.features.map((f) => f.name), ['greet-umer']);
+  assert.equal(a.unmapped, undefined, 'the generated feature map covers the changed bin');
+  assert.equal(a.fallback, undefined, 'no uncertain fallback from a missing map');
+  assert.match(a.help.join('\n'), /done-done verify --feature greet-umer/);
+  assert.equal(spawnSync(process.execPath, ['bin/cli.js'], { cwd: repo, env: s.env, encoding: 'utf8' }).stdout, 'Welcome Umer\n');
+  const d = toon(doctorIn(repo, s.env, 'doctor'));
+  assert.equal(d.checks.find((c) => c.check === 'core_journey').status, 'ok');
+  assert.equal(d.checks.find((c) => c.check === 'upgrade_journey').status, 'missing', 'first-release scaffolding never claims an upgrade was proven');
 });
 
 test('init with a tool-less agent writes no verify skill that cites a file its prompt left out', () => {
