@@ -37,6 +37,8 @@ You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in 
 2. **Set up your repo.** `init` asks you, in a terminal, which coding agent drives your app and which judge checks it. done-done never picks either for you. It then writes a minimal `.done-done.yaml` and a verify skill: how to launch and drive your app. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>` instead.
 3. **Get your first result.** Say what works now, in plain words. `verify` has your agent drive the real product the way a user does and save screenshots or output. A fresh judge checks whether each capture shows your claim. A pass names the capture and writes a receipt for this commit. Anything else stops at a gate with the judge's reason, and `done-done respond` answers it. No judge pass, no receipt.
 
+`done-done --version` prints the bare version first; help headers show it too, and suffixed versions are labelled `pre-release`.
+
 Optional setup check: `done-done doctor --probe` requires a real answer from your chosen agent; it checks setup, not whether your app works.
 
 For a signed-in Claude Code setup, pass `--agent claude --model claude-haiku-5-5 --judge claude --judge-model claude-haiku-5-5` to `init`. For Codex, use `--agent codex --model gpt-6.1-sol` with that same judge. Codex readers and probes require a CLI with `exec --ignore-user-config` and `debug models --bundled`: they keep your login, but disable MCP, project instructions and model-provided tools; edit/drive steps keep your normal Codex config. Codex is not a judge route.
