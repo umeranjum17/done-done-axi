@@ -175,8 +175,8 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version }, start: 'built CLI and an isolated three-screen approved design',
-    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame'],
-    result: 'approved-design coverage fails missing Today, passes complete matching screens, and refuses non-matches and unsealed captures',
+    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame', 'reject an unlisted reference image, an uncovered requirement (asset with no live capture) and a design claim not compared to an approved reference, then pass the covered manifest with its exclusion reported'],
+    result: 'approved-design coverage fails missing Today and uncovered requirements, passes complete matching screens, and refuses non-matches and unsealed captures',
   }));
 } finally {
   mkdirSync(OUT, { recursive: true });
