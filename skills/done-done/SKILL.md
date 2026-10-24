@@ -70,6 +70,13 @@ journeys:
     command: done-done look http://127.0.0.1:3000/inbox --out "$DONE_DONE_EVIDENCE_ROOT/inbox.png"
 ```
 
+Interaction coverage is opt-in via `interaction_checklist` in the repo config. Read the shipped `skills/done-done/interaction-checklist.json`:
+next/previous plus swipe in details, instant send/answer feedback, destructive undo, list scroll restoration, long-list search/filter,
+and empty-state next steps. Map every item to real-product frame filenames (`captures`, in action order) or `not_applicable`
+with a surface-specific reason. `check`, `receipt` and `verify` flag omitted or unproven items; only frames the judge ties to the item
+can pass. Static controls do not prove motion or timing. Capture the interaction, never substitute a mock. Without the key, approved-design behavior is unchanged;
+`done-done check --help` and `docs/reference.md` explain wiring.
+
 To gate a worker's claim cheaply, `done-done lint <PR URL | report file> <evidence folder>` reads the newest `## Checks` block
 with no judge or model and prints `PASS` or `FAIL: <reason>` (exit 1 on a fail): missing lines, evidence that is absent,
 empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.

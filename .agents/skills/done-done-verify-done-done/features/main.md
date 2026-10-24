@@ -41,6 +41,12 @@ Source: `src/` (built to `dist/`), `skills/done-done/SKILL.md`, `integrations/fi
 Source: src/config.ts, src/cli.ts, src/design.ts and journeys/approved-design.mjs.
 Drive `node dist/cli.js run approved-design`. Its isolated three-screen fixture drives the built CLI's run/check/receipt path: home and settings alone fail naming `today / 200x120 / light`; a new sealed run adding Today passes with three paired per-screen verdicts. A mismatch fails and receipt re-verification checks the approved mock hashes. Capture `approved-design.log` in the run's evidence folder. The deterministic fixture judge proves the CLI integration, not hosted visual-model accuracy. Every assertion must pass.
 
+## Interaction checklist
+
+Source: src/config.ts, src/design.ts, src/cli.ts, skills/done-done/interaction-checklist.json and journeys/approved-design.mjs.
+Drive `node dist/cli.js run approved-design` for the extended real-CLI integration: without wiring the approved-design output is unchanged; with wiring all six items appear, a cited frame passes, an omitted item's frame is flagged even by the optimistic adapter, and four absent surfaces retain explicit reasons. Then seal a complete checklist, record/verify its receipt, reject a tampered verdict, a judge-rejected frame and malformed config. This adapter proves the contract, not visual-model accuracy.
+For hosted proof use a small isolated app/repo: commit `interaction_checklist` with `empty-next-step: {captures: [empty.png]}`, omit one applicable item and give absent surfaces reasons; open a run in the default evidence root, drive the real app with chrome-devtools-axi, capture its useful empty state and write steps.json, then close the run. `check --outcome "empty state explains the next step" <run>/empty.png` must return the judged item `pass` and the missing item `flagged` (exit 1). Record this negative-control transcript; it must not produce a receipt. In a new committed fixture config, mark that missing surface not applicable only if it truly does not exist, reseal a fresh run and use `receipt`/`receipt --verify HEAD` to prove the passing path. Inspect each screenshot. Keep sealed run ids, receipt path and CLI transcripts in the task evidence report; frames and no-frame controls must stay distinguishable.
+
 ## How to get to it (user POV)
 
 what README.md says a user runs first.

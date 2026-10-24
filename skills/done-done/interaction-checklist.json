@@ -1,0 +1,8 @@
+{
+  "detail-navigation": "Detail views offer next and previous navigation plus swipe between items. Demonstrate both controls and the swipe transition, not just a static detail screen.",
+  "instant-state": "Every send or answer immediately shows a pending, sent, answered or error state. Demonstrate the action and its immediate feedback; a final reply alone does not prove timing.",
+  "destructive-undo": "Destructive actions offer undo. Demonstrate the action, visible undo and restored content after undo.",
+  "scroll-restoration": "Lists preserve scroll position on returning from a detail view. Demonstrate the scrolled list, opening a detail and returning to the same position.",
+  "list-search": "Long lists have usable search or filtering. Demonstrate the long list and the changed results after searching or filtering.",
+  "empty-next-step": "Empty states explain the next step a user can take. Show the real empty state with its actionable explanation."
+}

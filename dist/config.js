@@ -12,6 +12,7 @@ export class UsageError extends Error {
         this.help = help;
     }
 }
+export const INTERACTIONS = JSON.parse(readFileSync(new URL('../skills/done-done/interaction-checklist.json', import.meta.url), 'utf8'));
 // The coding agents a user can set as agent.
 export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // The agents whose CLI can read an attached image with every tool off, so they judge through the answerer route;
@@ -68,6 +69,7 @@ const KEYS = {
     dom: { scope: 'repo', type: 'dom' },
     look: { scope: 'repo', type: 'look' },
     approved_design: { scope: 'repo', type: 'approved_design' },
+    interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
     base_ref: { scope: 'repo', type: 'string' },
     'evidence.root': { scope: 'repo', type: 'string' },
     'evidence.allow_dirty': { scope: 'repo', type: 'boolean' },
@@ -214,6 +216,25 @@ function apply(target, text, file, scope) {
             target[key] = { command: v.command, ready: has(r.url) ? { url: r.url } : { command: r.command }, ready_timeout: v.ready_timeout ?? '30s' };
             continue;
         }
+        if (key === 'interaction_checklist') {
+            const fail = () => { throw new UsageError(`${file}: interaction_checklist needs known checklist ids, each with only captures: [<PNG/JPEG filename>, ...] (1-8), or not_applicable: <non-empty reason>`); };
+            if (!isMap(value))
+                fail();
+            for (const [id, row] of Object.entries(value)) {
+                if (!Object.hasOwn(INTERACTIONS, id) || !isMap(row) || Object.keys(row).length !== 1)
+                    fail();
+                const r = row;
+                if (Object.hasOwn(r, 'not_applicable')) {
+                    if (typeof r.not_applicable !== 'string' || !r.not_applicable.trim())
+                        fail();
+                }
+                else if (!Array.isArray(r.captures) || !r.captures.length || r.captures.length > 8 || new Set(r.captures).size !== r.captures.length || !r.captures.every(p => typeof p === 'string' && !/[\\/\\\\]/.test(p) && p !== '..' && /\.(png|jpe?g)$/i.test(p)))
+                    fail();
+            }
+            target.interaction_checklist = value;
+            target.from[key] = scope;
+            continue;
+        }
         if (key === 'approved_design') {
             const fail = () => { throw new UsageError(`${file}: approved_design must be a non-empty list of unique {screen, size: <width>x<height> in pixels, theme, mock: <repo-relative PNG/JPEG>, capture: <unique PNG/JPEG filename>}`); };
             const relativeImage = (p) => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
@@ -314,6 +335,7 @@ function defaultConfig(repo) {
         dom: null,
         look: null,
         approved_design: [],
+        interaction_checklist: null,
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },

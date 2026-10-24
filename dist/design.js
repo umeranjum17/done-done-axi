@@ -1,8 +1,52 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { home, UsageError } from './config.js';
+import { home, INTERACTIONS, UsageError } from './config.js';
 import { askJudge, backend, prepare, readCache, screen, VERSION, writeCache } from './judge.js';
 import { decodePixels } from './media.js';
+// Only sealed, cited product frames reach here. Missing evidence is a finding, never a model-inferred pass.
+export async function interactions(cfg, choice, captures, records) {
+    if (cfg.interaction_checklist === null)
+        return [];
+    const out = [];
+    for (const [id, requirement] of Object.entries(INTERACTIONS)) {
+        const entry = cfg.interaction_checklist[id];
+        const row = { id, status: 'flagged', reason: 'no real-product frame cited for this item', captures: [] };
+        if (entry?.not_applicable) {
+            row.status = 'not_applicable';
+            row.reason = entry.not_applicable;
+        }
+        else if (entry?.captures) {
+            const frames = entry.captures.map(name => captures.filter(c => c.name.split(/[\\/\\\\]/).at(-1) === name && screen(c)));
+            if (frames.some(f => f.length !== 1))
+                row.reason = 'each configured frame must name exactly one cited, run-bound PNG/JPEG: ' + entry.captures.join(', ');
+            else {
+                const shots = frames.map(f => f[0]);
+                row.captures = shots.map(c => ({ path: c.name, sha256: c.sha256 }));
+                const images = Object.fromEntries(shots.map((c, i) => {
+                    const img = image(c);
+                    if (typeof img === 'string')
+                        throw new UsageError(`interaction checklist: ${img}`);
+                    return [`frame_${i}`, img];
+                }));
+                const q = { interaction: { kind: 'choice', instructions: `Check this interaction on the real product: ${requirement} Frames are in action order. Describe visible evidence for each part before answering. Do not infer working behavior, timing, swipe or scroll restoration from a control's presence or a final state. Missing or insufficient evidence is missing, never shown.`, options: { shown: 'Every required part is demonstrated by these real-product frames.', missing: 'A required part is absent, broken or cannot be established from these frames.' }, images: Object.keys(images), floor: cfg.judge.floor, personReason: true } };
+                const key = createHash('sha256').update(JSON.stringify([VERSION, q, row.captures, choice.route, choice.model])).digest('hex');
+                const dir = join(home(), 'runs', cfg.app, 'interactions');
+                let hit = readCache(dir, key);
+                if (!hit || !['pass', 'flagged'].includes(hit.status) || typeof hit.reason !== 'string') {
+                    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const b = await backend(cfg, choice, n => `${records}/interaction-${stamp}-${id}-${n}.agent.json`, q, ASK_ATTEMPTS);
+                    const a = (await askJudge(cfg, b, choice, { item: id, frames: entry.captures }, q, images)).interaction;
+                    hit = { status: !a.abstained && a.answer === 'shown' ? 'pass' : 'flagged', reason: a.personReason || a.rationale || 'interaction not demonstrated' };
+                    writeCache(dir, key, hit);
+                }
+                row.status = hit.status;
+                row.reason = hit.reason;
+            }
+        }
+        out.push(row);
+    }
+    return out;
+}
 // The defect kinds, each its own question. Each asks for something the judge can see and measure, not whether it was
 // meant that way: a cheap model talks itself out of a judgment ("an intentional style", "the viewer's border"), not out of
 // a measurement. look is what the judge writes in its rationale before it answers.

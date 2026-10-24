@@ -10,12 +10,12 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason } from './agents.js';
-import { AGENTS, CHEAP, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
+import { AGENTS, CHEAP, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, judge, judgeable, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, inWorktree, maintainSteps, journeyProposal, named, pathspec, readerProblem, repoState, triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
-import { design, KINDS } from './design.js';
+import { design, interactions, KINDS } from './design.js';
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { lint } from './lint.js';
@@ -53,7 +53,11 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   proof: <the command or path that drove the real product; name the repo's done-done-verify-<app> skill, or say "no verify skill">
   evidence: <the evidence file paths, or "not proven: <cause>">
   approved_design (.done-done.yaml): a non-empty manifest of {screen, size: <width>x<height>, theme, mock: <repo PNG/JPEG>, capture: <unique filename>};
-  every claim needs every listed live screen, paired with its mock and a passing design verdict; missing or unsure matches fail by screen/size/theme`;
+  every claim needs every listed live screen, paired with its mock and a passing design verdict; missing or unsure matches fail by screen/size/theme
+  interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
+  or {not_applicable: <reason>}; detail-navigation, instant-state, destructive-undo, scroll-restoration, list-search, empty-next-step.
+  check/receipt/verify report every item: pass only with judged real-product frames, not_applicable with a reason, otherwise flagged (exit 1).
+  Omitted checklist: unchanged behavior; interaction_checklist: {} flags all six. Frames must be cited from sealed runs; static controls alone do not prove an interaction`;
 const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/runs/<app>/<run-id> (run.json, events.jsonl, logs/<step>.log,
   agents/<n>-<name>.json for each agent call) and goes on when the command that started it ends;
   verify steps: resolve, drive, check, judge (always; skipped only after a failed check), triage and fix (only with auto_fix.verify above 0), gate, receipt, report;
@@ -1024,7 +1028,17 @@ async function runCheck(argv, run) {
         if (judgeBlock)
             judgeBlock.approved_design = matches;
     }
+    const touches = await interactions(cfg, choice, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+    for (const r of touches) {
+        r.captures = r.captures.map(c => ({ ...c, path: receiptPath(repo, cfg, cite(c.path)) }));
+        if (r.status === 'flagged')
+            findings.push({ level: 'fail', why: `interaction checklist: ${r.id}: flagged: ${r.reason}` });
+    }
+    if (judgeBlock && touches.length)
+        judgeBlock.interaction_checklist = touches;
     const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel, warnings });
+    if (touches.length)
+        rep.result.interaction_checklist = touches;
     if (matches.length)
         rep.result.design = matches;
     if (rep.code === PASS) {
@@ -1070,6 +1084,11 @@ function receiptFault(rec, short) {
         return `receipt for ${short} has a malformed judge block`;
     if (j.approved_design !== undefined && (!Array.isArray(j.approved_design) || !j.approved_design.length || !j.approved_design.every(v => v && v.verdict === 'pass' && [v.screen, v.size, v.theme].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256) && rec.files.some(f => f.path === v.mock && f.sha256 === v.mock_sha256))))
         return `receipt for ${short} has a malformed approved-design verdict`;
+    if (j.interaction_checklist !== undefined) {
+        const rows = j.interaction_checklist;
+        if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256)))))
+            return `receipt for ${short} has a malformed interaction-checklist verdict`;
+    }
     const code = runsFault(rec.runs);
     if (code)
         return `receipt for ${short} is no real-product proof: ${code}`;

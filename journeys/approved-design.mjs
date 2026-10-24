@@ -42,10 +42,11 @@ try {
   writeFileSync(judge, `#!${process.execPath}
 const fs = require('node:fs'); const ask = fs.readFileSync(0, 'utf8');
 const design = ask.includes('blank-strip');
+const interaction = ask.includes('Check this interaction on the real product');
 if (design && !ask.includes('"mock"')) throw Error('comparison missing approved mock');
-const keys = design ? ['aspect','clipped-text','overlap','off-screen','blank-strip','squashed-text','layout'] : [...new Set([...ask.matchAll(/capture_\\d+/g)].map(m => m[0]))];
+const keys = interaction ? ['interaction'] : design ? ['aspect','clipped-text','overlap','off-screen','blank-strip','squashed-text','layout'] : [...new Set([...ask.matchAll(/capture_\\d+/g)].map(m => m[0]))];
 if (!keys.length) keys.push('relevance');
-const answer = Object.fromEntries(keys.map(k => [k, {probabilities: design ? (k === 'layout' && process.env.DD_UNSURE ? {defect: .5, none: .5} : process.env.DD_MISMATCH && k === 'layout' ? {defect: .95, none: .05} : {defect: .03, none: .97}) : {correct: .95, wrong: .03, unclear: .02}, rationale: 'Fixture reply.', personReason: 'Fixture layout comparison.', parts: [], covers: []}]));
+const answer = Object.fromEntries(keys.map(k => [k, {probabilities: interaction ? (process.env.DD_INTERACTION_MISSING ? {shown: .03, missing: .97} : {shown: .97, missing: .03}) : design ? (k === 'layout' && process.env.DD_UNSURE ? {defect: .5, none: .5} : process.env.DD_MISMATCH && k === 'layout' ? {defect: .95, none: .05} : {defect: .03, none: .97}) : {correct: .95, wrong: .03, unclear: .02}, rationale: 'Fixture reply.', personReason: 'Fixture layout comparison.', parts: [], covers: []}]));
 fs.appendFileSync(${JSON.stringify(join(dir, 'calls.log'))}, design ? 'paired\\n' : 'relevance\\n');
 process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
 `, { mode: 0o755 });
@@ -76,6 +77,7 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   dd(0, 'run', '--close', complete.run_id);
   const all = screens.map(s => join(complete.evidence_root, `${s}.png`));
   const pass = dd(0, 'check', '--outcome', 'design done', ...all);
+  assert.equal(pass.interaction_checklist, undefined, 'legacy approved-design checks are unchanged without opt-in');
   assert.equal(pass.design.length, 3); assert.ok(pass.design.every(s => s.verdict === 'pass' && s.mock));
   assert.equal(readFileSync(join(dir, 'calls.log'), 'utf8').split('paired\n').length - 1, 3);
   const receipt = dd(0, 'receipt', '--outcome', 'release ready', ...all);
@@ -94,6 +96,47 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   writeFileSync(join(home, 'config.yaml'), readFileSync(join(home, 'config.yaml'), 'utf8').replace('model: mismatch', 'model: unsure'));
   const unsure = dd(1, 'check', '--outcome', 'release ready', ...all);
   assert.ok(unsure.design.every(s => s.verdict === 'unsure')); assert.match(JSON.stringify(unsure), /match not proven/);
+  // Opt-in coverage still uses the real run/check/receipt path. The optimistic adapter must never pass an item without a frame.
+  delete env.DD_UNSURE;
+  writeFileSync(join(home, 'config.yaml'), readFileSync(join(home, 'config.yaml'), 'utf8').replace('model: unsure', 'model: interactions'));
+  const ids = Object.keys(JSON.parse(readFileSync(new URL('../skills/done-done/interaction-checklist.json', import.meta.url), 'utf8')));
+  const checklist = Object.fromEntries(ids.filter(id => !['empty-next-step', 'instant-state'].includes(id)).map(id => [id, {not_applicable: 'Fixture has no such surface'}]));
+  checklist['empty-next-step'] = { captures: ['home.png'] };
+  const wire = () => {
+    writeFileSync(join(repo, '.done-done.yaml'), config + `interaction_checklist: ${JSON.stringify(checklist)}\n`);
+    git('add', '.done-done.yaml'); git('commit', '-qm', 'wire interaction checklist');
+    const run = dd(0, 'run', '--open');
+    const root = join(repo, run.evidence_root);
+    for (const name of screens) writeFileSync(join(root, `${name}.png`), readFileSync(join(repo, `${name}-mock.png`)));
+    writeFileSync(join(root, 'steps.json'), JSON.stringify({target: {version: '1'}, start: 'fixture', steps: ['open all screens'], result: 'design done and release ready'}));
+    dd(0, 'run', '--close', run.run_id);
+    return screens.map(s => join(root, `${s}.png`));
+  };
+  let wired = wire();
+  const flagged = dd(1, 'check', '--outcome', 'design done', ...wired);
+  assert.equal(flagged.interaction_checklist.length, 6);
+  assert.equal(flagged.interaction_checklist.find(r => r.id === 'empty-next-step').status, 'pass');
+  assert.equal(flagged.interaction_checklist.find(r => r.id === 'instant-state').status, 'flagged');
+  assert.equal(flagged.interaction_checklist.filter(r => r.status === 'not_applicable').length, 4);
+  dd(1, 'receipt', '--outcome', 'release ready', ...wired);
+  checklist['instant-state'] = {not_applicable: 'Fixture has no send or answer action'};
+  wired = wire();
+  const good = dd(0, 'receipt', '--outcome', 'release ready', ...wired);
+  const verified = dd(0, 'receipt', '--verify', 'HEAD');
+  assert.equal(verified.judge.interaction_checklist.find(r => r.id === 'empty-next-step').captures.length, 1);
+  const receiptFile = join(repo, good.receipt);
+  const saved = readFileSync(receiptFile, 'utf8');
+  const damaged = JSON.parse(saved); damaged.judge.interaction_checklist[0].status = 'flagged';
+  writeFileSync(receiptFile, JSON.stringify(damaged));
+  assert.match(dd(1, 'receipt', '--verify', 'HEAD').reason, /malformed interaction-checklist/);
+  writeFileSync(receiptFile, saved);
+  env.DD_INTERACTION_MISSING = '1';
+  writeFileSync(join(home, 'config.yaml'), readFileSync(join(home, 'config.yaml'), 'utf8').replace('model: interactions', 'model: interaction-negative'));
+  assert.equal(dd(1, 'check', '--outcome', 'design done', ...wired).interaction_checklist.find(r => r.id === 'empty-next-step').status, 'flagged', 'a judge-rejected frame cannot pass');
+  for (const bad of [{typo: {captures: ['home.png']}}, {'empty-next-step': {not_applicable: ' '}}, {'empty-next-step': {captures: ['../home.png']}}, {'empty-next-step': {captures: ['home.png'], not_applicable: 'no'}}]) {
+    writeFileSync(join(repo, '.done-done.yaml'), config + `interaction_checklist: ${JSON.stringify(bad)}\n`);
+    assert.match(dd(2, 'run', '--open').error, /interaction_checklist needs/);
+  }
   for (const rows of [[], [contract[0], contract[0]], [{ ...contract[0], mock: '../outside.png' }], [{ ...contract[0], capture: '../outside.png' }]]) {
     writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\napproved_design: ${JSON.stringify(rows)}\n`);
     assert.match(dd(2, 'run', '--open').error, /approved_design must be/);
@@ -102,7 +145,7 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version }, start: 'built CLI and an isolated three-screen approved design',
-    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories'],
+    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame'],
     result: 'approved-design coverage fails missing Today, passes complete matching screens, and refuses non-matches and unsealed captures',
   }));
 } finally {
