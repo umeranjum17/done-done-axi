@@ -2772,7 +2772,7 @@ async function cmdSignoff(argv) {
     writeFileSync(file, `${JSON.stringify(msg, null, 2)}\n`);
     const at = citable(repo, file);
     if (!posts) {
-        emit({ command: 'signoff', run_id: id, kind: msg.kind, file: at, help: [`Post it to the sign-off board (done-done never posts): npx -y sign-off-axi post --kind ${msg.kind} --from ${arg(at)}`] });
+        emit({ command: 'signoff', run_id: id, kind: msg.kind, file: at, help: [`Post it to the sign-off board with sign-off-axi (done-done prepares the run; sign-off-axi posts): npx -y sign-off-axi post --kind ${msg.kind} --from ${arg(at)}`] });
         return PASS;
     }
     // Post it through the board's own CLI and record the card it made, so the claim traces to the run and its card.
