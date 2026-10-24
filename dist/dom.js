@@ -34,7 +34,8 @@ export const SQUASHED_TEXT = `() => {
 // The rest of the look measurement, run in the page by `done-done look` next to SQUASHED_TEXT. A part of an element only
 // shows inside every ancestor that clips it (overflow other than visible; html and body clip as the viewport, so they are
 // the edges, not containers). Text is clipped when part of it shows and part runs past a hidden or clip container on an
-// axis without text-overflow: ellipsis or a line clamp; an element is cut off when part of what shows lies past the
+// axis. A single-line ellipsis is deliberate only with a readable head (3 complete words OR 20 visible characters);
+// a line clamp may hide whole lines, not part of a visible line. An element is cut off when part of what shows lies past the
 // left, right or top edge of the viewport (the page is at its top, so nothing above it can be scrolled to). Something
 // entirely outside its container or the viewport is hidden on purpose (a closed drawer, a visually hidden label), not cut;
 // a cut element's children are not listed again.
@@ -46,6 +47,32 @@ export const LOOK = `() => {
   const own = (e) => [...e.childNodes].filter((n) => n.nodeType === 3 && n.data.trim()).map((n) => n.data).join(' ').replace(/\\s+/g, ' ').trim().slice(0, 40);
   const clips = (e) => { const out = []; for (let a = e; a && a !== document.body && a !== document.documentElement; a = a.parentElement) { const s = getComputedStyle(a); if (s.overflowX !== 'visible' || s.overflowY !== 'visible') { const r = a.getBoundingClientRect(); out.push({ a, s, l: r.left + a.clientLeft, t: r.top + a.clientTop, r: r.left + a.clientLeft + a.clientWidth, b: r.top + a.clientTop + a.clientHeight }); } } return out; };
   const shows = (b) => b.r - b.l > 1 && b.b - b.t > 1;
+  const readable = (c) => {
+    if (c.s.textOverflow !== 'ellipsis' || !['nowrap', 'pre'].includes(c.s.whiteSpace) || c.s.display === 'inline' || c.s.writingMode !== 'horizontal-tb') return false;
+    const ctx = document.createElement('canvas').getContext('2d');
+    ctx.font = c.s.fontStyle + ' ' + c.s.fontWeight + ' ' + c.s.fontSize + ' ' + c.s.fontFamily;
+    ctx.letterSpacing = c.s.letterSpacing === 'normal' ? '0px' : c.s.letterSpacing;
+    /* Reserve a pixel for browser glyph rounding at the ellipsis boundary. */
+    const dots = ctx.measureText('…').width + 1; const rtl = c.s.direction === 'rtl';
+    const left = c.l + parseFloat(c.s.paddingLeft) + (rtl ? dots : 0);
+    const right = c.r - parseFloat(c.s.paddingRight) - (rtl ? 0 : dots);
+    const walker = document.createTreeWalker(c.a, NodeFilter.SHOW_TEXT);
+    let head = ''; let next = ''; let top;
+    scan: for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      let offset = 0;
+      for (const ch of n.data) {
+        const g = document.createRange(); g.setStart(n, offset); offset += ch.length; g.setEnd(n, offset);
+        const q = g.getBoundingClientRect();
+        if (!q.width) continue;
+        if (top !== undefined && Math.abs(q.top - top) > 1) return false;
+        top = q.top;
+        if (q.left < left - 0.01 || q.right > right + 0.01) { next = ch; break scan; }
+        head += ch;
+      }
+    }
+    const complete = (next && !/\\s/.test(next) ? head.replace(/\\S+$/, '') : head).trim();
+    return [...head.trim()].length >= 20 || (complete ? complete.split(/\\s+/).length : 0) >= 3;
+  };
   for (const e of document.querySelectorAll('body *')) {
     const s = getComputedStyle(e); const rect = e.getBoundingClientRect();
     if (!e.getClientRects().length || s.visibility !== 'visible' || rect.width < 1 || rect.height < 1) continue;
@@ -57,13 +84,17 @@ export const LOOK = `() => {
     const edges = [box.l < -1 && 'left', box.r > vw + 1 && 'right', box.t < -1 && 'top'].filter(Boolean);
     if (edges.length && box.r > 0 && box.l < vw && box.b > 0 && box.t < vh && !parent) { cut.add(e); out.cut_off.push({ element: name(e), text, edges }); }
     if (!text) continue;
-    const t = { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity };
-    for (const n of e.childNodes) if (n.nodeType === 3 && n.data.trim()) { const g = document.createRange(); g.selectNodeContents(n); for (const q of g.getClientRects()) if (q.width) { t.l = Math.min(t.l, q.left); t.t = Math.min(t.t, q.top); t.r = Math.max(t.r, q.right); t.b = Math.max(t.b, q.bottom); } }
+    const t = { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity }; const lines = [];
+    for (const n of e.childNodes) if (n.nodeType === 3 && n.data.trim()) { const g = document.createRange(); g.selectNodeContents(n); for (const q of g.getClientRects()) if (q.width) { lines.push(q); t.l = Math.min(t.l, q.left); t.t = Math.min(t.t, q.top); t.r = Math.max(t.r, q.right); t.b = Math.max(t.b, q.bottom); } }
     if (t.l === Infinity || t.t >= vh || t.b <= 0) continue;
     for (const c of clips(e)) {
       if (c.r - c.l <= 1 || c.b - c.t <= 1 || !(t.r > c.l && t.l < c.r && t.b > c.t && t.t < c.b) || !['hidden', 'clip'].some((v) => v === c.s.overflowX || v === c.s.overflowY)) continue;
-      const x = ['hidden', 'clip'].includes(c.s.overflowX) && c.s.textOverflow !== 'ellipsis' && (t.l < c.l - 1 || t.r > c.r + 1);
-      const y = ['hidden', 'clip'].includes(c.s.overflowY) && c.s.webkitLineClamp === 'none' && (t.t < c.t - 1 || t.b > c.b + 1);
+      const overX = ['hidden', 'clip'].includes(c.s.overflowX) && (t.l < c.l - 1 || t.r > c.r + 1);
+      const x = overX && !readable(c);
+      const partial = lines.some((q) => (q.top < c.b - 1 && q.bottom > c.b + 1) || (q.top < c.t - 1 && q.bottom > c.t + 1));
+      const y = ['hidden', 'clip'].includes(c.s.overflowY) && (c.s.webkitLineClamp === 'none' || partial) && (t.t < c.t - 1 || t.b > c.b + 1);
+      /* Ancestors clip the painted ellipsis, not the invisible tail of its DOM Range. */
+      if (overX && !x) { t.l = Math.max(t.l, c.l); t.r = Math.min(t.r, c.r); }
       if (x || y) { out.clipped_text.push({ element: name(e), text, by: c.a === e ? 'its own box' : name(c.a) }); break; }
     }
   }
