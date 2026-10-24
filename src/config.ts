@@ -17,6 +17,8 @@ export class UsageError extends Error {
 export const INTERACTIONS: Record<string, string> = JSON.parse(readFileSync(new URL('../skills/done-done/interaction-checklist.json', import.meta.url), 'utf8'));
 export type InteractionEvidence = Record<string, { captures?: string[]; not_applicable?: string }>;
 
+export type ApprovedRequirement = { kind: string; name: string; capture?: string; mock?: string; exclusion?: string };
+export const REQUIREMENT_KINDS = ['asset', 'color', 'interaction', 'reference'];
 export type ApprovedScreen = { screen: string; size: string; theme: string; mock: string; capture: string };
 
 export type Config = {
@@ -40,6 +42,7 @@ export type Config = {
   dom: Dom | null;
   // The look step's approved design reference (tokens, the tallest control); null when unset: today's behaviour.
   look: LookRef | null;
+  approved_requirements: ApprovedRequirement[]; // approved assets, color tokens, interactions and reference images beyond the screens; [] when unset
   approved_design: ApprovedScreen[]; // committed screen x pixel size x theme manifest; [] when unset
   interaction_checklist: InteractionEvidence | null; // opt-in; omitted items are flagged
   // Primitive 4 (base-ref-before): verify drives this ref too and pairs its captures with the head's; '' (the default) is off.
@@ -97,7 +100,7 @@ export const EFFORT_FLAGS: Record<string, (level: string) => string[]> = {
 const AGENT_TIMEOUT = '30m';
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'approved_design' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'approved_design' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   agent_config: { scope: 'global', type: 'agent_config' },
@@ -115,6 +118,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   dom: { scope: 'repo', type: 'dom' },
   look: { scope: 'repo', type: 'look' },
   approved_design: { scope: 'repo', type: 'approved_design' },
+  approved_requirements: { scope: 'repo', type: 'approved_requirements' },
   interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
   base_ref: { scope: 'repo', type: 'string' },
   'evidence.root': { scope: 'repo', type: 'string' },
@@ -262,6 +266,24 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       target.from[key] = scope;
       continue;
     }
+    if (key === 'approved_requirements') {
+      const fail = () => { throw new UsageError(`${file}: approved_requirements must be a non-empty list of unique {kind: ${REQUIREMENT_KINDS.join('|')}, name, capture: <live PNG/JPEG filename>, mock?: <repo-relative PNG/JPEG>} or {kind, name, exclusion: <reason>}; a reference row names a committed approved image and takes only an exclusion`); };
+      const image = (p: unknown): p is string => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
+      if (!Array.isArray(value) || !value.length) fail();
+      const rows = value as ApprovedRequirement[];
+      const ids = new Set<string>(), names = new Set<string>();
+      for (const r of rows) {
+        if (!isMap(r) || !REQUIREMENT_KINDS.includes(r.kind) || typeof r.name !== 'string' || !r.name.trim()) fail();
+        const keys = Object.keys(r).filter(k => k !== 'kind' && k !== 'name').sort().join();
+        if (typeof r.exclusion === 'string' ? !r.exclusion.trim() || keys !== 'exclusion' : r.kind === 'reference' || !['capture', 'capture,mock'].includes(keys) || !image(r.capture) || /[\\/]/.test(r.capture!) || (r.mock !== undefined && !image(r.mock))) fail();
+        const id = JSON.stringify([r.kind, r.name]);
+        if (ids.has(id) || (r.capture && names.has(r.capture))) fail();
+        ids.add(id); if (r.capture) names.add(r.capture);
+      }
+      target.approved_requirements = rows;
+      target.from[key] = scope;
+      continue;
+    }
     if (key === 'approved_design') {
       const fail = () => { throw new UsageError(`${file}: approved_design must be a non-empty list of unique {screen, size: <width>x<height> in pixels, theme, mock: <repo-relative PNG/JPEG>, capture: <unique PNG/JPEG filename>}`); };
       const relativeImage = (p: unknown): p is string => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
@@ -345,6 +367,7 @@ function defaultConfig(repo: string): Config {
     matrix: null,
     dom: null,
     look: null,
+    approved_requirements: [],
     approved_design: [],
     interaction_checklist: null,
     base_ref: '',

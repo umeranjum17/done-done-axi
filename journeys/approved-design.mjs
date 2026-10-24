@@ -141,6 +141,36 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
     writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\napproved_design: ${JSON.stringify(rows)}\n`);
     assert.match(dd(2, 'run', '--open').error, /approved_design must be/);
   }
+  // Retro cause 2: approval coverage beyond the listed screens. Each negative control names what is uncovered; the positive case passes.
+  const seal = (names) => {
+    const run = dd(0, 'run', '--open');
+    const root = join(repo, run.evidence_root);
+    for (const name of names) writeFileSync(join(root, `${name}.png`), readFileSync(join(repo, name === 'logo' ? 'design/logo.png' : `${name}-mock.png`)));
+    writeFileSync(join(root, 'steps.json'), JSON.stringify({ target: { version: '1' }, start: 'fixture', steps: ['open all screens'], result: 'design done' }));
+    dd(0, 'run', '--close', run.run_id);
+    return names.map(n => join(root, `${n}.png`));
+  };
+  const commit = (yaml, msg) => { writeFileSync(join(repo, '.done-done.yaml'), yaml); git('add', '-A'); git('commit', '-qm', msg); };
+  mkdirSync(join(repo, 'design'));
+  writeFileSync(join(repo, 'design', 'logo.png'), png(41));
+  writeFileSync(join(repo, 'design', 'spare.png'), png(43));
+  commit(config, 'approved reference images outside the manifest');
+  const unlisted = dd(1, 'check', '--outcome', 'design done', ...seal(screens));
+  assert.match(JSON.stringify(unlisted), /approved reference material is not in the approved_design manifest: design\/logo\.png, design\/spare\.png/);
+  const requirementsYaml = (rows) => config + `approved_requirements: ${JSON.stringify(rows)}\n`;
+  const exclusion = { kind: 'reference', name: 'design/spare.png', exclusion: 'owner dropped the spare illustration' };
+  commit(requirementsYaml([{ kind: 'asset', name: 'logo', capture: 'logo.png', mock: 'design/logo.png' }, exclusion]), 'approved logo asset, spare excluded');
+  const uncovered = dd(1, 'check', '--outcome', 'design done', ...seal(screens));
+  assert.match(JSON.stringify(uncovered), /asset logo: no live capture \(logo\.png\)/, 'an approved asset with no live capture is rejected');
+  const covered = dd(0, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
+  assert.equal(covered.design.length, 3); assert.deepEqual(covered.approved_exclusions, [exclusion].map(({ kind, name, exclusion }) => ({ kind, name, exclusion })));
+  // Without any manifest, a design claim has nothing approved to compare to, however well it renders.
+  commit(`app: fixture\nevidence: {root: .proof}\n`, 'no manifest');
+  assert.match(JSON.stringify(dd(1, 'check', '--outcome', 'design done', ...seal(['home']))), /not compared to approved result/);
+  for (const rows of [[], [{ kind: 'asset', name: 'logo', capture: 'logo.png', exclusion: 'both' }], [{ kind: 'asset', name: 'logo', exclusion: ' ' }], [{ kind: 'sound', name: 'x', exclusion: 'no' }]]) {
+    writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\napproved_requirements: ${JSON.stringify(rows)}\n`);
+    assert.match(dd(2, 'run', '--open').error, /approved_requirements must be/);
+  }
   assert.ok(receipt.receipt);
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({

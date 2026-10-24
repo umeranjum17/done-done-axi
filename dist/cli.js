@@ -47,6 +47,8 @@ const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DO
   spends (journeys.<name>.spends): what a run spends, e.g. "one live generation"; verify parks the journey until the user approves that run (respond --action approve)
   timeout (journeys.<name>.timeout): how long a verify run may drive the journey, e.g. 90s or 30m (default 30m); past it the journey is killed and the run is inconclusive
   matrix (.done-done.yaml): with theme, width or form axes the journey runs once per required cell with DONE_DONE_THEME, DONE_DONE_WIDTH, DONE_DONE_FORM and DONE_DONE_CELL (the capture name suffix) set; name each capture with its suffix, so every cell is captured or skipped with a reason`;
+// A claim about how the product looks or what it outputs needs a comparison with the approved result.
+const DESIGN_CLAIM = /\b(design(ed|s)?|redesign(ed)?|mock(up)?s?|prototype|approved)\b/i;
 const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then these four keys, each at the start of a line:
   outcome: <what a user can now do>
   repro: <command that failed before and passes now, or n/a; a fix PR needs one>
@@ -54,6 +56,8 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   evidence: <the evidence file paths, or "not proven: <cause>">
   approved_design (.done-done.yaml): a non-empty manifest of {screen, size: <width>x<height>, theme, mock: <repo PNG/JPEG>, capture: <unique filename>};
   every claim needs every listed live screen, paired with its mock and a passing design verdict; missing or unsure matches fail by screen/size/theme
+  approved_requirements (.done-done.yaml): approved assets, color tokens and interactions as {kind: asset|color|interaction, name, capture, mock?}; skip one only with {kind, name, exclusion: <reason>}
+  (reference images under design/, mocks/, approved/ or prototype/ must be listed or excluded; a design claim with no approved reference or base_ref baseline fails as not compared to approved result)
   interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
   or {not_applicable: <reason>}; detail-navigation, instant-state, destructive-undo, scroll-restoration, list-search, empty-next-step.
   check/receipt/verify report every item: pass only with judged real-product frames, not_applicable with a reason, otherwise flagged (exit 1).
@@ -909,6 +913,20 @@ async function runCheck(argv, run) {
         else if (`${live[0].media.w}x${live[0].media.h}` !== e.size)
             coverageFaults.push(`${label}: live capture is ${live[0].media.w}x${live[0].media.h}, not the approved size`);
     }
+    // Approved assets, color tokens and interactions: each needs its own live capture, or an explicit exclusion with a reason.
+    const requirements = cfg.approved_requirements.filter(r => r.capture).map(r => ({ r, live: captures.filter(c => screen(c) && basename(cite(c.name)) === r.capture) }));
+    for (const { r, live } of requirements)
+        if (live.length !== 1)
+            coverageFaults.push(`${r.kind} ${r.name}: ${live.length ? 'ambiguous live captures' : 'no live capture'} (${r.capture})`);
+    // Committed approved reference images (design/, mocks/ ...) that no manifest row or exclusion accounts for.
+    const accounted = new Set([...cfg.approved_design.map(e => e.mock), ...cfg.approved_requirements.flatMap(r => [r.mock, r.kind === 'reference' ? r.name : undefined])]);
+    const unlisted = claim ? git(repo, 'ls-files', '-z', '--', ':(icase)design*/**', ':(icase)mock*/**', ':(icase)approved*/**', ':(icase)prototype*/**').split('\0').filter(f => /\.(png|jpe?g)$/i.test(f) && !accounted.has(f)) : [];
+    if (unlisted.length)
+        coverageFaults.push(`approved reference material is not in the approved_design manifest: ${unlisted.join(', ')}; list each as an approved_design screen, an approved_requirements mock, or {kind: reference, name: <path>, exclusion: <reason>}`);
+    // A design or output claim must be compared to the approved result (a manifest mock, or the base_ref baseline), not only rendered.
+    const compared = approved.length > 0 || requirements.some(({ r }) => r.mock) || heads.some(([c]) => c.before);
+    if (claim && !compared && DESIGN_CLAIM.test(claim.outcome))
+        coverageFaults.push('not compared to approved result: the claim is about design or output but nothing is compared to an approved reference or a same-model baseline; add an approved_design manifest (or an approved_requirements row with a mock) or set base_ref, because render, fit and dark-mode checks alone do not prove it');
     for (const why of coverageFaults)
         findings.push({ level: 'fail', why: `approved design: ${why}` });
     // A head capture of a base_ref run with no base capture of its name is reported, then judged alone.
@@ -993,28 +1011,29 @@ async function runCheck(argv, run) {
     if (j.notJudged.length)
         judged.not_judged = j.notJudged;
     judged.note = 'PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not';
+    const pairUp = (label, mockFile, live, size) => {
+        const path = resolve(repo, mockFile);
+        let committed;
+        try {
+            committed = execFileSync('git', ['show', `${values['trusted-ref'] ?? now.commit}:${relative(repo, path)}`], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+        }
+        catch {
+            throw new UsageError(`approved design: ${label}: approved mock is not committed: ${mockFile}`);
+        }
+        if (under(repo, realpathSync(path)) === null)
+            throw new UsageError(`approved design: mock leaves the repo: ${mockFile}`);
+        const mock = loadScreen(path);
+        if (mock.sha256 !== sha256(committed))
+            throw new UsageError(`approved design: approved mock differs from the committed reference: ${mockFile}`);
+        if (size && `${mock.media.w}x${mock.media.h}` !== size)
+            throw new UsageError(`approved design: ${label}: mock has the wrong pixel size`);
+        return { ...live, mock };
+    };
+    const agentRecords = run ? join(run.dir, 'agents') : join(home(), 'agents');
     let matches = [];
     if (approved.length) {
-        const pairs = approved.map(({ entry, live }) => {
-            const path = resolve(repo, entry.mock);
-            let committed;
-            try {
-                committed = execFileSync('git', ['show', `${values['trusted-ref'] ?? now.commit}:${relative(repo, path)}`], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
-            }
-            catch {
-                throw new UsageError(`approved design: ${entry.screen} / ${entry.size} / ${entry.theme}: approved mock is not committed: ${entry.mock}`);
-            }
-            if (under(repo, realpathSync(path)) === null)
-                throw new UsageError(`approved design: mock leaves the repo: ${entry.mock}`);
-            const mock = loadScreen(path);
-            if (mock.sha256 !== sha256(committed))
-                throw new UsageError(`approved design: approved mock differs from the committed reference: ${entry.mock}`);
-            return { ...live[0], mock };
-        });
-        for (const [i, p] of pairs.entries())
-            if (`${p.mock.media.w}x${p.mock.media.h}` !== approved[i].entry.size)
-                throw new UsageError(`approved design: ${approved[i].entry.screen} / ${approved[i].entry.size} / ${approved[i].entry.theme}: mock has the wrong pixel size`);
-        const verdicts = await design(cfg, choice, pairs, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+        const pairs = approved.map(({ entry, live }) => pairUp(`${entry.screen} / ${entry.size} / ${entry.theme}`, entry.mock, live[0], entry.size));
+        const verdicts = await design(cfg, choice, pairs, agentRecords);
         matches = verdicts.map((v, i) => {
             const { screen, size, theme } = approved[i].entry;
             if (v.verdict !== 'pass')
@@ -1028,7 +1047,17 @@ async function runCheck(argv, run) {
         if (judgeBlock)
             judgeBlock.approved_design = matches;
     }
-    const touches = await interactions(cfg, choice, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'));
+    const withMock = requirements.filter(({ r }) => r.mock);
+    if (withMock.length) {
+        const pairs = withMock.map(({ r, live }) => pairUp(`${r.kind} ${r.name}`, r.mock, live[0]));
+        const verdicts = await design(cfg, choice, pairs, agentRecords);
+        for (const [i, v] of verdicts.entries()) {
+            const { r } = withMock[i];
+            if (v.verdict !== 'pass')
+                findings.push({ level: 'fail', why: `approved design: ${r.kind} ${r.name}: ${v.verdict === 'unsure' ? 'match not proven: ' + v.reason : v.defects.map(d => `${d.kind}: ${d.where}`).join('; ')}`, file: v.path });
+        }
+    }
+    const touches = await interactions(cfg, choice, captures, agentRecords);
     for (const r of touches) {
         r.captures = r.captures.map(c => ({ ...c, path: receiptPath(repo, cfg, cite(c.path)) }));
         if (r.status === 'flagged')
@@ -1041,6 +1070,9 @@ async function runCheck(argv, run) {
         rep.result.interaction_checklist = touches;
     if (matches.length)
         rep.result.design = matches;
+    const excluded = cfg.approved_requirements.filter(r => r.exclusion).map(({ kind, name, exclusion }) => ({ kind, name, exclusion }));
+    if (excluded.length)
+        rep.result.approved_exclusions = excluded;
     if (rep.code === PASS) {
         mkdirSync(dirname(ledger), { recursive: true });
         appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
