@@ -2493,6 +2493,7 @@ test('CLI version and help distinguish prereleases without changing the bare ver
   const { dir, repo, env } = setup();
   const tool = join(dir, 'tool');
   cpSync(dirname(CLI), join(tool, 'dist'), { recursive: true });
+  cpSync(join(dirname(CLI), '..', 'skills'), join(tool, 'skills'), { recursive: true });
   symlinkSync(join(dirname(CLI), '..', 'node_modules'), join(tool, 'node_modules'), 'dir');
   for (const [version, prerelease] of [['0.6.10', false], ['0.6.10-dev', true], ['0.6.10-rc.1+build.2', true], ['0.6.10+build-dev', false]]) {
     writeFileSync(join(tool, 'package.json'), JSON.stringify({ type: 'module', version }));
