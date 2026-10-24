@@ -3517,7 +3517,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   const sent = t.dd('signoff', '--run', o.run_id);
   assert.equal(sent.code, 0, sent.out);
   const evFile = join(t.repo, toon(sent).file);
-  assert.equal(toon(sent).help[0], `Post it to the sign-off board (done-done never posts): npx -y sign-off-axi post --kind evidence --from ${toon(sent).file}`);
+  assert.equal(toon(sent).help[0], `Post it to the sign-off board with sign-off-axi (done-done prepares the run; sign-off-axi posts): npx -y sign-off-axi post --kind evidence --from ${toon(sent).file}`);
   assert.deepEqual(JSON.parse(readFileSync(evFile, 'utf8')), {
     contract: 1, kind: 'evidence', schema: 1, key: `dd-evidence-${o.run_id}`, filer: 'done-done', title: 'notes shots: verify pass', about: 'home and settings render', media: ['home.png', 'settings.png'],
     run: { run_id: o.run_id, commit: t.head(), outcome: 'home and settings render', repro: `done-done verify shots --outcome "home and settings render" at ${t.head()}`, proof: `no verify skill: done-done verify shots, run ${o.run_id}: pass`, evidence: 'home.png, settings.png' },
@@ -3898,7 +3898,7 @@ test('signoff --post puts the run on the sign-off board and feeds the answer bac
   // Without the opt-in the message is written and nothing is posted: there is no board at all.
   const plain = t.dd('signoff');
   assert.equal(plain.code, 0, plain.out);
-  assert.match(toon(plain).help[0], /^Post it to the sign-off board \(done-done never posts\)/);
+  assert.match(toon(plain).help[0], /^Post it to the sign-off board with sign-off-axi \(done-done prepares the run; sign-off-axi posts\)/);
   assert.equal(existsSync(board), false, 'done-done posted nothing without the opt-in');
 
   // With the opt-in the card is on the board, and the run records the card it posted.
