@@ -2454,11 +2454,16 @@ test('every command has its own --help, and a usage error names the command and 
   const { dd } = setup();
   const top = dd('--help');
   assert.equal(top.code, 0, top.out);
-  const version = dd('--version'); assert.deepEqual([version.code, version.out], [0, `${JSON.parse(readFileSync(join(dirname(CLI), '..', 'package.json'), 'utf8')).version}\n`]);
+  const runningVersion = JSON.parse(readFileSync(join(dirname(CLI), '..', 'package.json'), 'utf8')).version;
+  const prerelease = /^[^+]*-/.test(runningVersion);
+  const header = `done-done ${runningVersion}${prerelease ? ' (pre-release)' : ''}`;
+  assert.equal(top.out.split('\n')[0], header);
+  const version = dd('--version'); assert.deepEqual([version.code, version.out], [0, `${runningVersion}\n${prerelease ? 'pre-release\n' : ''}`]);
   for (const cmd of ['init', 'run', 'check', 'receipt', 'verify', 'status']) {
     const h = dd(cmd, '--help');
     assert.equal(h.code, 0, h.out);
-    assert.match(h.out, /^usage:\n( {2}done-done .+\n)+flags:\n( {2}.+\n)+(\S.+\n( {2}.+\n)+)*global flags: .+\nexit codes: .+\n$/, `${cmd} --help has the shared shape`);
+    assert.equal(h.out.split('\n')[0], header);
+    assert.match(h.out.slice(header.length + 1), /^usage:\n( {2}done-done .+\n)+flags:\n( {2}.+\n)+(\S.+\n( {2}.+\n)+)*global flags: .+\nexit codes: .+\n$/, `${cmd} --help has the shared shape`);
     for (const line of h.out.split('\n').filter((l) => l.startsWith('  done-done '))) {
       assert.ok(line.startsWith(`  done-done ${cmd}`), `${cmd} --help shows only ${cmd}: ${line}`);
       assert.ok(top.out.includes(line.split(/ {3,}/)[0]), `top-level --help lists ${line}`);
@@ -2482,6 +2487,23 @@ test('every command has its own --help, and a usage error names the command and 
   assert.match(dd('receipt', '--help').out, /^Checks block \(--from\): .*\n {2}outcome: /m, 'receipt --help shows the Checks block');
   assert.match(dd('check', '--help').out, /--trusted-ref <ref> +read \.done-done\.yaml/);
   assert.equal(dd('run', '--', 'node', '-e', 'process.exit(0)', '--help').code, 1, 'a --help after -- belongs to the run command');
+});
+
+test('CLI version and help distinguish prereleases without changing the bare version line', () => {
+  const { dir, repo, env } = setup();
+  const tool = join(dir, 'tool');
+  cpSync(dirname(CLI), join(tool, 'dist'), { recursive: true });
+  symlinkSync(join(dirname(CLI), '..', 'node_modules'), join(tool, 'node_modules'), 'dir');
+  for (const [version, prerelease] of [['0.6.10', false], ['0.6.10-dev', true], ['0.6.10-rc.1+build.2', true], ['0.6.10+build-dev', false]]) {
+    writeFileSync(join(tool, 'package.json'), JSON.stringify({ type: 'module', version }));
+    for (const args of [['--version'], ['--help'], ['run', '--help']]) {
+      const r = spawnSync(process.execPath, [join(tool, 'dist', 'cli.js'), ...args], { cwd: repo, env, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      assert.equal(r.stderr, '');
+      if (args[0] === '--version') assert.equal(r.stdout, `${version}\n${prerelease ? 'pre-release\n' : ''}`);
+      else assert.equal(r.stdout.split('\n')[0], `done-done ${version}${prerelease ? ' (pre-release)' : ''}`);
+    }
+  }
 });
 
 // A repo with a journey that blocks until the test releases it, so a verify run can be caught mid-step.

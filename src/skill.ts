@@ -44,6 +44,7 @@ First run \`command -v done-done\`. If it prints a path, run \`done-done\` as sh
 - \`done-done\` (no arguments, inside the repo) for this repo's proof setup and the next step
 - \`done-done --help\` for every command and flag, the journey format and the exact \`## Checks\` block
 - \`done-done <command> --help\` for one command's usage and flags
+- \`done-done --version\` prints the bare version first; help headers show it too, and suffixed versions are labelled \`pre-release\`.
 
 Results are TOON: read \`result\` and follow the \`help\` lines through
 \`init\`, \`doctor\`, \`run\`, \`verify\`, \`check\` and \`receipt\`. \`design\` judges captured screens for visual defects,

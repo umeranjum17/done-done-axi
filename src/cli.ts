@@ -26,6 +26,8 @@ import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJo
 
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
 const VERSION: string = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+const PRE_RELEASE = /^[^+]*-/.test(VERSION);
+const HELP_HEADER = `done-done ${VERSION}${PRE_RELEASE ? ' (pre-release)' : ''}`;
 
 // The shape of a journey, so a new user or agent can write one without opening the reference.
 // done-done sets DONE_DONE_EVIDENCE_ROOT (the run's own folder) and replaces ${RUN_ID}, so the example works for any evidence root.
@@ -347,10 +349,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
 };
 
 const rows = (pairs: [string, string][], width = Math.max(...pairs.map(([a]) => a.length)) + 3) => pairs.map(([a, b]) => `  ${a}${' '.repeat(Math.max(3, width - a.length))}${b}`).join('\n');
-const GLOBAL_TEXT = `global flags: --json (JSON instead of TOON), --full (do not truncate lists), --help (this command's usage), --version (done-done's version)
+const GLOBAL_TEXT = `global flags: --json (JSON instead of TOON), --full (do not truncate lists), --help (this command's usage), --version (bare version first; pre-release label on the next line when suffixed)
 exit codes: 0 pass, 1 fail, 2 usage or config error, 3 inconclusive, 4 the run is still running or a verify run waits at its gate (verify, maintain, rerun, status, respond)`;
 
-const USAGE_TEXT = `install: npm install -g --prefix ~/.local done-done-axi (installs done-done-axi and done-done), or run npx -y done-done-axi <command>
+const USAGE_TEXT = `${HELP_HEADER}
+install: npm install -g --prefix ~/.local done-done-axi (installs done-done-axi and done-done), or run npx -y done-done-axi <command>
 usage:
 ${rows([['done-done', "show this repo's config state and the next step"], ...Object.values(COMMANDS).flatMap((c) => c.usage)], 46)}
 ${GLOBAL_TEXT}
@@ -372,7 +375,7 @@ Run \`done-done <command> --help\` for that command's flags.`;
 function commandHelp(cmd: string): string {
   const c = COMMANDS[cmd];
   const flags = c.flags.length ? rows(c.flags.map((f) => [f, FLAGS[f]])) : '  none';
-  return [`usage:\n${rows(c.usage)}`, `flags:\n${flags}`, ...c.more, GLOBAL_TEXT].join('\n');
+  return [HELP_HEADER, `usage:\n${rows(c.usage)}`, `flags:\n${flags}`, ...c.more, GLOBAL_TEXT].join('\n');
 }
 
 // How many list rows a compact result shows before it reports the rest as omitted.
@@ -4212,7 +4215,7 @@ async function main(argv: string[]): Promise<number> {
       return PASS;
     }
     if (cmd === '--version') {
-      console.log(VERSION);
+      console.log(VERSION + (PRE_RELEASE ? '\npre-release' : ''));
       return PASS;
     }
     if (cmd === '--help' || cmd === '-h' || cmd === 'help') {
