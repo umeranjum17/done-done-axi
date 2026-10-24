@@ -194,6 +194,10 @@ That first run is a trial on uncommitted files, not proof. Read the generated sc
 
 Every answer is an exit code: **0** pass, **1** fail, **2** usage or config error (including no agent or judge set, a check that fails before its judge, a capture the judge cannot be sent, or a judge that did not answer: never a result), **3** can't tell either way, **4** a `verify`, `maintain` or `rerun` run is still running, or a `verify` run waits at its gate.
 
+### Interaction polish needs proof too
+
+Opt in with `interaction_checklist` in `.done-done.yaml`: detail next/previous plus swipe, instant send/answer state, destructive undo, scroll position on back, long-list search/filter, and useful empty states. Each item needs judged real-product frames or an explicit not-applicable reason; missing proof is flagged, never silently passed. The [shipped checklist and wiring](docs/reference.md#interaction-checklist-opt-in) extend `check`, `receipt` and `verify`; existing approved-design checks stay unchanged without opt-in.
+
 ## Alone, and with the other tools
 
 done-done works on its own: the CLI and the skill need nothing else. It is one of three tools that each do one job and connect through small written contracts ([Vision](VISION.md)):

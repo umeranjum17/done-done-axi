@@ -544,6 +544,24 @@ After those checks pass, each live image is sent beside its approved mock throug
 
 With no manifest, claims behave as before. `design` and `look --mock` remain ad-hoc measurements of supplied screens, not coverage claims: use `check`, `receipt` or `verify` to prove the complete approved inventory. This checks the declared inventory; it cannot discover an approved shot omitted from the manifest or establish capture authenticity beyond the existing run record.
 
+#### Interaction checklist (opt-in)
+
+Visual comparisons do not prove interaction polish. The package ships six requirements in `skills/done-done/interaction-checklist.json`: `detail-navigation` (next/previous **and swipe**), `instant-state` (immediate feedback on every send/answer), `destructive-undo` (undo restores content), `scroll-restoration` (back keeps list position), `list-search` (search/filter on long lists), and `empty-next-step` (empty states explain what to do next).
+
+Wire the checklist in the repo's committed `.done-done.yaml`; it works with or without `approved_design`:
+
+```yaml
+interaction_checklist:
+  empty-next-step: { captures: [empty.png] }
+  list-search: { captures: [list.png, filtered.png] }
+  detail-navigation: { not_applicable: "This product has no detail views" }
+  # Map the other three items too; omitted items are flagged, not passed.
+```
+
+`check`, `receipt` and `verify` report all six under `interaction_checklist`, with `id`, `status`, `reason` and bound capture paths/hashes. Each entry accepts **only** `captures` (1–8 unique PNG/JPEG filenames, in action order) or `not_applicable` (a non-empty surface-specific reason). Capture real product frames through the project's recipe and cite them from sealed runs. Missing, ambiguous or uncited frames, an omitted item, a judge rejection or an unsure answer produce **flagged findings (exit 1)**. A pass requires the judge to tie every required part to those frames; a static control or final reply alone cannot prove swipe, timing, undo or scroll restoration. Include before/action/after frames where needed; insufficient visual evidence stays flagged. There is no automatic video-frame extraction.
+
+A surface that does not exist must be explicitly `not_applicable` with its reason, never silently passed. Applicability is a declared inventory, not automatic surface discovery: reviewers must check those reasons and enumerate all relevant actions. Receipts preserve all six results under `judge.interaction_checklist`; passing frame hashes are bound to cited evidence, and receipt/gate validation rejects flagged or malformed entries. Without this config key, existing approved-design behavior is unchanged. `interaction_checklist: {}` opts in and flags all six; ad-hoc `design` is still only a visual check.
+
 ### Record a receipt
 
 A receipt ties one passing check to one commit and to the exact bytes it cited, so a merge gate (or `gate` in CI) can re-verify the same proof later.
@@ -759,6 +777,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `matrix` | none, so each journey runs once; `theme`, `width`, `form` and `skip` set the [capture matrix](#capture-matrix) |
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |
 | `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
+| `interaction_checklist` | none; opt-in six-item interaction evidence map; omitted/unproven items flagged, absent surfaces need reasons; see [Interaction checklist](#interaction-checklist-opt-in) |
 | `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates all claims, see [Approved-design coverage](#approved-design-coverage) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |
 | `base_ref` | none; a ref `verify` also drives, pairing its captures with the head's, see [Base-ref before](#base-ref-before) |
