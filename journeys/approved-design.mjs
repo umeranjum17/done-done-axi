@@ -164,6 +164,22 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   assert.match(JSON.stringify(uncovered), /asset logo: no live capture \(logo\.png\)/, 'an approved asset with no live capture is rejected');
   const covered = dd(0, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
   assert.equal(covered.design.length, 3); assert.deepEqual(covered.approved_exclusions, [exclusion].map(({ kind, name, exclusion }) => ({ kind, name, exclusion })));
+  // Color tokens follow the same rule: no live capture fails by name; an explicit exclusion with a reason is the only skip.
+  const logo = { kind: 'asset', name: 'logo', capture: 'logo.png', mock: 'design/logo.png' };
+  const accent = { kind: 'color', name: 'brand-accent', capture: 'accent.png' };
+  commit(requirementsYaml([logo, exclusion, accent]), 'approved accent color');
+  const noAccent = dd(1, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
+  assert.match(JSON.stringify(noAccent), /color brand-accent: no live capture \(accent\.png\)/, 'an approved color with no live capture is rejected');
+  const skipped = { kind: 'color', name: 'brand-accent', exclusion: 'owner dropped the accent color' };
+  commit(requirementsYaml([logo, exclusion, skipped]), 'accent color excluded');
+  const excluded = dd(0, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
+  assert.ok(excluded.approved_exclusions.some(e => e.kind === 'color' && e.exclusion === skipped.exclusion));
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(join(OUT, 'color-coverage.txt'), [
+    'Color evidence or exclusion, from the real CLI:',
+    `approved color brand-accent with no live capture: result ${noAccent.result}, rejected: color brand-accent: no live capture (accent.png)`,
+    `approved color brand-accent with explicit exclusion "${skipped.exclusion}": result ${excluded.result ?? 'pass'}, reported in approved_exclusions`,
+  ].join('\n') + '\n');
   // Without any manifest, a design claim has nothing approved to compare to, however well it renders.
   commit(`app: fixture\nevidence: {root: .proof}\n`, 'no manifest');
   assert.match(JSON.stringify(dd(1, 'check', '--outcome', 'design done', ...seal(['home']))), /not compared to approved result/);
@@ -175,7 +191,7 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version }, start: 'built CLI and an isolated three-screen approved design',
-    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame', 'reject an unlisted reference image, an uncovered requirement (asset with no live capture) and a design claim not compared to an approved reference, then pass the covered manifest with its exclusion reported'],
+    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame', 'reject an unlisted reference image, an approved color with no live capture (then pass it with an explicit exclusion), an uncovered requirement (asset with no live capture) and a design claim not compared to an approved reference, then pass the covered manifest with its exclusion reported'],
     result: 'approved-design coverage fails missing Today and uncovered requirements, passes complete matching screens, and refuses non-matches and unsealed captures',
   }));
 } finally {
