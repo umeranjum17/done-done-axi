@@ -285,7 +285,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   when the repo (the current folder) has none; repro is not n/a on a fix PR. evidence names files in the evidence folder (or absolute):
   each exists, is non-empty and is newer than the folder itself; no two are byte-identical; at least one has a hash no other PR used
   (hash store lint.hashes in ~/.done-done, or $DONE_DONE_HOME). "evidence: not proven: <cause>" passes. A PR with 1,000 or more added
-  non-generated lines fails (lockfiles, vendor/, dist/, LICENSE-type files, deletions and moved lines do not count); a bot PR passes.
+  non-generated lines fails; the whole PR is counted (every page of its file list, its compare diff), and a failed page or diff fails instead of counting part of it (lockfiles, vendor/, dist/, LICENSE-type files, deletions and moved lines do not count); a bot PR passes.
   A PR URL whose diff changes a src/ file and no journeys/ file prints WARN instead of PASS (still exit 0): run the journey and commit it before the PR opens.
   In .done-done.yaml, checks.upstream_catch_up: true also drops a fork's upstream catch-up lines, and checks.moved_from: true drops lines
   a "moved-from: <owner>/<repo>@<ref> <dst>=<src>" body line says came from a repo of the same owner; both are off by default.

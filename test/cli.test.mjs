@@ -7840,13 +7840,25 @@ test('lint warns on a PR that changes src/ and no journeys/ file, and only then'
   const { dir, dd, env } = setup();
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncat ${JSON.stringify(join(dir, 'pr.json'))}\n`, { mode: 0o755 });
+  const q = (f) => JSON.stringify(join(dir, f));
+  writeFileSync(join(dir, 'files.json'), '[{"path":"src/a.ts"},{"path":"README.md"}]\n');
+  writeFileSync(join(dir, 'one.diff'), 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n+const a = 1;\n');
+  writeFileSync(join(dir, 'attrs'), '');
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh
+case "$*" in
+  "pr view"*) cat ${q('pr.json')} ;;
+  *"compare/b...h"*) cat ${q('one.diff')} ;;
+  *"contents/.gitattributes"*) cat ${q('attrs')} ;;
+  *) cat ${q('files.json')} ;;
+  esac
+`, { mode: 0o755 });
   env.PATH = `${bin}:${env.PATH}`;
   const lintFiles = (...paths) => {
     writeFileSync(join(dir, 'pr.json'), JSON.stringify({
       author: { login: 'umer' }, title: 'feat: x', headRefOid: 'h', headRefName: 'fm/warn', baseRefOid: 'b', files: paths.map((path) => ({ path, additions: 5 })),
       body: '## Checks\noutcome: a user can lint\nrepro: n/a: no bug\nproof: no verify skill - ran node dist/cli.js lint\nevidence: not proven: no device in reach\n',
     }));
+    writeFileSync(join(dir, 'files.json'), JSON.stringify(paths.map((path) => ({ path }))));
     return dd('lint', 'https://github.com/acme/tool/pull/9', dir);
   };
   assert.match(lintFiles('src/a.ts', 'README.md').out, /^WARN: .*journeys\//);
@@ -7866,20 +7878,21 @@ test('lint counts a big PR whole by default, and drops upstream catch-up, moved-
     author: { login: 'umer' }, title: 'feat: big', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/big', files: [{ path: 'lib/big.js', additions: 1100 }],
     body: `## Checks\noutcome: a user can lint a big PR\nrepro: n/a: no bug\nproof: no verify skill - ran node dist/cli.js lint\nevidence: not proven: no device in reach\n\n${movedFrom}\n`,
   });
-  // A stand-in `gh`: the PR, its diff, the fork's parent and the upstream delta, and the moved-from source file.
+  writeFileSync(join(dir, 'files.json'), '[{"path":"lib/big.js"}]\n');
+  // A stand-in `gh`: the paginated file list, the PR's compare diff, the fork's parent and the upstream delta, and the moved-from source file.
   const bin = join(dir, 'bin');
   mkdirSync(bin);
   const q = (f) => JSON.stringify(join(dir, f));
   writeFileSync(join(bin, 'gh'), `#!/bin/sh
 case "$*" in
   "pr view"*) cat ${q('pr.json')} ;;
-  "pr diff"*) cat ${q('pr.diff')} ;;
+  *"compare/base1...head1"*) cat ${q('pr.diff')} ;;
   *"contents/.gitattributes?ref=head1") cat ${q('attrs')} ;;
   *"vnd.github.diff"*) cat ${q('up.diff')} ;;
   *"vnd.github.raw"*"contents/src/big.js?ref=main") cat ${q('src.js')} ;;
   *"compare/up:main...head1"*) echo mergebase ;;
   "api repos/acme/tool --jq"*) echo up:main ;;
-  *) echo "unexpected gh $*" >&2; exit 1 ;;
+  *) cat ${q('files.json')} ;;
 esac
 `, { mode: 0o755 });
   env.PATH = `${bin}:${env.PATH}`;
@@ -7904,6 +7917,60 @@ esac
   assert.match(lintWith('', '', 'lib/*.js linguist-generated=false\n').out, over, 'linguist-generated=false is not generated');
   assert.match(lintWith('', '', 'lib/*.js linguist-generated\nlib/big.js -linguist-generated\n').out, over, 'a later unset wins');
   assert.equal(lintWith('checks:\n  moved_from: yes please\n').code, 2, 'a key that is not a boolean is a config error');
+});
+
+test('lint counts a PR of more than 300 files whole: every page of the file list and the compare diff, and a failed call fails instead of counting part of it', () => {
+  const { dir, repo, env, dd } = setup();
+  const paths = Array.from({ length: 350 }, (_, i) => `lib/f${i}.js`);
+  const fileDiff = (path, added) => `diff --git a/${path} b/${path}\n--- /dev/null\n+++ b/${path}\n${added.map((l) => `+${l}`).join('\n')}\n`;
+  const lines = (tag, n) => Array.from({ length: n }, (_, i) => `const ${tag}${i} = ${i};`);
+  // (a) 350 files, one real line each: a real net of 350.
+  writeFileSync(join(dir, 'small.diff'), paths.map((p, i) => fileDiff(p, lines(`f${i}_`, 1))).join(''));
+  // (b) 350 files whose real net is 1150: three lines each and 100 more in the first file.
+  writeFileSync(join(dir, 'big.diff'), paths.map((p, i) => fileDiff(p, [...lines(`g${i}_`, 3), ...(i ? [] : lines('extra', 100))])).join(''));
+  // (c) 1100 real lines, 300 of them in lib/f320.js (a later page) that byte-match the mapped source: 800 authored lines remain.
+  const moved = lines('moved', 300);
+  writeFileSync(join(dir, 'src320.js'), `${moved.join('\n')}\n`);
+  writeFileSync(join(dir, 'moved.diff'), paths.map((p, i) => fileDiff(p, i === 320 ? moved : [...lines(`h${i}_`, 2), ...(i ? [] : lines('more', 102))])).join(''));
+  // The stand-in `gh` answers `pr view` with only the first 100 files, as GitHub does, and the pages with all 350.
+  for (let page = 1; page <= 4; page++)
+    writeFileSync(join(dir, `p${page}.json`), JSON.stringify(paths.slice((page - 1) * 100, page * 100).map((path) => ({ path, additions: 20 }))));
+  writeFileSync(join(dir, 'pr.json'), JSON.stringify({
+    author: { login: 'umer' }, title: 'feat: many files', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/many',
+    files: paths.slice(0, 100).map((path) => ({ path, additions: 20 })),
+    body: '## Checks\noutcome: a user can lint a big PR\nrepro: n/a: no bug\nproof: no verify skill - ran node dist/cli.js lint\nevidence: not proven: no device in reach\n\nmoved-from: acme/lib@main lib/=src/\n',
+  }));
+  writeFileSync(join(dir, 'attrs'), '');
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
+  const q = (f) => JSON.stringify(join(dir, f));
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh
+mode=$(cat ${q('mode')} 2>/dev/null)
+case "$*" in
+  "pr view"*) cat ${q('pr.json')} ;;
+  *"contents/.gitattributes"*) cat ${q('attrs')} ;;
+  *"compare/base1...head1"*) [ "$mode" = diff ] && { echo "gh: HTTP 502" >&2; exit 1; }; cat ${q('cmp.diff')} ;;
+  *"pulls/7/files"*"page=2") [ "$mode" = page2 ] && { echo "gh: HTTP 502" >&2; exit 1; }; cat ${q('p2.json')} ;;
+  *"pulls/7/files"*"page=1") cat ${q('p1.json')} ;;
+  *"pulls/7/files"*"page=3") cat ${q('p3.json')} ;;
+  *"pulls/7/files"*"page=4") cat ${q('p4.json')} ;;
+  *"contents/src/f320.js?ref=main"*) cat ${q('src320.js')} ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+`, { mode: 0o755 });
+  env.PATH = `${bin}:${env.PATH}`;
+  const base = readFileSync(join(repo, '.done-done.yaml'), 'utf8');
+  const lintWith = (diff, checks = '', mode = 'ok') => {
+    writeFileSync(join(dir, 'cmp.diff'), readFileSync(join(dir, diff)));
+    writeFileSync(join(dir, 'mode'), mode);
+    writeFileSync(join(repo, '.done-done.yaml'), base + checks);
+    return dd('lint', 'https://github.com/acme/tool/pull/7', dir);
+  };
+  assert.deepEqual(lintWith('small.diff'), { code: 0, out: 'PASS\n' }, 'the first 100 files sum to 2000, but the whole PR is 350 lines');
+  assert.match(lintWith('big.diff').out, /^FAIL: 1150 added non-generated lines \(moved lines excluded\): split it \(limit 1000\)/, 'the failure carries the real net of 1150');
+  assert.deepEqual(lintWith('moved.diff', 'checks:\n  moved_from: true\n'), { code: 0, out: 'PASS\n' }, 'the 300 moved lines from a later page cancel, leaving 800');
+  assert.match(lintWith('small.diff', '', 'page2').out, /^FAIL: repos\/acme\/tool\/pulls\/7\/files\?per_page=100&page=2 failed: gh: HTTP 502\s*$/, 'a failed page fails');
+  assert.match(lintWith('small.diff', '', 'diff').out, /^FAIL: repos\/acme\/tool\/compare\/base1\.\.\.head1 failed: gh: HTTP 502\s*$/, 'a failed compare diff fails');
 });
 
 test('affected maps a diff to journeys and features through the feature map, falls back to the core journey, and exits 1 until a receipt covers them', () => {

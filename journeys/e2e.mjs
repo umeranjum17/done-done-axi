@@ -244,15 +244,16 @@ try {
   const stash = (name, text) => { writeFileSync(join(ghDir, name), text); return JSON.stringify(join(ghDir, name)); };
   const prBody = '## Checks\noutcome: a repo can switch on the lint size rules\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: not proven: fixture\n\nmoved-from: acme/lib@main lib/=src/\n';
   const pr = stash('pr.json', JSON.stringify({ author: { login: 'umer' }, title: 'feat: big', headRefOid: 'head1', baseRefOid: 'base1', headRefName: 'fm/big', files: [{ path: 'lib/big.js', additions: 1100 }], body: prBody }));
+  const files = stash('files.json', JSON.stringify([{ path: 'lib/big.js' }]));
   writeFileSync(join(ghDir, 'gh'), `#!/bin/sh
 case "$*" in
   "pr view"*) cat ${pr} ;;
-  "pr diff"*) cat ${stash('pr.diff', diff(lines(0, 1100)))} ;;
+  *"compare/base1...head1"*) cat ${stash('pr.diff', diff(lines(0, 1100)))} ;;
   *"vnd.github.diff"*) cat ${stash('up.diff', diff(lines(0, 200)))} ;;
   *"vnd.github.raw"*"contents/src/big.js?ref=main") cat ${stash('src.js', lines(500, 800).join('\n') + '\n')} ;;
   *"compare/up:main...head1"*) echo mergebase ;;
   "api repos/acme/tool --jq"*) echo up:main ;;
-  *) echo "unexpected gh $*" >&2; exit 1 ;;
+  *) cat ${files} ;;
 esac
 `, { mode: 0o755 });
   env.PATH = `${ghDir}:${env.PATH}`;

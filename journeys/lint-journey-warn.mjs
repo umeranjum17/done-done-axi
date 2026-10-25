@@ -17,7 +17,8 @@ try {
   const repo = join(tmp, 'repo'), bin = join(tmp, 'bin'), evidence = join(tmp, 'evidence');
   for (const d of [repo, bin, evidence]) mkdirSync(d);
   writeFileSync(join(repo, '.done-done.yaml'), 'app: "demo"\n');
-  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in\n  "pr view"*) cat ${JSON.stringify(join(tmp, 'pr.json'))} ;;\n  *) echo "unexpected gh $*" >&2; exit 1 ;;\nesac\n`, { mode: 0o755 });
+  // A stand-in gh: the PR only for its body, its file list in pages of 100, and its compare diff.
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in\n  "pr view"*) cat ${JSON.stringify(join(tmp, 'pr.json'))} ;;\n  *"compare/base1...head1"*) cat ${JSON.stringify(join(tmp, 'pr.diff'))} ;;\n  *) cat ${JSON.stringify(join(tmp, 'files.json'))} ;;\nesac\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DONE_DONE_HOME: join(tmp, 'home') };
   mkdirSync(OUT, { recursive: true });
   let transcript = '';
@@ -27,6 +28,8 @@ try {
       files: files.map((path) => ({ path, additions: 10 })),
       body: '## Checks\noutcome: the source changed\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: not proven: fixture\n',
     }));
+    writeFileSync(join(tmp, 'files.json'), JSON.stringify(files.map((path) => ({ path }))));
+    writeFileSync(join(tmp, 'pr.diff'), files.map((path) => `diff --git a/${path} b/${path}\n--- /dev/null\n+++ b/${path}\n+export const changed = 1;\n`).join(''));
     const r = spawnSync(process.execPath, [CLI, 'lint', 'https://github.com/acme/tool/pull/7', evidence], { cwd: repo, env, encoding: 'utf8' });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.ok(r.stdout.startsWith(expect), r.stdout);
