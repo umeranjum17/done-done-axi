@@ -182,7 +182,20 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
   ].join('\n') + '\n');
   // Without any manifest, a design claim has nothing approved to compare to, however well it renders.
   commit(`app: fixture\nevidence: {root: .proof}\n`, 'no manifest');
-  assert.match(JSON.stringify(dd(1, 'check', '--outcome', 'design done', ...seal(['home']))), /not compared to approved result/);
+  const uncompared = dd(1, 'check', '--outcome', 'design done', ...seal(['home']));
+  assert.match(JSON.stringify(uncompared), /not compared to approved result/);
+  const why = (r, re) => r.findings.map(f => f.why).find(w => re.test(w)) ?? r.reason;
+  writeFileSync(join(OUT, 'coverage-summary.txt'), [
+    'Approval coverage from the real CLI (screens, assets, colors, interactions, comparison):',
+    `unlisted reference images: ${unlisted.result}: ${why(unlisted, /reference material/)}`,
+    `asset with no live capture: ${uncovered.result}: ${why(uncovered, /asset logo/)}`,
+    `color with no live capture: ${noAccent.result}: ${why(noAccent, /color brand-accent/)}`,
+    `color with an explicit exclusion: ${excluded.result}, ${excluded.approved_exclusions.length} exclusions reported`,
+    `fully covered screens and asset: ${covered.result}, ${covered.design.length} paired comparisons passed`,
+    `interaction with no frame: ${flagged.interaction_checklist.filter(r => r.status === 'flagged').map(r => r.id).join(', ')} flagged (exit 1) until it has a frame or a not_applicable reason`,
+    `no approved reference: ${uncompared.result}: ${why(uncompared, /not compared/)}`,
+  ].join('\n') + '\n');
+
   for (const rows of [[], [{ kind: 'asset', name: 'logo', capture: 'logo.png', exclusion: 'both' }], [{ kind: 'asset', name: 'logo', exclusion: ' ' }], [{ kind: 'sound', name: 'x', exclusion: 'no' }]]) {
     writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\napproved_requirements: ${JSON.stringify(rows)}\n`);
     assert.match(dd(2, 'run', '--open').error, /approved_requirements must be/);
