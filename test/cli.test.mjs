@@ -4139,7 +4139,8 @@ if (model.startsWith('claude-bridge/') && !argv.includes('npm:pi-claude-bridge')
 }
 for (const t of ['session', 'agent_start', 'turn_start']) console.log(JSON.stringify({ type: t }));
 console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }] } }));
-console.log(JSON.stringify({ type: 'agent_end' }));
+// pi streams the whole transcript at the end, so a judge asked about rate limits sees those words on stdout: not a limit of its own.
+console.log(JSON.stringify({ type: 'agent_end', messages: [{ role: 'user', content: stdin.slice(0, 4000) }, { role: 'assistant', content: [{ type: 'text', text: 'The capture reports a rate limit; nothing was retried.' }] }] }));
 `, { mode: 0o755 });
 }
 

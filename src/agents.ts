@@ -428,9 +428,22 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     let error: Error | undefined;
     let drain: NodeJS.Timeout | undefined;
     let idle: NodeJS.Timeout | undefined;
-    // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
+    // pi streams JSON events, and it echoes the whole transcript (prompt and answer included), so on stdout only an event that
+  // reports an error is a limit: never the words it was sent or wrote.
+  const piQuiet = (l: string): boolean => {
+    if (!l.trimStart().startsWith('{')) return false;
+    try {
+      const parsed = JSON.parse(l) as { type?: unknown; message?: { stopReason?: unknown } };
+      return parsed?.type !== 'error' && parsed?.message?.stopReason !== 'error';
+    } catch {
+      return false;
+    }
+  };
+  // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
     // so an answer that only quotes a 429 from the app's code does not stop the call. A claude call with images streams JSON lines,
-    // and only a rejected rate_limit_event on stdout stops it, so its complete lines are parsed one at a time.
+    // and only a rejected rate_limit_event on stdout stops it, so its complete lines are parsed one at a time. pi streams its whole
+    // transcript at the end (agent_end carries the prompt and the answer), so only its own error event is a limit there: a judge
+    // asked about rate limits must not be stopped by the words it was sent.
     let pendingStdout = '';
     const limited = (chunk: string, stdoutLine: boolean) => {
       let line: string | undefined;
@@ -441,7 +454,8 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
         pendingStdout = text.slice(end);
         line = text.slice(0, end).split('\n').find(isRejectedRateLimit);
       } else {
-        line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+        line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))
+          && (!stdoutLine || c.agent !== 'pi' || !piQuiet(l)));
         if (line) line = limitText(line);
       }
       if (!line || error) return;
@@ -526,8 +540,6 @@ const USAGE_CREDITS = /usage[ _-]?credits?|overage|credit balance|\bcredits?\b|i
 const TYPED_LIMIT = /rate[ -]?limit|usage limit|too many requests|quota exceeded|\b429\b/i;
 // One pool answer: the account whose env the call gets, or the fall-over route's agent and model, plus the raw answer `next` needs.
 type PoolPick = { id: string; set: Record<string, string>; unset: string[]; agent: string; model: string; route: boolean; raw: Record<string, unknown> };
-// A valid pool refusal is availability, not a malformed pool configuration.
-export class PoolUnavailable extends UsageError {}
 
 const poolKey = (p: ModelPool) => `${p.command}\0${p.config}`;
 let poolFirst: { key: string; pick: Promise<PoolPick> } | undefined; // one first answer per process, as the account command is
@@ -536,7 +548,7 @@ let poolInUse: PoolPick | undefined; // the account or route this process is on 
 // One helper call: the request JSON on stdin, one answer JSON. Nothing but the configured command passes through a shell.
 function poolAsk(pool: ModelPool, verb: 'pick' | 'next', req: Record<string, unknown>): PoolPick {
   const fail = (why: string, unavailable = false): never => {
-    throw new (unavailable ? PoolUnavailable : UsageError)(`judge.pool_command: ${why}`, 'Fix judge.pool_command and judge.pool_config in the global config, or remove them for plain Claude sign-in');
+    throw new (unavailable ? ClaudeUnavailable : UsageError)(`judge.pool_command: ${why}`, 'Fix judge.pool_command and judge.pool_config in the global config, or remove them for plain Claude sign-in');
   };
   const r = spawnSync(`${pool.command} ${verb} --json`, { shell: true, encoding: 'utf8', input: JSON.stringify(req), timeout: 30_000, maxBuffer: 64 * 1024 });
   if (r.error) fail((r.error as NodeJS.ErrnoException).code ?? 'command could not start');
@@ -581,7 +593,16 @@ function poolPickFor(pool: ModelPool, model: string, deadlineMs: number): Promis
 export async function accountDetail(cfg: Config, agent: string, model: string): Promise<string> {
   const pool = agent === 'claude' ? modelPool(cfg) : undefined;
   if (pool) {
-    const pick = await poolPickFor(pool, model, Date.now() + parseDuration(cfg.agent_timeout)!);
+    const deadline = Date.now() + parseDuration(cfg.agent_timeout)!;
+    const attempted: string[] = [];
+    let pick = await poolPickFor(pool, model, deadline);
+    // A route this machine cannot start (Codex is out until 30 Oct, for one) is not the one that would answer, so the
+    // pre-check asks for the next one exactly as the call does, and fails closed when none can start.
+    while (pick.route && !pool.binFor(pick.agent)) {
+      if (attempted.length === 5) throw new ClaudeUnavailable(`judge.pool_command: no account or route the helper answered can start on this machine (${attempted.join(', ')})`, 'Install one of the route agents, or remove judge.pool_command and judge.pool_config');
+      attempted.push(pick.id);
+      pick = poolAsk(pool, 'next', { v: 1, purpose: 'work', pool_config: pool.config, model, capabilities: ['text'], deadline: Math.floor(deadline / 1000), selection: pick.raw, cause: 'unavailable', attempted: [...attempted] });
+    }
     return pick.route ? `pool route ${pick.id}` : `Claude account ${pick.id}`;
   }
   const account = await claudeAccount(agent, cfg.judge.account_command);
@@ -626,24 +647,30 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
     const adapter = adapterFor(call.agent);
     return adapter ? [...adapter.argv(call, d), ...(call.effort ? EFFORT_FLAGS[call.agent]?.(call.effort) ?? [] : []), ...(call.args ?? [])] : [];
   };
+  // The helper's next account or route that can run here, inside the one deadline: a route whose agent this machine cannot
+  // start (Codex is out until 30 Oct, for one) joins `attempted` and the helper is asked for the next one.
+  const poolStep = (cause: string): boolean => {
+    const pool = call.pool;
+    while (pool && picked && Date.now() + 5_000 < deadline) {
+      const prior = picked;
+      const next = poolAsk(pool, 'next', { v: 1, purpose: 'work', pool_config: pool.config, model: c.model, capabilities: ['text'], deadline: Math.floor(deadline / 1000), selection: prior.raw, cause, attempted: [...attempted] });
+      const bin = next.agent === c.agent ? c.path : pool.binFor(next.agent);
+      if (bin) {
+        picked = poolInUse = next;
+        call = { ...call, agent: next.agent, model: next.model || c.model, path: bin, effort: next.agent === c.agent ? c.effort : '' };
+        return true;
+      }
+      attempted.push(next.id);
+    }
+    return false;
+  };
   // One move on a typed limit: the helper rests the limited account and answers the next account or fall-over route.
   const moveOn = async (text: string): Promise<boolean> => {
-    const pool = call.pool;
-    if (!pool || !picked) return false;
+    if (!call.pool || !picked) return false;
     if (USAGE_CREDITS.test(text)) throw new UsageError(`done-done never spends usage credits or overage: ${picked.id} answered (${errorLine(text)})`, 'Use an account or route on your plan, then re-run; nothing is charged');
     if (!TYPED_LIMIT.test(text)) return false;
     attempted.push(picked.id);
-    while (Date.now() + 5_000 < deadline) {
-      const prior = picked;
-      const next = poolAsk(pool, 'next', { v: 1, purpose: 'work', pool_config: pool.config, model: c.model, capabilities: ['text'], deadline: Math.floor(deadline / 1000), selection: prior.raw, cause: 'rate_limit', attempted: [...attempted] });
-      const bin = next.agent === c.agent ? c.path : pool.binFor(next.agent);
-      // A route whose agent cannot start here (Codex is out, for one) is skipped: the helper is asked for the next one.
-      if (!bin) { attempted.push(next.id); continue; }
-      picked = poolInUse = next;
-      call = { ...call, agent: next.agent, model: next.model || c.model, path: bin, effort: next.agent === c.agent ? c.effort : '' };
-      return true;
-    }
-    return false;
+    return poolStep('rate_limit');
   };
   const started = Date.now();
   let dir = '';
@@ -655,8 +682,17 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
   try {
     dir = mkdtempSync(join(tmpdir(), 'done-done-agent-'));
     cwd = c.tools === 'none' ? dir : c.cwd;
-    if (call.pool) picked = await poolPickFor(call.pool, call.model, deadline);
-    if (picked) call = { ...call, agent: picked.agent, model: picked.model || call.model, path: picked.agent === c.agent ? c.path : call.pool!.binFor(picked.agent), effort: picked.agent === c.agent ? c.effort : '' };
+    if (call.pool) {
+      // The pool's first answer, or the next one when the route it names cannot start here.
+      const pool = call.pool;
+      picked = await poolPickFor(pool, call.model, deadline);
+      const bin = picked.agent === c.agent ? c.path : pool.binFor(picked.agent);
+      if (bin) call = { ...call, agent: picked.agent, model: picked.model || call.model, path: bin, effort: picked.agent === c.agent ? c.effort : '' };
+      else {
+        attempted.push(picked.id);
+        if (!poolStep('unavailable')) throw new ClaudeUnavailable(`judge.pool_command: no account or route the helper answered can start on this machine (${[...attempted].join(', ')})`, 'Install one of the route agents, or remove judge.pool_command and judge.pool_config');
+      }
+    }
     let lastError = '';
     for (;;) {
       const adapter = adapterFor(call.agent);
