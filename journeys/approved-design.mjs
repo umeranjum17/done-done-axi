@@ -141,12 +141,71 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(answer)}));
     writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\napproved_design: ${JSON.stringify(rows)}\n`);
     assert.match(dd(2, 'run', '--open').error, /approved_design must be/);
   }
+  // Retro cause 2: approval coverage beyond the listed screens. Each negative control names what is uncovered; the positive case passes.
+  const seal = (names) => {
+    const run = dd(0, 'run', '--open');
+    const root = join(repo, run.evidence_root);
+    for (const name of names) writeFileSync(join(root, `${name}.png`), readFileSync(join(repo, name === 'logo' ? 'design/logo.png' : `${name}-mock.png`)));
+    writeFileSync(join(root, 'steps.json'), JSON.stringify({ target: { version: '1' }, start: 'fixture', steps: ['open all screens'], result: 'design done' }));
+    dd(0, 'run', '--close', run.run_id);
+    return names.map(n => join(root, `${n}.png`));
+  };
+  const commit = (yaml, msg) => { writeFileSync(join(repo, '.done-done.yaml'), yaml); git('add', '-A'); git('commit', '-qm', msg); };
+  mkdirSync(join(repo, 'design'));
+  writeFileSync(join(repo, 'design', 'logo.png'), png(41));
+  writeFileSync(join(repo, 'design', 'spare.png'), png(43));
+  commit(config, 'approved reference images outside the manifest');
+  const unlisted = dd(1, 'check', '--outcome', 'design done', ...seal(screens));
+  assert.match(JSON.stringify(unlisted), /approved reference material is not in the approved_design manifest: design\/logo\.png, design\/spare\.png/);
+  const requirementsYaml = (rows) => config + `approved_requirements: ${JSON.stringify(rows)}\n`;
+  const exclusion = { kind: 'reference', name: 'design/spare.png', exclusion: 'owner dropped the spare illustration' };
+  commit(requirementsYaml([{ kind: 'asset', name: 'logo', capture: 'logo.png', mock: 'design/logo.png' }, exclusion]), 'approved logo asset, spare excluded');
+  const uncovered = dd(1, 'check', '--outcome', 'design done', ...seal(screens));
+  assert.match(JSON.stringify(uncovered), /asset logo: no live capture \(logo\.png\)/, 'an approved asset with no live capture is rejected');
+  const covered = dd(0, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
+  assert.equal(covered.design.length, 3); assert.deepEqual(covered.approved_exclusions, [exclusion].map(({ kind, name, exclusion }) => ({ kind, name, exclusion })));
+  // Color tokens follow the same rule: no live capture fails by name; an explicit exclusion with a reason is the only skip.
+  const logo = { kind: 'asset', name: 'logo', capture: 'logo.png', mock: 'design/logo.png' };
+  const accent = { kind: 'color', name: 'brand-accent', capture: 'accent.png' };
+  commit(requirementsYaml([logo, exclusion, accent]), 'approved accent color');
+  const noAccent = dd(1, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
+  assert.match(JSON.stringify(noAccent), /color brand-accent: no live capture \(accent\.png\)/, 'an approved color with no live capture is rejected');
+  const skipped = { kind: 'color', name: 'brand-accent', exclusion: 'owner dropped the accent color' };
+  commit(requirementsYaml([logo, exclusion, skipped]), 'accent color excluded');
+  const excluded = dd(0, 'check', '--outcome', 'design done', ...seal([...screens, 'logo']));
+  assert.ok(excluded.approved_exclusions.some(e => e.kind === 'color' && e.exclusion === skipped.exclusion));
+  mkdirSync(OUT, { recursive: true });
+  writeFileSync(join(OUT, 'color-coverage.txt'), [
+    'Color evidence or exclusion, from the real CLI:',
+    `approved color brand-accent with no live capture: result ${noAccent.result}, rejected: color brand-accent: no live capture (accent.png)`,
+    `approved color brand-accent with explicit exclusion "${skipped.exclusion}": result ${excluded.result ?? 'pass'}, reported in approved_exclusions`,
+  ].join('\n') + '\n');
+  // Without any manifest, a design claim has nothing approved to compare to, however well it renders.
+  commit(`app: fixture\nevidence: {root: .proof}\n`, 'no manifest');
+  const uncompared = dd(1, 'check', '--outcome', 'design done', ...seal(['home']));
+  assert.match(JSON.stringify(uncompared), /not compared to approved result/);
+  const why = (r, re) => r.findings.map(f => f.why).find(w => re.test(w)) ?? r.reason;
+  writeFileSync(join(OUT, 'coverage-summary.txt'), [
+    'Approval coverage from the real CLI (screens, assets, colors, interactions, comparison):',
+    `unlisted reference images: ${unlisted.result}: ${why(unlisted, /reference material/)}`,
+    `asset with no live capture: ${uncovered.result}: ${why(uncovered, /asset logo/)}`,
+    `color with no live capture: ${noAccent.result}: ${why(noAccent, /color brand-accent/)}`,
+    `color with an explicit exclusion: ${excluded.result}, ${excluded.approved_exclusions.length} exclusions reported`,
+    `fully covered screens and asset: ${covered.result}, ${covered.design.length} paired comparisons passed`,
+    `interaction with no frame: ${flagged.interaction_checklist.filter(r => r.status === 'flagged').map(r => r.id).join(', ')} flagged (exit 1) until it has a frame or a not_applicable reason`,
+    `no approved reference: ${uncompared.result}: ${why(uncompared, /not compared/)}`,
+  ].join('\n') + '\n');
+
+  for (const rows of [[], [{ kind: 'asset', name: 'logo', capture: 'logo.png', exclusion: 'both' }], [{ kind: 'asset', name: 'logo', exclusion: ' ' }], [{ kind: 'sound', name: 'x', exclusion: 'no' }]]) {
+    writeFileSync(join(repo, '.done-done.yaml'), `app: fixture\napproved_requirements: ${JSON.stringify(rows)}\n`);
+    assert.match(dd(2, 'run', '--open').error, /approved_requirements must be/);
+  }
   assert.ok(receipt.receipt);
   mkdirSync(OUT, { recursive: true });
   writeFileSync(join(OUT, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version }, start: 'built CLI and an isolated three-screen approved design',
-    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame'],
-    result: 'approved-design coverage fails missing Today, passes complete matching screens, and refuses non-matches and unsealed captures',
+    steps: ['seal two live screens and check design done: Today fails by name', 'add Today in a new sealed run: all three paired verdicts pass', 'verify the receipt and reject an edited mock', 'reject mismatching and unsure comparisons and malformed inventories', 'wire six interaction items: a frame passes, no frame is flagged, absent surfaces have reasons', 'seal and verify a passing checklist receipt, reject a malformed verdict and judge-rejected frame', 'reject an unlisted reference image, an approved color with no live capture (then pass it with an explicit exclusion), an uncovered requirement (asset with no live capture) and a design claim not compared to an approved reference, then pass the covered manifest with its exclusion reported'],
+    result: 'approved-design coverage fails missing Today and uncovered requirements, passes complete matching screens, and refuses non-matches and unsealed captures',
   }));
 } finally {
   mkdirSync(OUT, { recursive: true });

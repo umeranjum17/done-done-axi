@@ -544,6 +544,22 @@ After those checks pass, each live image is sent beside its approved mock throug
 
 With no manifest, claims behave as before. `design` and `look --mock` remain ad-hoc measurements of supplied screens, not coverage claims: use `check`, `receipt` or `verify` to prove the complete approved inventory. This checks the declared inventory; it cannot discover an approved shot omitted from the manifest or establish capture authenticity beyond the existing run record.
 
+#### Assets, colors, interactions and unlisted references
+
+Screens are not the whole approval. Name every other approved item in `approved_requirements`, each with the live evidence it needs, or skip it with an explicit exclusion:
+
+```yaml
+approved_requirements:
+  - { kind: asset, name: logo, capture: logo.png, mock: design/logo.png }   # judged beside its approved image
+  - { kind: color, name: brand-accent, capture: accent.png }                # must be cited live evidence
+  - { kind: interaction, name: swipe-to-delete, capture: swipe.png }
+  - { kind: reference, name: design/spare.png, exclusion: owner dropped the spare illustration }
+```
+
+`kind` is `asset`, `color`, `interaction` or `reference`. A row needs a unique `capture` filename (one cited, run-bound PNG/JPEG; optional `mock` sends it through the design judge) **or** `exclusion: <reason>`, the only way to skip it. An uncovered row fails the claim before any judge call, naming the item. Exclusions are reported under `approved_exclusions`. Receipts do not yet bind requirement captures; they are enforced by `check`, `receipt` and `verify` at run time.
+
+**Behavior that tightens.** (1) Committed PNG/JPEG files under a top-level `design*/`, `mock*/`, `approved*/` or `prototype*/` folder that no `approved_design` `mock`, requirement `mock` or `kind: reference` row names fail every claim as "approved reference material is not in the approved_design manifest". (2) A claim whose outcome mentions design, mock, prototype or approved, with no `approved_design` manifest, no requirement `mock` and no `base_ref` baseline capture, fails with `not compared to approved result`; render, fit and dark-mode checks alone do not prove it. Manifests that list every reference and compare against it keep working unchanged.
+
 #### Interaction checklist (opt-in)
 
 Visual comparisons do not prove interaction polish. The package ships six requirements in `skills/done-done/interaction-checklist.json`: `detail-navigation` (next/previous **and swipe**), `instant-state` (immediate feedback on every send/answer), `destructive-undo` (undo restores content), `scroll-restoration` (back keeps list position), `list-search` (search/filter on long lists), and `empty-next-step` (empty states explain what to do next).
@@ -778,6 +794,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |
 | `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
 | `interaction_checklist` | none; opt-in six-item interaction evidence map; omitted/unproven items flagged, absent surfaces need reasons; see [Interaction checklist](#interaction-checklist-opt-in) |
+| `approved_requirements` | none; approved assets, colors and interactions with the live capture each needs, or an explicit `exclusion`, see [Assets, colors, interactions](#assets-colors-interactions-and-unlisted-references) |
 | `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates all claims, see [Approved-design coverage](#approved-design-coverage) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |
 | `base_ref` | none; a ref `verify` also drives, pairing its captures with the head's, see [Base-ref before](#base-ref-before) |
