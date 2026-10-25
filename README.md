@@ -12,7 +12,7 @@ For developers using coding agents: the tests pass, the agent says "done", and t
 <picture>
   <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/media/hero-phone-dark.png">
   <source media="(max-width: 600px)" srcset="docs/media/hero-phone-light.png">
-  <img src="docs/media/hero.gif" alt="A real run: done-done run records a capture for commit ca78363, done-done check passes with the judge's reason, done-done receipt writes the receipt, and done-done init refuses a journey that only runs npm test.">
+  <img src="docs/media/hero.gif" width="880" alt="A real run: done-done run records a capture for commit ca78363, done-done check passes with the judge's reason, done-done receipt writes the receipt, and done-done init refuses a journey that only runs npm test.">
 </picture>
 
 <sub>A real 0.6.12 run on a small sample app: a capture, the judge's pass and its reason, the receipt, and a test-only journey refused. Long paths shortened; [still, light](docs/media/hero-light.png) · [dark](docs/media/hero-dark.png).</sub>
