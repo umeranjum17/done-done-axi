@@ -2902,6 +2902,7 @@ const prompt = content.at(-1).text;
 const begin = 'BEGIN DATA (JSON)\\n';
 const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prompt.indexOf('\\nEND DATA'))).state;
 appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, shed: Object.hasOwn(process.env, 'DD_POOL_SHED'), apiKey: Object.hasOwn(process.env, 'ANTHROPIC_API_KEY'), argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
+if ((stub.limitDirs ?? []).includes(process.env.CLAUDE_CONFIG_DIR ?? '')) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 1);
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
 const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
@@ -3107,6 +3108,101 @@ test('Claude unavailable falls back to configured pi, including an empty account
   const failed = run('check', [files[1]]);
   assert.equal(failed.code, 2, failed.out);
   assert.match(toon(failed).error, /pi exited 1.*after claude-code failed:.*usage limit reached/);
+});
+
+// The shared model pool: fm-model-pool pick/next over stdin JSON. The forced-limit journey lets account A hit a usage
+// limit, so the helper answers B; then both are limited, so it falls over Sol (no codex here) to DeepSeek Goat on pi.
+test('model pool: a forced limit moves to the next account, then falls over to a route; no helper keeps today\'s failure', () => {
+  const t = judgeSetup(CORRECT);
+  delete t.env.CLAUDE_CONFIG_DIR;
+  const config = join(t.env.DONE_DONE_HOME, 'config.yaml');
+  const original = readFileSync(config, 'utf8');
+  const folderA = join(t.dir, 'account-a');
+  const folderB = join(t.dir, 'account-b');
+  mkdirSync(folderA);
+  mkdirSync(folderB);
+  const poolCfg = join(t.dir, 'account-pool');
+  writeFileSync(poolCfg, `state=${join(t.dir, 'pool')}\n`);
+  const helper = join(t.dir, 'fm-model-pool');
+  const asks = join(t.dir, 'pool-asks.jsonl');
+  const account = (id, folder) => ({ ok: true, id, selection_id: id, provider: 'claude', harness: 'claude', model: 'claude-test-1', set: { CLAUDE_CONFIG_DIR: folder }, unset: [], billing: 'plan', billing_classification: 'plan' });
+  const route = (id, provider, harness, model) => ({ ok: true, id, selection_id: id, provider, harness, model, set: {}, unset: [], billing: 'plan', billing_classification: 'plan' });
+  const goat = 'route:deepseek/deepseek-goat';
+  const sol = 'route:openai-codex/gpt-6.1-sol';
+  writeFileSync(helper, `#!${process.execPath}
+const { appendFileSync, readFileSync } = require('node:fs');
+const req = JSON.parse(readFileSync(0, 'utf8'));
+const verb = process.argv[2];
+appendFileSync(${JSON.stringify(asks)}, JSON.stringify({ verb, req }) + String.fromCharCode(10));
+const tried = req.attempted ?? [];
+const accounts = ${JSON.stringify([account('pool-a', folderA), account('pool-b', folderB)])};
+const answer = process.env.DD_POOL_CREDITS ? { ...accounts[0], billing: 'credits', billing_classification: 'credits' }
+  : verb === 'pick' ? accounts[0]
+  : !tried.includes('pool-b') ? accounts[1]
+  : !tried.includes(${JSON.stringify(sol)}) ? ${JSON.stringify(route(sol, 'codex', 'codex', 'openai-codex/gpt-6.1-sol'))}
+  : !tried.includes(${JSON.stringify(goat)}) ? ${JSON.stringify(route(goat, 'deepseek', 'opencode', 'deepseek/deepseek-goat'))}
+  : { ok: false, reason: 'every account is resting and every route was tried' };
+console.log(JSON.stringify(answer));
+process.exit(answer.ok ? 0 : 19);
+`, { mode: 0o755 });
+  // Codex is out on this machine: its agent is not startable, so done-done skips the Sol route and asks for the next one.
+  const pooled = (on) => writeFileSync(config, original
+    .replace('judge:\n', `judge:\n${on ? `  pool_command: ${JSON.stringify(helper)}\n  pool_config: ${JSON.stringify(poolCfg)}\n` : ''}`)
+    .replace(/agent_path_override: \{ claude: (.*) \}/, `agent_path_override: { claude: $1, codex: ${JSON.stringify(join(t.dir, 'absent', 'codex'))} }`));
+  const { files } = t.shots('home and settings render');
+  const s = stubAgents(t.env, 'error');
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
+  stubPiBridge(s.env, verdict);
+  const run = (outcome, cited = files) => {
+    const r = spawnSync(process.execPath, [CLI, 'check', '--outcome', outcome, ...cited], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  const poolAsks = () => readFileSync(asks, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  // No helper configured: the limit stops the check with its own cause, exactly as before.
+  pooled(false);
+  t.stub('error');
+  delete s.env.CLAUDE_CONFIG_DIR;
+  const before = t.calls().length;
+  const plain = run('home and settings render without a pool');
+  assert.equal(plain.code, 2, plain.out);
+  assert.match(toon(plain).error, /usage limit reached/);
+  assert.equal(t.calls().length - before, 1, 'one claude call and no move without a helper');
+  // A forced limit on A: the helper's next account B answers, and the detail names B.
+  pooled(true);
+  t.stub(CORRECT, true, [], [], '', { limitDirs: [folderA] });
+  const afterPlain = t.calls().length;
+  const moved = run('the home screen and settings render');
+  assert.equal(moved.code, 0, moved.out);
+  assert.equal(toon(moved).judge.detail, 'Claude account pool-b');
+  assert.deepEqual(t.calls().slice(afterPlain).map((c) => c.configDir), [folderA, folderB, folderB], 'A is limited once, then B answers both citations');
+  assert.ok(!moved.out.includes(folderA) && !moved.out.includes(folderB), 'the result names the account id, never the folder');
+  assert.deepEqual(poolAsks().map((a) => a.verb), ['pick', 'next'], 'one move, then the moved account is reused in this process');
+  assert.equal(poolAsks()[0].req.pool_config, poolCfg, 'the helper gets its config/account-pool path');
+  assert.equal(poolAsks()[1].req.cause, 'rate_limit');
+  assert.deepEqual(poolAsks()[1].req.attempted, ['pool-a'], 'the limited account is never retried');
+  const records = readdirSync(join(t.env.DONE_DONE_HOME, 'agents')).filter((n) => n.startsWith('judge-'));
+  assert.equal(JSON.parse(readFileSync(join(t.env.DONE_DONE_HOME, 'agents', records.at(-1)), 'utf8')).account, 'pool-b', 'the call record names the account that answered');
+  // Every Claude account limited: Sol is skipped (no codex here), DeepSeek Goat on pi answers, and the detail names the route.
+  t.stub(CORRECT, true, [], [], '', { limitDirs: [folderA, folderB] });
+  const afterMoved = t.calls().length;
+  const fell = run('the settings screen shows the sync banner');
+  assert.equal(fell.code, 0, fell.out);
+  assert.equal(toon(fell).judge.detail, `pool route ${goat}`);
+  const piCalls = s.calls().filter((c) => c.agent === 'pi');
+  assert.ok(piCalls.length >= 2, 'the whole check moves to the pi fall-over route');
+  assert.ok(piCalls.every((c) => c.argv[c.argv.indexOf('--model') + 1] === 'commandcode/deepseek/deepseek-v4.1-flash'), 'the route runs the model this machine has');
+  assert.deepEqual(t.calls().slice(afterMoved).map((c) => c.configDir), [folderA, folderB], 'both accounts were tried once before the fall-over');
+  assert.deepEqual(poolAsks().slice(-3).map((a) => a.verb), ['next', 'next', 'next']);
+  assert.deepEqual(poolAsks().at(-2).req.attempted, ['pool-a', 'pool-b'], 'the Sol route is skipped because its agent cannot start');
+  assert.deepEqual(poolAsks().at(-1).req.attempted, ['pool-a', 'pool-b', sol]);
+  // A credits-enabled answer is refused with its cause, and no agent starts.
+  s.env.DD_POOL_CREDITS = '1';
+  const started = t.calls().length;
+  const credits = run('the home screen and settings render');
+  assert.equal(credits.code, 2, credits.out);
+  assert.match(toon(credits).error, /judge\.pool_command: the pool answered pool-a on usage credits or overage, which done-done never spends/);
+  assert.equal(t.calls().length, started, 'a credits-enabled account never starts a call');
+  delete s.env.DD_POOL_CREDITS;
 });
 
 test('judge wrong screen fails with exit 1, unsure and low confidence are inconclusive with exit 3', () => {

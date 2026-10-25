@@ -111,6 +111,7 @@ cp "$(npm root -g)/done-done-axi/integrations/firstmate/merge-gate" "$FM_HOME/co
 
 - **`brief-include.md`**: Firstmate adds `config/brief-include.md` to every worker brief. It tells the worker to set up done-done, run the journeys `done-done affected` lists for its committed change, write a `## Checks` block, pass `check`, record a `receipt`, and see `affected` exit 0.
 - **`merge-gate`** (optional): refuses a PR whose head is not the one asked for, then runs `done-done check --from <PR URL>` and `done-done receipt --verify <head>` against your default branch's rules. Upstream Firstmate does not call a merge gate yet, so run it by hand until it does ([details](docs/reference.md#merge-gate-on-the-desktop)).
+- **Model pool**: point `judge.pool_command` and `judge.pool_config` at the fleet's `account-pool/bin/fm-model-pool` and done-done picks the Claude account, moves on a rate or usage limit, and falls over to DeepSeek Goat or Cursor auto ([details](docs/reference.md#config)).
 
 Another fleet works the same way: add the include text to whatever your workers read first, and run `merge-gate` before each merge, with `FM_HOME` set to the folder that holds `data/<task-id>/checks.md` for local-only tasks. Evidence and receipts stay in `~/.done-done/evidence/<app>` after teardown.
 

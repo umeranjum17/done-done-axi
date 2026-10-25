@@ -56,7 +56,7 @@ export type Config = {
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
-  judge: { route: string; fallback_route: string; model: string; floor: number; env_file: string; account_command: string };
+  judge: { route: string; fallback_route: string; model: string; floor: number; env_file: string; account_command: string; pool_command: string; pool_config: string };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -137,6 +137,8 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.floor': { scope: 'global', type: 'number' },
   'judge.env_file': { scope: 'global', type: 'string' },
   'judge.account_command': { scope: 'global', type: 'string' },
+  'judge.pool_command': { scope: 'global', type: 'string' },
+  'judge.pool_config': { scope: 'global', type: 'string' },
   'judge.fallback_route': { scope: 'global', type: 'route' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff']);
@@ -376,7 +378,7 @@ function defaultConfig(repo: string): Config {
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
-    judge: { route: '', fallback_route: '', model: '', floor: 0.7, env_file: '', account_command: '' },
+    judge: { route: '', fallback_route: '', model: '', floor: 0.7, env_file: '', account_command: '', pool_command: '', pool_config: '' },
     trusted: false,
     from: {},
   };
@@ -390,6 +392,15 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   apply(cfg, readOptional(globalFile), globalFile, 'global');
   const projectFile = join(repo, '.done-done.yaml');
   apply(cfg, projectText ?? readOptional(projectFile), projectFile, 'repo');
+  // The model pool needs both its helper command and the helper's own pool config; it replaces the Claude account command.
+  if (cfg.judge.pool_config) {
+    cfg.judge.pool_config = tilde(cfg.judge.pool_config);
+    if (!isAbsolute(cfg.judge.pool_config)) throw new UsageError(`${globalFile}: judge.pool_config must be the absolute path of the model pool helper's config/account-pool`, 'Set judge.pool_config in the global config, or remove it');
+  }
+  if (cfg.judge.pool_command) {
+    if (!cfg.judge.pool_config) throw new UsageError(`${globalFile}: judge.pool_command needs judge.pool_config, the absolute path of the helper's config/account-pool`, 'Set judge.pool_config in the global config, or remove judge.pool_command');
+    if (cfg.judge.account_command) throw new UsageError(`${globalFile}: judge.pool_command and judge.account_command are both set: the model pool already picks the Claude account`, 'Delete the judge.account_command line in the global config');
+  }
   // A skill dir an older init wrote (verify-<app>) is still read until init renames it to the prefixed name.
   cfg.skill ||= existsSync(join(repo, `.agents/skills/done-done-verify-${cfg.app}`)) || !existsSync(join(repo, `.agents/skills/verify-${cfg.app}`))
     ? `.agents/skills/done-done-verify-${cfg.app}` : `.agents/skills/verify-${cfg.app}`;
@@ -468,5 +479,9 @@ judge:
   # env_file: ~/.config/done-done/judge.env
   # Optional shell command printing one account-pick JSON for Claude judge and agent calls; an exported CLAUDE_CONFIG_DIR wins.
   # account_command: account-picker pick claude --json
+  # Optional shared model pool (firstmate-addons account-pool/bin/fm-model-pool): it picks the Claude account, moves on a
+  # rate/usage limit, and falls over to another route; pool_config is the helper's own config/account-pool file.
+  # pool_command: fm-model-pool
+  # pool_config: ~/firstmate/config/account-pool
 `;
 }
