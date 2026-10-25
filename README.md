@@ -12,11 +12,10 @@ For developers using coding agents: the tests pass, the agent says "done", and t
 <picture>
   <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/media/hero-phone-dark.png">
   <source media="(max-width: 600px)" srcset="docs/media/hero-phone-light.png">
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/hero-dark.png">
-  <img src="docs/media/hero-light.png" width="860" alt="A real terminal run: done-done run records a capture for commit eb28807, done-done check passes with the judge's reason, done-done receipt writes the receipt, and done-done init refuses a journey that only runs npm test.">
+  <img src="docs/media/hero.gif" alt="A real run: done-done run records a capture for commit ca78363, done-done check passes with the judge's reason, done-done receipt writes the receipt, and done-done init refuses a journey that only runs npm test.">
 </picture>
 
-<sub>A real 0.6.12 run on a small sample app: a capture, the judge's pass and its reason, the receipt, and a test-only journey refused. Long paths shortened.</sub>
+<sub>A real 0.6.12 run on a small sample app: a capture, the judge's pass and its reason, the receipt, and a test-only journey refused. Long paths shortened; [still, light](docs/media/hero-light.png) · [dark](docs/media/hero-dark.png).</sub>
 
 ```sh
 npm install -g done-done-axi
@@ -75,7 +74,7 @@ Four more moments from a demo notes app: a capture for the current commit, a jud
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/reasons-dark.svg"><img src="docs/media/reasons-light.svg" alt="done-done check fails: one screenshot is from an older commit, one file is empty, one is a blank frame." width="400" align="top"></picture>
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/config-dark.svg"><img src="docs/media/config-light.svg" alt="done-done run stops with exit 2 because the config has an unknown key." width="400" align="top"></picture>
 
-The hero above is a real run of the published CLI on a fresh sample repo: `run` recorded the capture at commit `eb28807`, the `openai-codex` judge read it and passed it with that reason, `receipt` wrote the receipt, and `init` refused a journey whose only command was `npm test`. [The manual walkthrough](docs/manual-cli.md) does the same by hand.
+The hero above is a real run of the published CLI on a fresh sample repo, replayed line by line: `run` recorded the capture at commit `ca78363`, the Pi judge on `commandcode/deepseek/deepseek-v4.1-flash` read it and passed it with that reason, `receipt` wrote the receipt, and `init` refused a journey whose only command was `npm test`. [The manual walkthrough](docs/manual-cli.md) does the same by hand.
 
 ## Use it from your agent
 

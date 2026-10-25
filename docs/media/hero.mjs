@@ -1,8 +1,11 @@
 // Build the README hero pages from the captured CLI transcripts in this folder.
 // Every value shown is asserted to exist in a transcript; only field order and long paths change.
-// Usage: node docs/media/hero.mjs, then screenshot .hero/hero-desktop.html (888x543) and
-// .hero/hero-phone.html (418x725) at device scale factor 2, in light and dark:
-// hero-light.png, hero-dark.png, hero-phone-light.png, hero-phone-dark.png.
+// Usage: node docs/media/hero.mjs, then screenshot .hero/hero-desktop.html (828x596) and
+// .hero/hero-phone.html (418x792) at device scale factor 2, in light and dark:
+// hero-light.png, hero-dark.png (1600 px wide source shown at width 100%), hero-phone-*.png.
+// The animated hero.gif replays the same lines one by one (1200 px wide, 16 frames, ~9 s),
+// ending on the judge's pass and the receipt; it is captured from the same page with the
+// lines revealed a step at a time, one row's worth of pixels cropped off each earlier frame.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,9 +18,9 @@ const need = (hay, s) => {
   return s;
 };
 
-const commit = need(pass, 'eb28807b359e31d9a4e7ef5cad31aaafa7e4a4aa');
-const reason = need(pass, 'The capture shows node greet.mjs Umer printing Hello Umer, matching the stated outcome.');
-const model = need(pass, 'openai-codex/gpt-6.1-sol');
+const commit = need(pass, 'ca783630026370864950bce53bc5efab802d29d6');
+const reason = need(pass, 'The output shows running greet.mjs with Umer and printing Hello Umer.');
+const model = need(pass, 'commandcode/deepseek/deepseek-v4.1-flash');
 const err = need(refuse, 'init --journey tests: npm test is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works, so check and gate never count its run as proof; nothing was written');
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -76,6 +79,6 @@ ${body({ phone })}
 
 const out = join(dir, '.hero');
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'hero-desktop.html'), page({ width: 860, font: 14, phone: false, title: 'done-done hero, desktop' }));
-writeFileSync(join(out, 'hero-phone.html'), page({ width: 390, font: 13, phone: true, title: 'done-done hero, phone' }));
+writeFileSync(join(out, 'hero-desktop.html'), page({ width: 800, font: 15, phone: false, title: 'done-done hero, desktop' }));
+writeFileSync(join(out, 'hero-phone.html'), page({ width: 390, font: 14, phone: true, title: 'done-done hero, phone' }));
 console.log(`wrote ${out}/hero-desktop.html and ${out}/hero-phone.html`);
