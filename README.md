@@ -68,11 +68,13 @@ Every answer is an exit code: **0** pass, **1** fail, **2** usage or config erro
 
 Four more moments from a demo notes app: a capture for the current commit, a judged pass, a check that refuses an older commit and two bad files, and a config error that stops the run. Real output from the current build; these four use a stub judge that says the screen shows the outcome, so no model runs.
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/run-dark.svg"><img src="docs/media/run-light.svg" alt="done-done run sync records one screenshot for the current commit." width="400" align="top"></picture>
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/pass-dark.svg"><img src="docs/media/pass-light.svg" alt="A Checks block cites the new screenshot, the judge passes it, and done-done check passes." width="400" align="top"></picture>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/run-dark.svg"><img src="docs/media/run-light.svg" alt="done-done run sync records one screenshot for the current commit." width="505"></picture></p>
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/reasons-dark.svg"><img src="docs/media/reasons-light.svg" alt="done-done check fails: one screenshot is from an older commit, one file is empty, one is a blank frame." width="400" align="top"></picture>
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/config-dark.svg"><img src="docs/media/config-light.svg" alt="done-done run stops with exit 2 because the config has an unknown key." width="400" align="top"></picture>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/pass-dark.svg"><img src="docs/media/pass-light.svg" alt="A Checks block cites the new screenshot, the judge passes it, and done-done check passes." width="505"></picture></p>
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/reasons-dark.svg"><img src="docs/media/reasons-light.svg" alt="done-done check fails: one screenshot is from an older commit, one file is empty, one is a blank frame." width="505"></picture></p>
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/config-dark.svg"><img src="docs/media/config-light.svg" alt="done-done run stops with exit 2 because the config has an unknown key." width="505"></picture></p>
 
 The hero above is a real run of the published CLI on a fresh sample repo, replayed line by line: `run` recorded the capture at commit `ca78363`, the Pi judge on `commandcode/deepseek/deepseek-v4.1-flash` read it and passed it with that reason, `receipt` wrote the receipt, and `init` refused a journey whose only command was `npm test`. [The manual walkthrough](docs/manual-cli.md) does the same by hand.
 
@@ -92,8 +94,10 @@ A journey is the saved script that drives your app and captures what a user sees
 
 ```sh
 done-done journey add "greet Umer and check that Hello Umer is printed"
-done-done journey enhance greet-umer-prints-hello "add checks for an empty name and an unknown command"
-done-done journey improve greet-umer-prints-hello "also check that greeting Zoë prints exactly Hello Zoë"
+done-done journey enhance greet-umer-prints-hello \
+  "add checks for an empty name and an unknown command"
+done-done journey improve greet-umer-prints-hello \
+  "also check that greeting Zoë prints exactly Hello Zoë"
 ```
 
 `add` writes the script, its config entry and its feature in the verify skill; `enhance` deepens one journey; `improve` makes one change to one journey. Each exercise runs once on uncommitted files, which is a trial, not proof: read the script, commit it, then `done-done run <name>`. The saved script needs no agent or model, so CI can replay it; generation runs only on your machine ([worked transcript](docs/manual-cli.md)).
@@ -105,8 +109,9 @@ done-done works the same with or without Firstmate: the skill and CLI behave ide
 ```sh
 npx skills add umeranjum17/done-done-axi --skill done-done -g -a <agent> -y
 npm install -g done-done-axi
-cat "$(npm root -g)/done-done-axi/integrations/firstmate/brief-include.md" >> "$FM_HOME/config/brief-include.md"
-cp "$(npm root -g)/done-done-axi/integrations/firstmate/merge-gate" "$FM_HOME/config/merge-gate"
+DD="$(npm root -g)/done-done-axi/integrations/firstmate"
+cat "$DD/brief-include.md" >> "$FM_HOME/config/brief-include.md"
+cp "$DD/merge-gate" "$FM_HOME/config/merge-gate"
 ```
 
 - **`brief-include.md`**: Firstmate adds `config/brief-include.md` to every worker brief. It tells the worker to set up done-done, run the journeys `done-done affected` lists for its committed change, write a `## Checks` block, pass `check`, record a `receipt`, and see `affected` exit 0.
