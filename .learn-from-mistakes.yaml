@@ -9,5 +9,5 @@ name: "done-done"
 excerpts: on   # on: the worker and judge see redacted record excerpts; off: pointers and counts only
 sources:
   gate: { type: "no-mistakes", path: "~/.no-mistakes/state.sqlite" }
-  sessions: { type: "sessions", agents: ["auto"] }
+  sessions: { type: "sessions", agents: ["claude", "codex", "opencode", "pi", "gemini"] }
   prs: { type: "github" }
