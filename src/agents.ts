@@ -402,10 +402,10 @@ export function selectJudge(cfg: Config, found: { agent: string; model: string }
   return { route, agent, model, independence, author: { agent: found.agent, model: found.model } };
 }
 
-// The judge that answers when the set route's call fails (FALLBACK_ROUTES), at that agent's own default model; none for a route with no fallback.
+// One configured second route, else the legacy MiniMax fallback; use its own model, never the primary's.
 export function selectFallback(cfg: Config, found: { agent: string; model: string }): JudgeChoice | undefined {
-  const route = FALLBACK_ROUTES[cfg.judge.route];
-  return route ? selectJudge({ ...cfg, judge: { ...cfg.judge, route, model: '' } }, found) : undefined;
+  const route = cfg.judge.fallback_route || FALLBACK_ROUTES[cfg.judge.route];
+  return route && route !== cfg.judge.route ? selectJudge({ ...cfg, judge: { ...cfg.judge, route, model: '' } }, found) : undefined;
 }
 
 type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
@@ -507,6 +507,8 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
   });
 }
 
+// A valid picker refusal is availability, not a malformed account configuration.
+export class ClaudeUnavailable extends UsageError {}
 type ClaudeAccount = { id: string; folder: string; unset: string[] };
 let accountPick: Promise<ClaudeAccount> | undefined;
 
@@ -514,13 +516,13 @@ let accountPick: Promise<ClaudeAccount> | undefined;
 export function claudeAccount(agent: string, command?: string): Promise<ClaudeAccount | undefined> {
   if (agent !== 'claude' || !command || process.env.CLAUDE_CONFIG_DIR !== undefined) return Promise.resolve(undefined);
   return accountPick ??= Promise.resolve().then(() => {
-    const fail = (why: string): never => { throw new UsageError(`judge.account_command: ${why}`, 'Fix judge.account_command in the global config, or export CLAUDE_CONFIG_DIR for this call'); };
+    const fail = (why: string, unavailable = false): never => { throw new (unavailable ? ClaudeUnavailable : UsageError)(`judge.account_command: ${why}`, 'Fix judge.account_command in the global config, or export CLAUDE_CONFIG_DIR for this call'); };
     const r = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 });
     if (r.error) fail((r.error as NodeJS.ErrnoException).code ?? 'command could not start');
     let pick;
     try { pick = JSON.parse(r.stdout); } catch { fail(r.status === 0 ? 'invalid JSON' : `command exited ${r.status}: ${errorLine(r.stderr) || 'no pick returned'}`); }
-    if (r.status !== 0) fail(`command exited ${r.status}: ${typeof pick?.reason === 'string' ? errorLine(pick.reason) : errorLine(r.stderr) || 'no pick returned'}`);
-    if (pick?.ok !== true) fail(typeof pick?.reason === 'string' ? errorLine(pick.reason) : 'ok must be true');
+    if (r.status !== 0) fail(`command exited ${r.status}: ${typeof pick?.reason === 'string' ? errorLine(pick.reason) : errorLine(r.stderr) || 'no pick returned'}`, pick?.ok === false || pick === null);
+    if (pick?.ok !== true) fail(typeof pick?.reason === 'string' ? errorLine(pick.reason) : 'ok must be true', pick?.ok === false || pick === null);
     if (typeof pick.id !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(pick.id)) fail('invalid account id');
     const folder = pick.set?.CLAUDE_CONFIG_DIR;
     let directory = false;

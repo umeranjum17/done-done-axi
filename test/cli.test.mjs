@@ -3051,6 +3051,64 @@ test('Claude account command routes check and receipt, preserves explicit accoun
   assert.equal(t.calls().at(-1).shed, true);
 });
 
+test('Claude unavailable falls back to configured pi, including an empty account pool; unset and invalid picks fail closed', () => {
+  const t = judgeSetup('error');
+  delete t.env.CLAUDE_CONFIG_DIR;
+  const config = join(t.env.DONE_DONE_HOME, 'config.yaml');
+  const original = readFileSync(config, 'utf8');
+  const { files } = t.shots('home and settings render');
+  const s = stubAgents(t.env, '');
+  const verdict = JSON.stringify({ relevance: { probabilities: CORRECT, rationale: 'The list shows the notes.', personReason: 'The list shows the notes.', parts: [], covers: [] } });
+  stubPiBridge(s.env, verdict);
+  const run = (cmd = 'check', cited = files) => {
+    const r = spawnSync(process.execPath, [CLI, cmd, '--outcome', 'home and settings render', ...cited], { cwd: t.repo, env: s.env, encoding: 'utf8' });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  const set = (fallback, extra = '') => writeFileSync(config, original.replace('judge:\n', `agent_config:\n  pi: { model: openai-codex/gpt-6.1-sol }\njudge:\n${fallback ? '  fallback_route: answerer:pi\n' : ''}${extra}`));
+  set(false);
+  assert.match(toon(run()).error, /usage limit reached/);
+  set(true);
+  const ok = run();
+  assert.equal(ok.code, 0, ok.out);
+  assert.deepEqual([toon(ok).judge.route, toon(ok).judge.model], ['answerer:pi', 'openai-codex/gpt-6.1-sol']);
+  assert.match(toon(ok).judge.detail, /answerer:pi.*claude-code/);
+  assert.equal(s.calls().filter((c) => c.agent === 'pi').length, 2, 'the whole check moves to pi');
+  assert.equal(run('check', [files[0]]).code, 0, 'single-capture path also falls back');
+  const pick = join(t.dir, 'pick');
+  writeFileSync(pick, `#!${process.execPath}\nconsole.log(JSON.stringify({ok:false, reason:'every account under floor'})); process.exit(19);\n`, { mode: 0o755 });
+  const account = `  account_command: ${JSON.stringify(pick)}\n`;
+  set(true, account);
+  const before = t.calls().length;
+  const receipt = run('receipt');
+  assert.equal(receipt.code, 0, receipt.out);
+  assert.equal(toon(receipt).judge.route, 'answerer:pi');
+  assert.equal(t.calls().length, before, 'empty pool never starts Claude');
+  set(false, account);
+  assert.match(toon(run()).error, /judge.account_command: command exited 19: every account under floor/);
+  set(true, account);
+  writeFileSync(pick, '#!/bin/sh\nprintf broken', { mode: 0o755 });
+  const invalid = run();
+  assert.equal(invalid.code, 2, invalid.out);
+  assert.match(toon(invalid).error, /invalid JSON/);
+  set(true);
+  t.stub(CORRECT, false);
+  assert.equal(run().code, 0, 'not logged in uses the fallback');
+  t.stub(CORRECT, true, [{ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: 1792692000 } }]);
+  assert.equal(run().code, 0, 'a rejected rate limit uses the fallback');
+  t.stub({ correct: 3, wrong: 0, unclear: 0 });
+  const malformed = run();
+  assert.equal(malformed.code, 2, malformed.out);
+  assert.match(toon(malformed).error, /no probabilities/, 'malformed answers do not trigger Claude fallback');
+  writeFileSync(config, readFileSync(config, 'utf8').replace('fallback_route: answerer:pi', 'fallback_route: answerer:codex'));
+  assert.match(toon(run()).error, /judge.fallback_route must be/);
+  set(true);
+  t.stub('error');
+  writeFileSync(join(s.env.PATH, 'pi'), '#!/bin/sh\necho "pi offline" >&2\nexit 1\n', { mode: 0o755 });
+  const failed = run('check', [files[1]]);
+  assert.equal(failed.code, 2, failed.out);
+  assert.match(toon(failed).error, /pi exited 1.*after claude-code failed:.*usage limit reached/);
+});
+
 test('judge wrong screen fails with exit 1, unsure and low confidence are inconclusive with exit 3', () => {
   const j = judgeSetup({ correct: 0.05, wrong: 0.9, unclear: 0.05 });
   const { files } = j.shots('the settings page shows dark mode on', 'the sync finished in the background', 'the home screen shows the welcome card', 'the home screen shows the sync banner');
