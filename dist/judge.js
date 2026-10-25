@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
-import { agentRun, askAgent, claudeAccount, ClaudeUnavailable, notStartable } from './agents.js';
+import { accountDetail, agentRun, askAgent, ClaudeUnavailable, notStartable } from './agents.js';
 import { home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
@@ -146,7 +146,7 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
     const claude = choice.agent === 'claude';
     if (!bin)
         throw new UsageError(`judge: ${notStartable(choice.agent, override)}`, claude ? (override ? 'Fix agent_path_override.claude in ~/.done-done/config.yaml, or install Claude Code' : 'Install Claude Code, or set agent_path_override.claude to its absolute path') : `Install ${choice.agent}, or ask the user for another judge and save it: done-done init --judge <agent> --judge-model <model>`);
-    const account = await claudeAccount(choice.agent, cfg.judge.account_command);
+    const account = await accountDetail(cfg, choice.agent, choice.model);
     const { answerer, resolve } = await kit();
     let lastError = '';
     // The kit hides a failed call's message from the verdict, so the real cause is kept here for the result.
@@ -168,7 +168,7 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
             return { text: JSON.stringify(a.answer) };
         },
     }).ask;
-    return { ask, resolve, lastError: () => lastError, detail: account ? `Claude account ${account.id}` : claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off` };
+    return { ask, resolve, lastError: () => lastError, detail: account || (claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off`) };
 }
 // The parts list as the model gave it: labels trimmed and in its own order, so a cover position still names its label.
 const labels = (x) => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? x.map((s) => s.trim()) : undefined);
@@ -354,16 +354,21 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     return { judged, notJudged, choice, missing };
 }
 async function judgeOn(cfg, choose, outcome, captures, records) {
-    // Check the account even on a verdict cache hit: a broken configured picker must never produce a pass.
-    const account = await claudeAccount(choose().agent, cfg.judge.account_command);
-    const detail = account ? { detail: `Claude account ${account.id}` } : {};
+    // Check the account or pool route even on a verdict cache hit: a broken configured picker must never produce a pass.
+    const first = choose();
+    await accountDetail(cfg, first.agent, first.model);
+    // After the calls, the detail names the account id or fall-over route that actually answered.
+    const named = async (result) => {
+        const detail = await accountDetail(cfg, first.agent, first.model);
+        return detail ? { ...result, detail } : result;
+    };
     const dir = join(home(), 'runs', cfg.app, 'judge');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const judged = [];
     const notJudged = [];
     const batchChoice = captures.filter(judgeable).length > 1 ? choose() : undefined;
     if (batchChoice && batchChoice.route !== 'openai:key')
-        return { ...await judgeBatch(cfg, batchChoice, outcome, captures, records, dir), ...detail };
+        return named(await judgeBatch(cfg, batchChoice, outcome, captures, records, dir));
     let choice;
     let be;
     let calls = 0;
@@ -423,5 +428,5 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         judged.push(verdict);
     }
     // Only openai:key can have several independent calls here; it returns no coverage fields.
-    return { judged, notJudged, choice, missing: missingParts(judged), ...detail };
+    return named({ judged, notJudged, choice, missing: missingParts(judged) });
 }

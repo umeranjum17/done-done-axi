@@ -30,10 +30,11 @@ export type AgentCall = {
   attempts?: number; // asks allowed for a bad tool-less answer, default ASK_ATTEMPTS
   dirs?: string[]; // folders outside cwd an edit step may write (the run's evidence folder)
   accountCommand?: string; // judge.account_command for Claude calls only
+  pool?: ModelPool; // judge.pool_command: the shared model pool for Claude calls only
   env?: Record<string, string>; // extra environment for the agent
   onSpawn?: (pgid: number) => void; // an edit step runs in its own process group; this gets its id
 };
-export type AgentAnswer = { ok: boolean; answer?: Record<string, unknown>; error?: string; record?: string; recordError?: string; stderr?: string };
+export type AgentAnswer = { ok: boolean; answer?: Record<string, unknown>; error?: string; record?: string; recordError?: string; stderr?: string; account?: string; route?: string };
 
 // argv never carries the prompt: it goes on stdin, or (file: true) into a 0600 prompt file the argv points at.
 // done-done parses the answer, validates it against the schema, and asks a tool-less call again, at most ASK_ATTEMPTS calls.
@@ -337,10 +338,13 @@ export const noAgent = () =>
 export const modelFor = (cfg: Config, agent: string) => cfg.agent_config[agent]?.model || CHEAP[agent]?.model || '';
 
 // Everything askAgent needs from config to start one agent: its model, effort, extra flags, binary and timeout.
-export type AgentRun = { agent: string; model: string; effort: string; args: string[]; path: string; override: string; timeoutMs: number; accountCommand?: string };
+export type AgentRun = { agent: string; model: string; effort: string; args: string[]; path: string; override: string; timeoutMs: number; accountCommand?: string; pool?: ModelPool };
+// The configured model pool (judge.pool_command and its helper config), or undefined: standalone users keep today's behaviour.
+export const modelPool = (cfg: Config): ModelPool | undefined =>
+  cfg.judge.pool_command ? { command: cfg.judge.pool_command, config: cfg.judge.pool_config, binFor: (agent) => agentPath(agent, cfg) } : undefined;
 export const agentRun = (cfg: Config, agent: string, model = modelFor(cfg, agent)): AgentRun => ({
   agent, model, effort: cfg.agent_config[agent]?.effort ?? '', args: cfg.agent_args_override[agent] ?? [], path: agentPath(agent, cfg), override: cfg.agent_path_override[agent] ?? '', timeoutMs: parseDuration(cfg.agent_timeout)!,
-  ...(agent === 'claude' && cfg.judge.account_command ? { accountCommand: cfg.judge.account_command } : {}),
+  ...(agent === 'claude' && (modelPool(cfg) ? { pool: modelPool(cfg) } : cfg.judge.account_command ? { accountCommand: cfg.judge.account_command } : {})),
 });
 export const notStartable = (agent: string, override = '') => (override ? `agent_path_override.${agent} ${override} is not an executable file` : `${agent} is not on PATH`);
 
@@ -424,9 +428,22 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     let error: Error | undefined;
     let drain: NodeJS.Timeout | undefined;
     let idle: NodeJS.Timeout | undefined;
-    // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
+    // pi streams JSON events, and it echoes the whole transcript (prompt and answer included), so on stdout only an event that
+  // reports an error is a limit: never the words it was sent or wrote.
+  const piQuiet = (l: string): boolean => {
+    if (!l.trimStart().startsWith('{')) return false;
+    try {
+      const parsed = JSON.parse(l) as { type?: unknown; message?: { stopReason?: unknown } };
+      return parsed?.type !== 'error' && parsed?.message?.stopReason !== 'error';
+    } catch {
+      return false;
+    }
+  };
+  // A rate-limit line ends the call with that line, whatever the agent does next. On stdout the line must also say when it resets or retries,
     // so an answer that only quotes a 429 from the app's code does not stop the call. A claude call with images streams JSON lines,
-    // and only a rejected rate_limit_event on stdout stops it, so its complete lines are parsed one at a time.
+    // and only a rejected rate_limit_event on stdout stops it, so its complete lines are parsed one at a time. pi streams its whole
+    // transcript at the end (agent_end carries the prompt and the answer), so only its own error event is a limit there: a judge
+    // asked about rate limits must not be stopped by the words it was sent.
     let pendingStdout = '';
     const limited = (chunk: string, stdoutLine: boolean) => {
       let line: string | undefined;
@@ -437,7 +454,8 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
         pendingStdout = text.slice(end);
         line = text.slice(0, end).split('\n').find(isRejectedRateLimit);
       } else {
-        line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l)));
+        line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))
+          && (!stdoutLine || c.agent !== 'pi' || !piQuiet(l)));
         if (line) line = limitText(line);
       }
       if (!line || error) return;
@@ -507,6 +525,90 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
   });
 }
 
+// The shared model pool (Firstmate addons' account-pool/bin/fm-model-pool, protocol v1): one JSON answer per call names
+// either a Claude account folder or a fall-over route. done-done sets that account's environment for the call, and on a
+// typed limit asks the helper for the next account or route; usage credits and overage are never spent.
+export type ModelPool = { command: string; config: string; binFor: (agent: string) => string };
+// A fall-over route as this machine runs it: the helper names a route id, done-done runs the agent and model it has here.
+const POOL_ROUTES: Record<string, { agent: string; model: string }> = {
+  'route:openai-codex/gpt-6.1-sol': { agent: 'codex', model: 'gpt-6.1-sol' },
+  'route:deepseek/deepseek-goat': { agent: 'pi', model: 'commandcode/deepseek/deepseek-v4.1-flash' },
+  'route:cursor/auto': { agent: 'pi', model: 'cursor/auto' },
+};
+// A typed limit moves the call to the next account or route; usage credits and overage stop it with their own cause.
+const USAGE_CREDITS = /usage[ _-]?credits?|overage|credit balance|\bcredits?\b|insufficient (?:credits?|funds)|\b402\b/i;
+const TYPED_LIMIT = /rate[ -]?limit|usage limit|too many requests|quota exceeded|\b429\b/i;
+// One pool answer: the account whose env the call gets, or the fall-over route's agent and model, plus the raw answer `next` needs.
+type PoolPick = { id: string; set: Record<string, string>; unset: string[]; agent: string; model: string; route: boolean; raw: Record<string, unknown> };
+
+const poolKey = (p: ModelPool) => `${p.command}\0${p.config}`;
+let poolFirst: { key: string; pick: Promise<PoolPick> } | undefined; // one first answer per process, as the account command is
+let poolInUse: PoolPick | undefined; // the account or route this process is on now
+
+// One helper call: the request JSON on stdin, one answer JSON. Nothing but the configured command passes through a shell.
+function poolAsk(pool: ModelPool, verb: 'pick' | 'next', req: Record<string, unknown>): PoolPick {
+  const fail = (why: string, unavailable = false): never => {
+    throw new (unavailable ? ClaudeUnavailable : UsageError)(`judge.pool_command: ${why}`, 'Fix judge.pool_command and judge.pool_config in the global config, or remove them for plain Claude sign-in');
+  };
+  const r = spawnSync(`${pool.command} ${verb} --json`, { shell: true, encoding: 'utf8', input: JSON.stringify(req), timeout: 30_000, maxBuffer: 64 * 1024 });
+  if (r.error) fail((r.error as NodeJS.ErrnoException).code ?? 'command could not start');
+  const said = typeof r.stderr === 'string' ? errorLine(r.stderr) : '';
+  let a: any;
+  try { a = JSON.parse(r.stdout); } catch { fail(r.status === 0 ? 'invalid JSON' : `command exited ${r.status}: ${said || 'no answer'}`); }
+  const reason = typeof a?.reason === 'string' ? errorLine(a.reason) : said || 'no answer';
+  const billing = String(a?.billing_classification ?? a?.billing ?? '');
+  // The helper refuses credits-enabled accounts and routes; a call that reached one anyway is refused the same way.
+  if (USAGE_CREDITS.test(billing) || USAGE_CREDITS.test(typeof a?.reason === 'string' ? a.reason : ''))
+    fail(`the pool answered ${typeof a?.id === 'string' ? a.id : 'a route'} on usage credits or overage, which done-done never spends${reason === 'no answer' ? '' : `: ${reason}`}`);
+  if (r.status !== 0 || a?.ok !== true) fail(reason, a?.ok === false || a === null);
+  if (typeof a.id !== 'string' || !/^[A-Za-z0-9_:./-]{1,128}$/.test(a.id)) fail('invalid account or route id');
+  const set = a.set ?? {};
+  const unset = a.unset ?? [];
+  if (!set || typeof set !== 'object' || Array.isArray(set) || !Object.entries(set).every(([k, v]) => /^[A-Za-z_]\w*$/.test(k) && typeof v === 'string')) fail('set must be a map of environment variable names to strings');
+  if (!Array.isArray(unset) || !unset.every((n: unknown) => typeof n === 'string' && /^[A-Za-z_]\w*$/.test(n))) fail('unset must be a list of environment variable names');
+  if (unset.includes('CLAUDE_CONFIG_DIR')) fail('cannot unset CLAUDE_CONFIG_DIR');
+  const route = typeof a.provider === 'string' && a.provider !== 'claude';
+  // A known route id runs on the agent and model this tool has here; any other route runs its own harness when done-done knows it.
+  const mapped = route ? POOL_ROUTES[a.id] ?? (AGENTS.includes(a.harness) ? { agent: a.harness, model: String(a.model ?? '') } : undefined) : undefined;
+  if (route && !mapped) fail(`route ${a.id} names no agent done-done can run`, true);
+  if (!route) {
+    const folder = set.CLAUDE_CONFIG_DIR;
+    let directory = false;
+    try { directory = typeof folder === 'string' && isAbsolute(folder) && statSync(folder).isDirectory(); } catch {}
+    if (!directory) fail('set.CLAUDE_CONFIG_DIR must be an absolute existing folder');
+  }
+  return { id: a.id, set, unset, agent: mapped?.agent ?? 'claude', model: mapped?.model ?? '', route, raw: a };
+}
+
+// The account or fall-over route a pooled call starts on: the first answer is shared by every call in this process.
+function poolPickFor(pool: ModelPool, model: string, deadlineMs: number): Promise<PoolPick> {
+  if (poolInUse) return Promise.resolve(poolInUse);
+  const key = poolKey(pool);
+  if (poolFirst?.key !== key)
+    poolFirst = { key, pick: Promise.resolve().then(() => poolAsk(pool, 'pick', { v: 1, purpose: 'work', pool_config: pool.config, model, capabilities: ['text'], deadline: Math.floor(deadlineMs / 1000) })).then((p) => (poolInUse = p)) };
+  return poolFirst.pick;
+}
+
+// The account id or fall-over route a Claude call answers on, named in the judge's result detail; '' when none is configured.
+export async function accountDetail(cfg: Config, agent: string, model: string): Promise<string> {
+  const pool = agent === 'claude' ? modelPool(cfg) : undefined;
+  if (pool) {
+    const deadline = Date.now() + parseDuration(cfg.agent_timeout)!;
+    const attempted: string[] = [];
+    let pick = await poolPickFor(pool, model, deadline);
+    // A route this machine cannot start (Codex is out until 30 Oct, for one) is not the one that would answer, so the
+    // pre-check asks for the next one exactly as the call does, and fails closed when none can start.
+    while (pick.route && !pool.binFor(pick.agent)) {
+      if (attempted.length === 5) throw new ClaudeUnavailable(`judge.pool_command: no account or route the helper answered can start on this machine (${attempted.join(', ')})`, 'Install one of the route agents, or remove judge.pool_command and judge.pool_config');
+      attempted.push(pick.id);
+      pick = poolAsk(pool, 'next', { v: 1, purpose: 'work', pool_config: pool.config, model, capabilities: ['text'], deadline: Math.floor(deadline / 1000), selection: pick.raw, cause: 'unavailable', attempted: [...attempted] });
+    }
+    return pick.route ? `pool route ${pick.id}` : `Claude account ${pick.id}`;
+  }
+  const account = await claudeAccount(agent, cfg.judge.account_command);
+  return account ? `Claude account ${account.id}` : '';
+}
+
 // A valid picker refusal is availability, not a malformed account configuration.
 export class ClaudeUnavailable extends UsageError {}
 type ClaudeAccount = { id: string; folder: string; unset: string[] };
@@ -535,8 +637,41 @@ export function claudeAccount(agent: string, command?: string): Promise<ClaudeAc
 }
 
 export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
-  const adapter = adapterFor(c.agent);
-  const argv = (d: string) => (adapter ? [...adapter.argv(c, d), ...(c.effort ? EFFORT_FLAGS[c.agent]?.(c.effort) ?? [] : []), ...(c.args ?? [])] : []);
+  // The model pool owns the call's agent, model and account environment: a typed limit moves it to the helper's next
+  // account or fall-over route, and the call's own timeout is the one deadline that whole chain shares.
+  const deadline = Date.now() + c.timeoutMs;
+  let call = c;
+  let picked: PoolPick | undefined;
+  const attempted: string[] = [];
+  const argv = (d: string) => {
+    const adapter = adapterFor(call.agent);
+    return adapter ? [...adapter.argv(call, d), ...(call.effort ? EFFORT_FLAGS[call.agent]?.(call.effort) ?? [] : []), ...(call.args ?? [])] : [];
+  };
+  // The helper's next account or route that can run here, inside the one deadline: a route whose agent this machine cannot
+  // start (Codex is out until 30 Oct, for one) joins `attempted` and the helper is asked for the next one.
+  const poolStep = (cause: string): boolean => {
+    const pool = call.pool;
+    while (pool && picked && Date.now() + 5_000 < deadline) {
+      const prior = picked;
+      const next = poolAsk(pool, 'next', { v: 1, purpose: 'work', pool_config: pool.config, model: c.model, capabilities: ['text'], deadline: Math.floor(deadline / 1000), selection: prior.raw, cause, attempted: [...attempted] });
+      const bin = next.agent === c.agent ? c.path : pool.binFor(next.agent);
+      if (bin) {
+        picked = poolInUse = next;
+        call = { ...call, agent: next.agent, model: next.model || c.model, path: bin, effort: next.agent === c.agent ? c.effort : '' };
+        return true;
+      }
+      attempted.push(next.id);
+    }
+    return false;
+  };
+  // One move on a typed limit: the helper rests the limited account and answers the next account or fall-over route.
+  const moveOn = async (text: string): Promise<boolean> => {
+    if (!call.pool || !picked) return false;
+    if (USAGE_CREDITS.test(text)) throw new UsageError(`done-done never spends usage credits or overage: ${picked.id} answered (${errorLine(text)})`, 'Use an account or route on your plan, then re-run; nothing is charged');
+    if (!TYPED_LIMIT.test(text)) return false;
+    attempted.push(picked.id);
+    return poolStep('rate_limit');
+  };
   const started = Date.now();
   let dir = '';
   let cwd = c.cwd;
@@ -547,54 +682,75 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
   try {
     dir = mkdtempSync(join(tmpdir(), 'done-done-agent-'));
     cwd = c.tools === 'none' ? dir : c.cwd;
-    if (!adapter) throw new Error(`no adapter for ${c.agent} yet`);
-    const bin = c.path;
-    if (!bin) throw new Error(c.agent.startsWith('acp:') ? `${c.agent} needs acpx, and acpx is not startable; ${ACPX_INSTALL}` : notStartable(c.agent, c.override));
-    const account = await claudeAccount(c.agent, c.accountCommand);
-    const env: NodeJS.ProcessEnv = { ...process.env, ...c.env, ...adapter.env?.(c), ...(account && { CLAUDE_CONFIG_DIR: account.folder }) };
-    for (const name of account?.unset ?? []) delete env[name];
-    if (adapter.readsImages) for (const i of c.images ?? []) writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
-    for (const [name, text] of Object.entries(adapter.files?.(c) ?? {})) writeFileSync(join(dir, name), text, { mode: 0o600 });
+    if (call.pool) {
+      // The pool's first answer, or the next one when the route it names cannot start here.
+      const pool = call.pool;
+      picked = await poolPickFor(pool, call.model, deadline);
+      const bin = picked.agent === c.agent ? c.path : pool.binFor(picked.agent);
+      if (bin) call = { ...call, agent: picked.agent, model: picked.model || call.model, path: bin, effort: picked.agent === c.agent ? c.effort : '' };
+      else {
+        attempted.push(picked.id);
+        if (!poolStep('unavailable')) throw new ClaudeUnavailable(`judge.pool_command: no account or route the helper answered can start on this machine (${[...attempted].join(', ')})`, 'Install one of the route agents, or remove judge.pool_command and judge.pool_config');
+      }
+    }
     let lastError = '';
     for (;;) {
+      const adapter = adapterFor(call.agent);
+      if (!adapter) throw new Error(`no adapter for ${call.agent} yet`);
+      const bin = call.path;
+      if (!bin) throw new Error(call.agent.startsWith('acp:') ? `${call.agent} needs acpx, and acpx is not startable; ${ACPX_INSTALL}` : notStartable(call.agent, call.override));
+      const account = call.accountCommand ? await claudeAccount(call.agent, call.accountCommand) : undefined;
+      const env: NodeJS.ProcessEnv = { ...process.env, ...call.env, ...adapter.env?.(call), ...(account && { CLAUDE_CONFIG_DIR: account.folder }) };
+      for (const name of account?.unset ?? []) delete env[name];
+      if (picked) {
+        for (const [name, value] of Object.entries(picked.set)) env[name] = value;
+        for (const name of picked.unset) delete env[name];
+      }
+      if (adapter.readsImages) for (const i of call.images ?? []) writeFileSync(join(dir, i.name), i.bytes, { mode: 0o600 });
+      for (const [name, text] of Object.entries(adapter.files?.(call) ?? {})) writeFileSync(join(dir, name), text, { mode: 0o600 });
       attempts++;
       // An ask-again names what was wrong with the last answer. The trailer ends on words, not the schema: a weak model
       // (seen with one opencode model) copied a schema that closed the prompt back as its answer.
-      const schemaTrailer = `\n\nAnswer with only one JSON object that matches this JSON schema:\n${JSON.stringify(c.schema)}\nThat object holds your own values, never the schema itself, and you send no other text.\n`;
-      const prompt = c.tools === 'edit' && adapter.editNote ? `${c.prompt}\n\n${adapter.editNote}` : c.prompt;
+      const schemaTrailer = `\n\nAnswer with only one JSON object that matches this JSON schema:\n${JSON.stringify(call.schema)}\nThat object holds your own values, never the schema itself, and you send no other text.\n`;
+      const prompt = call.tools === 'edit' && adapter.editNote ? `${call.prompt}\n\n${adapter.editNote}` : call.prompt;
       const promptText = (attempts === 1 ? prompt : `${prompt}\n\nYour previous answer was not valid (${lastError}).`) + schemaTrailer;
       if (adapter.file) writeFileSync(join(dir, 'prompt.md'), promptText, { mode: 0o600 });
-      const input = adapter.file ? '' : adapter.stdin ? adapter.stdin(c, promptText) : promptText;
-      res = await start(bin, argv(dir), c, cwd, input, env, adapter.streams ? c.idleMs ?? AGENT_IDLE_MS : 0);
-      if (res.error) throw res.error;
+      const input = adapter.file ? '' : adapter.stdin ? adapter.stdin(call, promptText) : promptText;
+      const remain = Math.max(1_000, Math.min(call.timeoutMs, deadline - Date.now()));
+      res = await start(bin, argv(dir), { ...call, timeoutMs: remain }, cwd, input, env, adapter.streams ? call.idleMs ?? AGENT_IDLE_MS : 0);
+      if (res.error) {
+        if (await moveOn(res.error.message)) { attempts--; continue; }
+        throw res.error;
+      }
       // A permission the run refused explains a call with no answer; name it rather than the exit code text.
       const refused = adapter.reject?.(String(res.stderr ?? '')) ?? '';
-      if (res.status !== 0 && refused) throw new ProviderError(refused, `${c.agent} exited ${res.status}: `);
+      if (res.status !== 0 && refused) throw new ProviderError(refused, `${call.agent} exited ${res.status}: `);
       if (res.status !== 0) {
         // An agent that exits non-zero may still say why in its own output (claude: a usage limit, a bad model).
         let text = String(res.stderr || res.stdout).trim().slice(-500);
         try {
-          adapter.answer(String(res.stdout), c);
+          adapter.answer(String(res.stdout), call);
         } catch (e) {
           if (e instanceof ProviderError) text = e.detail;
           else if (!(e instanceof SyntaxError)) text = (e as Error).message;
         }
-        throw new ProviderError(text, `${c.agent} exited ${res.status}: `, adapter.hint && c.tools !== 'none' ? `; ${adapter.hint}` : '');
+        if (await moveOn(text)) { attempts--; continue; }
+        throw new ProviderError(text, `${call.agent} exited ${res.status}: `, adapter.hint && call.tools !== 'none' ? `; ${adapter.hint}` : '');
       }
       try {
-        const answer = adapter.answer(String(res.stdout), c);
+        const answer = adapter.answer(String(res.stdout), call);
         if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error(`the answer is not a JSON object: ${JSON.stringify(answer)}`);
-        const missing = (c.schema.required ?? []).filter((k) => !(k in answer));
+        const missing = (call.schema.required ?? []).filter((k) => !(k in answer));
         if (missing.length) throw new Error(`the answer does not match the schema (missing ${missing.join(', ')}): ${JSON.stringify(answer).slice(0, 200)}`);
-        out = { ok: true, answer: answer as Record<string, unknown> };
+        out = { ok: true, answer: answer as Record<string, unknown>, ...(picked && (picked.route ? { route: picked.id } : { account: picked.id })) };
         break;
       } catch (e) {
         if (e instanceof ProviderError) throw e;
         // A refused permission is why there is no usable answer, not a bad answer: name it instead of "no JSON object".
-        if (refused) throw new ProviderError(refused, `${c.agent} did not finish: `);
+        if (refused) throw new ProviderError(refused, `${call.agent} did not finish: `);
         // Only a tool-less call is asked again: an edit or read step may already have changed the repo or read it.
         lastError = (e as Error).message;
-        if (c.tools !== 'none' || attempts >= (c.attempts ?? ASK_ATTEMPTS)) throw new Error(`the agent did not answer with valid JSON after ${attempts} ${attempts === 1 ? 'try' : 'tries'}: ${lastError}`);
+        if (call.tools !== 'none' || attempts >= (call.attempts ?? ASK_ATTEMPTS)) throw new Error(`the agent did not answer with valid JSON after ${attempts} ${attempts === 1 ? 'try' : 'tries'}: ${lastError}`);
       }
     }
   } catch (e) {
@@ -602,16 +758,16 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
     // carries its own line, so it is left as it is.
     const said = stderrHead(String(res?.stderr ?? ''));
     const provider = e instanceof ProviderError;
-    const note = (text: string) => (!provider && said && !text.includes(said.split(' | ')[0]) ? `${text}; ${c.agent} stderr: ${said}` : text);
+    const note = (text: string) => (!provider && said && !text.includes(said.split(' | ')[0]) ? `${text}; ${call.agent} stderr: ${said}` : text);
     out = { ok: false, error: note((e as Error).message), ...(!provider && said ? { stderr: said } : {}) };
     failure = note(e instanceof ProviderError ? e.detail : (e as Error).message);
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
   // The record holds what ran and what came back, never the prompt text or an image.
-  const { prompt, images, ...call } = c;
+  const { prompt, images, pool, ...spec } = c;
   try {
-    const record = { ...call, ...(images && { images: images.map((i) => i.name) }), cwd, prompt_bytes: Buffer.byteLength(prompt), argv: argv('<tmp>'), ms: Date.now() - started, exit: res?.status ?? null, attempts, ...out, error: failure, stderr: String(res?.stderr ?? '').slice(-2000) };
+    const record = { ...spec, agent: call.agent, model: call.model, ...(picked && (picked.route ? { route: picked.id } : { account: picked.id })), ...(images && { images: images.map((i) => i.name) }), cwd, prompt_bytes: Buffer.byteLength(prompt), argv: argv('<tmp>'), ms: Date.now() - started, exit: res?.status ?? null, attempts, ...out, error: failure, stderr: String(res?.stderr ?? '').slice(-2000) };
     mkdirSync(dirname(c.record), { recursive: true });
     writeFileSync(c.record, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
     out = { ...out, record: c.record };

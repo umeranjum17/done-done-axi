@@ -118,6 +118,7 @@ const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME mo
   global only: agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
   (extra flags), agent_path_override.<agent> (binary), acpx_path, agent_timeout (one agent call, default 30m; a streaming agent that prints nothing for 5m is stopped early),
   judge.account_command (optional Claude account pick; exported CLAUDE_CONFIG_DIR wins),
+  judge.pool_command with judge.pool_config (optional shared model pool: the Claude account, a move on a rate/usage limit, and a fall-over route),
   judge.fallback_route (optional second judge, same values as judge.route; Claude usage/rate/sign-in limits or an empty pool trigger it;
   e.g. answerer:pi with agent_config.pi.model: openai-codex/gpt-6.1-sol; unset keeps Claude failures as errors; no fallback chains),
   evidence.local_root, judge.{route,model,floor} (the judge and shared confidence floor, set by the user with

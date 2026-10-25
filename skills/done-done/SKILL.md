@@ -98,6 +98,8 @@ fresh session of its own, looks at each capture. `check` and `receipt` start the
 and nothing turns it off: there is no result without it. When it says no judge is set, ask the user which
 judge (and model) to use and save their answer with the command it prints; never choose one for them. When
 the judge fails, report its error to the user; never call the work proven without a judge pass.
+An optional shared model pool (`judge.pool_command` and `judge.pool_config`) picks the Claude account, moves on a rate or usage
+limit, and falls over to DeepSeek Goat or Cursor auto; results name the account or route that answered, and usage credits are never spent.
 An explicitly configured `judge.fallback_route` can judge when Claude has no eligible account, sign-in or usage left;
 `answerer:pi` with `agent_config.pi.model: openai-codex/gpt-6.1-sol` uses the existing Codex login.
 Read `done-done --help` for fallback configuration; results name the route that actually answered.
