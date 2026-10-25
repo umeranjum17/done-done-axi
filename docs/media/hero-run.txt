@@ -1,0 +1,41 @@
+$ done-done run greet
+command: run
+result: recorded
+run_id: 20261025T030357Z-eb28807b-e625fc
+commit: eb28807b359e31d9a4e7ef5cad31aaafa7e4a4aa
+dirty: false
+files: 1
+record: ~/.done-done/evidence/sample/.done-done/runs/20261025T030357Z-eb28807b-e625fc.json
+evidence[1]: 20261025T030357Z-eb28807b-e625fc.terminal.txt
+
+$ done-done check --outcome "running greet.mjs with Umer prints Hello Umer" "$evidence"
+command: check
+result: pass
+claim: running greet.mjs with Umer prints Hello Umer
+files: 1
+evidence[1]: 20261025T030357Z-eb28807b-e625fc.terminal.txt
+judge:
+  route: "answerer:pi"
+  model: openai-codex/gpt-6.1-sol
+  independence: agent
+  author: claude (model claude-haiku-5-5)
+  judged[1]{path,verdict,reason,cached}:
+    20261025T030357Z-eb28807b-e625fc.terminal.txt,pass,"The capture shows node greet.mjs Umer printing Hello Umer, matching the stated outcome.",false
+  note: "PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not"
+
+$ done-done receipt --outcome "running greet.mjs with Umer prints Hello Umer" "$evidence"
+command: receipt
+result: pass
+head: eb28807b359e31d9a4e7ef5cad31aaafa7e4a4aa
+tree: 1139f9846db53ff2fb289d7e2061e3707a19f199
+claim: running greet.mjs with Umer prints Hello Umer
+files: 1
+receipt: ~/.done-done/evidence/sample/.done-done/receipts/eb28807b359e31d9a4e7ef5cad31aaafa7e4a4aa.json
+judge:
+  route: "answerer:pi"
+  model: openai-codex/gpt-6.1-sol
+  independence: agent
+  author: claude (model claude-haiku-5-5)
+  judged[1]{path,verdict,reason,cached}:
+    20261025T030357Z-eb28807b-e625fc.terminal.txt,pass,"The capture shows node greet.mjs Umer printing Hello Umer, matching the stated outcome.",true
+  note: "PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not"

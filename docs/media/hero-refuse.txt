@@ -1,0 +1,4 @@
+$ done-done init --journey tests -- 'npm test'
+command: init
+error: "init --journey tests: npm test is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works, so check and gate never count its run as proof; nothing was written"
+exit: 2
