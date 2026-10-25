@@ -53,7 +53,7 @@ export type Config = {
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
-  judge: { route: string; model: string; floor: number; env_file: string; account_command: string };
+  judge: { route: string; fallback_route: string; model: string; floor: number; env_file: string; account_command: string };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -61,7 +61,7 @@ export type Config = {
 // The coding agents a user can set as agent.
 export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // The agents whose CLI can read an attached image with every tool off, so they judge through the answerer route;
-// claude judges through claude-code. An acp:<target> agent cannot be sent an image. Codex image judging is not implemented.
+// claude judges through claude-code. An acp:<target> agent cannot be sent an image. Native Codex image judging is not implemented; use answerer:pi with openai-codex/<model>.
 export const ANSWERER_JUDGES = ['opencode', 'pi', 'gemini'];
 // BYOKit key routes: a judge on the user's own API key, read from this environment variable, with no agent CLI.
 // openai:key needs judge.model; a route with a model here runs it when judge.model is empty (the free MiniMax route).
@@ -133,6 +133,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.floor': { scope: 'global', type: 'number' },
   'judge.env_file': { scope: 'global', type: 'string' },
   'judge.account_command': { scope: 'global', type: 'string' },
+  'judge.fallback_route': { scope: 'global', type: 'route' },
 };
 const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
@@ -352,7 +353,7 @@ function defaultConfig(repo: string): Config {
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
-    judge: { route: '', model: '', floor: 0.7, env_file: '', account_command: '' },
+    judge: { route: '', fallback_route: '', model: '', floor: 0.7, env_file: '', account_command: '' },
     trusted: false,
     from: {},
   };
@@ -433,6 +434,8 @@ evidence:
 judge:
   # Which agent judges: claude-code (claude) or answerer:opencode. Any agent and model you choose, the author's own too.
   # route: answerer:opencode
+  # Optional second judge when Claude has no eligible account, sign-in or usage left; its agent_config model is used.
+  # fallback_route: answerer:pi       # agent_config.pi.model: openai-codex/gpt-6.1-sol
   # The judge's model; empty means that agent's agent_config model, or Luna for pi.
   model: ""
   # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.

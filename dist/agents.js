@@ -397,10 +397,10 @@ export function selectJudge(cfg, found) {
         : agent !== knownAgentOf(found.agent) ? 'agent' : found.model && model !== found.model ? 'model' : 'session-only';
     return { route, agent, model, independence, author: { agent: found.agent, model: found.model } };
 }
-// The judge that answers when the set route's call fails (FALLBACK_ROUTES), at that agent's own default model; none for a route with no fallback.
+// One configured second route, else the legacy MiniMax fallback; use its own model, never the primary's.
 export function selectFallback(cfg, found) {
-    const route = FALLBACK_ROUTES[cfg.judge.route];
-    return route ? selectJudge({ ...cfg, judge: { ...cfg.judge, route, model: '' } }, found) : undefined;
+    const route = cfg.judge.fallback_route || FALLBACK_ROUTES[cfg.judge.route];
+    return route && route !== cfg.judge.route ? selectJudge({ ...cfg, judge: { ...cfg.judge, route, model: '' } }, found) : undefined;
 }
 const DRAIN_MS = 500;
 const OUTPUT_CAP = 64 << 20;
@@ -510,13 +510,16 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
         child.stdin.end(input);
     });
 }
+// A valid picker refusal is availability, not a malformed account configuration.
+export class ClaudeUnavailable extends UsageError {
+}
 let accountPick;
 // One pick (including failure) per process, shared by readers, drives and the judge; never change the caller's env.
 export function claudeAccount(agent, command) {
     if (agent !== 'claude' || !command || process.env.CLAUDE_CONFIG_DIR !== undefined)
         return Promise.resolve(undefined);
     return accountPick ??= Promise.resolve().then(() => {
-        const fail = (why) => { throw new UsageError(`judge.account_command: ${why}`, 'Fix judge.account_command in the global config, or export CLAUDE_CONFIG_DIR for this call'); };
+        const fail = (why, unavailable = false) => { throw new (unavailable ? ClaudeUnavailable : UsageError)(`judge.account_command: ${why}`, 'Fix judge.account_command in the global config, or export CLAUDE_CONFIG_DIR for this call'); };
         const r = spawnSync(command, { shell: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 });
         if (r.error)
             fail(r.error.code ?? 'command could not start');
@@ -528,9 +531,9 @@ export function claudeAccount(agent, command) {
             fail(r.status === 0 ? 'invalid JSON' : `command exited ${r.status}: ${errorLine(r.stderr) || 'no pick returned'}`);
         }
         if (r.status !== 0)
-            fail(`command exited ${r.status}: ${typeof pick?.reason === 'string' ? errorLine(pick.reason) : errorLine(r.stderr) || 'no pick returned'}`);
+            fail(`command exited ${r.status}: ${typeof pick?.reason === 'string' ? errorLine(pick.reason) : errorLine(r.stderr) || 'no pick returned'}`, pick?.ok === false || pick === null);
         if (pick?.ok !== true)
-            fail(typeof pick?.reason === 'string' ? errorLine(pick.reason) : 'ok must be true');
+            fail(typeof pick?.reason === 'string' ? errorLine(pick.reason) : 'ok must be true', pick?.ok === false || pick === null);
         if (typeof pick.id !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(pick.id))
             fail('invalid account id');
         const folder = pick.set?.CLAUDE_CONFIG_DIR;

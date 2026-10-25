@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
-import { agentRun, askAgent, claudeAccount, notStartable } from './agents.js';
+import { agentRun, askAgent, claudeAccount, ClaudeUnavailable, notStartable } from './agents.js';
 import { home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
@@ -225,10 +225,11 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
     catch (e) {
         const why = be.lastError() || e.message;
         if (choice.route === 'claude-code' && /not logged in/i.test(why))
-            throw new UsageError(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
+            throw new ClaudeUnavailable(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
         const freeTier = choice.agent === 'opencode' && /free tier can only be used from within OpenCode/.test(why);
         const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
-        throw new UsageError(`judge: the judge did not answer: ${why}${hint}`, again);
+        const Failure = choice.route === 'claude-code' && /rate.?limit|usage.?limit|not signed in|(?:every|all|no eligible).*account.*(?:floor|limit|available)/i.test(why) ? ClaudeUnavailable : UsageError;
+        throw new Failure(`judge: the judge did not answer: ${why}${hint}`, again);
     }
     const bad = malformed(answers);
     if (bad.length)
@@ -274,11 +275,12 @@ export async function judge(cfg, choose, outcome, captures, records, fallback) {
         return await judgeOn(cfg, choose, outcome, captures, records);
     }
     catch (e) {
-        const next = e instanceof UsageError && fallback?.();
+        const next = e instanceof UsageError && (choose().route !== 'claude-code' || e instanceof ClaudeUnavailable) && fallback?.();
         if (!next)
             throw e;
         try {
-            return await judgeOn(cfg, () => next, outcome, captures, records);
+            const result = await judgeOn(cfg, () => next, outcome, captures, records);
+            return { ...result, detail: `${next.route} answered after ${choose().route} unavailable${result.detail ? `; ${result.detail}` : ''}` };
         }
         catch (again) {
             if (!(again instanceof UsageError))
