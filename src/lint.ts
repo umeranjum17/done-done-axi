@@ -60,6 +60,25 @@ function without(a: Lines, b: Lines): Lines {
 }
 const total = (n: Lines) => [...n.values()].reduce((sum, c) => sum + c, 0);
 const stdout = (r: ReturnType<Gh>) => (r.status === 0 ? r.stdout.trim() : '');
+const worst = (r: ReturnType<Gh>) => r.stderr.trim().split('\n').pop()?.slice(0, 160) || '?';
+
+// `gh pr view --json files` stops at 100 files, so the whole list comes from the paginated pull-files endpoint instead.
+// GitHub stops that endpoint at 3000 files, so page 30 being full is already past what it will list.
+const MAX_PAGES = 30;
+function prFiles(run: Gh, nwo: string, num: string): { paths?: string[]; why?: string } {
+  const paths: string[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const call = `repos/${nwo}/pulls/${num}/files?per_page=100&page=${page}`;
+    const r = run('api', call);
+    if (r.status) return { why: `${call} failed: ${worst(r)}` };
+    let files: { path?: string }[];
+    try { files = JSON.parse(r.stdout); } catch { return { why: `${call} returned no file list` }; }
+    if (!Array.isArray(files)) return { why: `${call} returned no file list` };
+    for (const f of files) if (f.path) paths.push(f.path);
+    if (files.length < 100) return { paths };
+  }
+  return { why: `${nwo}/pulls/${num}/files is still full on page ${MAX_PAGES}: more files than lint can count` };
+}
 
 // checks.upstream_catch_up: lines the fork's parent repo already shipped are not authored here, so subtract the upstream delta the PR
 // merges in (PR base ... the merge base with the parent's default branch). A plain fork PR merges no new upstream commit, so its delta
@@ -104,8 +123,8 @@ export function lint(src: string, ev: string, dir: string, rules: Rules = {}, ru
     body = readFileSync(src, 'utf8');
     task = basename(dirname(resolve(src)));
   } else {
-    const r = run('pr', 'view', src, '--json', 'author,body,title,files,headRefOid,headRefName,baseRefOid');
-    if (r.status) return log({ ok: false, why: `gh pr view failed: ${r.stderr.trim().split('\n').pop()?.slice(0, 160) || '?'}`, head });
+    const r = run('pr', 'view', src, '--json', 'author,body,title,headRefOid,headRefName,baseRefOid');
+    if (r.status) return log({ ok: false, why: `gh pr view failed: ${worst(r)}`, head });
     const pr = JSON.parse(r.stdout);
     ({ body, title } = { body: pr.body ?? '', title: pr.title ?? '' });
     head = pr.headRefOid ?? '-';
@@ -113,20 +132,22 @@ export function lint(src: string, ev: string, dir: string, rules: Rules = {}, ru
     const author: string = pr.author?.login ?? '';
     if (/^(app\/)?(dependabot|renovate)(\[bot\])?$/.test(author)) return log({ ok: true, why: 'bot', head });
     const nwo = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\//.exec(src)?.[1];
-    const attrs = nwo && [head, pr.baseRefOid].map((ref) => ref && run('api', '-H', 'Accept: application/vnd.github.raw', `repos/${nwo}/contents/.gitattributes?ref=${ref}`)).find((a) => a && a.status === 0);
+    const num = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/.exec(src)?.[1];
+    if (!nwo || !num) return log({ ok: false, why: `not a GitHub pull URL: ${src.slice(0, 120)}`, head });
+    const listed = prFiles(run, nwo, num);
+    if (!listed.paths) return log({ ok: false, why: listed.why ?? 'the pull file list failed', head });
+    const paths = listed.paths;
+    const attrs = [head, pr.baseRefOid].map((ref) => ref && run('api', '-H', 'Accept: application/vnd.github.raw', `repos/${nwo}/contents/.gitattributes?ref=${ref}`)).find((a) => a && a.status === 0);
     if (attrs) { const byAttr = attrGenerated(attrs.stdout); isGenerated = (p) => byConfig(p) || byAttr(p); }
-    const paths: string[] = (pr.files ?? []).map((f: { path?: string }) => f.path ?? '');
     if (paths.some((p) => p.startsWith('src/')) && !paths.some((p) => p.startsWith('journeys/'))) warn = 'the diff changes src/ and no journeys/ file: run the journey, commit it, then open the PR';
-    let size = (pr.files ?? []).reduce((n: number, f: { path?: string; additions?: number }) => n + (isGenerated(f.path ?? '') ? 0 : f.additions ?? 0), 0);
-    if (size >= SIZE_LIMIT) {
-      const d = run('pr', 'diff', src);
-      if (!d.status) {
-        let net = netLines(d.stdout, isGenerated);
-        if (nwo && rules.upstream_catch_up && total(net) >= SIZE_LIMIT) net = without(net, upstreamDelta(run, nwo, head, pr.baseRefOid ?? '', isGenerated));
-        if (nwo && rules.moved_from && total(net) >= SIZE_LIMIT) net = without(net, movedLines(run, nwo, body, (pr.files ?? []).map((f: { path?: string }) => f.path ?? ''), isGenerated));
-        size = total(net);
-      }
-    }
+    // The PR's whole net comes from the compare diff (three dots: from the merge base), never from the per-file additions.
+    const cmp = `repos/${nwo}/compare/${pr.baseRefOid ?? ''}...${head}`;
+    const d = run('api', '-H', 'Accept: application/vnd.github.diff', cmp);
+    if (d.status) return log({ ok: false, why: `${cmp} failed: ${worst(d)}`, head });
+    let net = netLines(d.stdout, isGenerated);
+    if (rules.upstream_catch_up && total(net) >= SIZE_LIMIT) net = without(net, upstreamDelta(run, nwo, head, pr.baseRefOid ?? '', isGenerated));
+    if (rules.moved_from && total(net) >= SIZE_LIMIT) net = without(net, movedLines(run, nwo, body, paths, isGenerated));
+    const size = total(net);
     if (size >= SIZE_LIMIT) return log({ ok: false, why: `${size} added non-generated lines (moved lines excluded): split it (limit ${SIZE_LIMIT})`, head });
   }
   const fail = (why: string) => log({ ok: false, why, head });

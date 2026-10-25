@@ -23,7 +23,9 @@ try {
     files: [{ path: 'gen/schema.js', additions: 1100 }],
     body: '## Checks\noutcome: the schema is regenerated\nrepro: n/a: no bug\nproof: no verify skill - done-done lint\nevidence: not proven: fixture\n',
   }));
-  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in\n  "pr view"*) cat ${JSON.stringify(join(tmp, 'pr.json'))} ;;\n  "pr diff"*) cat ${JSON.stringify(join(tmp, 'pr.diff'))} ;;\n  *) echo "unexpected gh $*" >&2; exit 1 ;;\nesac\n`, { mode: 0o755 });
+  writeFileSync(join(tmp, 'files.json'), JSON.stringify([{ path: 'gen/schema.js' }]));
+  // A stand-in gh: the PR for its body, its file list in pages of 100, and its compare diff.
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\ncase "$*" in\n  "pr view"*) cat ${JSON.stringify(join(tmp, 'pr.json'))} ;;\n  *"compare/base1...head1"*) cat ${JSON.stringify(join(tmp, 'pr.diff'))} ;;\n  *) cat ${JSON.stringify(join(tmp, 'files.json'))} ;;\nesac\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, DONE_DONE_HOME: join(tmp, 'home') };
 
   const panel = (title, config, out, code, ok) => `<div style="flex:1;padding:0 14px"><div style="font:bold 20px sans-serif;margin-bottom:10px">${title}</div>
