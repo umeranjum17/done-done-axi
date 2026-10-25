@@ -1,0 +1,41 @@
+$ done-done run greet
+command: run
+result: recorded
+run_id: 20261025T033042Z-ca783630-43267e
+commit: ca783630026370864950bce53bc5efab802d29d6
+dirty: false
+files: 1
+record: ~/.done-done/evidence/sample/.done-done/runs/20261025T033042Z-ca783630-43267e.json
+evidence[1]: 20261025T033042Z-ca783630-43267e.terminal.txt
+
+$ done-done check --outcome "running greet.mjs with Umer prints Hello Umer" "$evidence"
+command: check
+result: pass
+claim: running greet.mjs with Umer prints Hello Umer
+files: 1
+evidence[1]: 20261025T033042Z-ca783630-43267e.terminal.txt
+judge:
+  route: "answerer:pi"
+  model: commandcode/deepseek/deepseek-v4.1-flash
+  independence: agent
+  author: claude (model claude-haiku-5-5)
+  judged[1]{path,verdict,reason,seen,cached}:
+    20261025T033042Z-ca783630-43267e.terminal.txt,pass,The output shows running greet.mjs with Umer and printing Hello Umer.,"I read the single capture entry. The command line \"$ node greet.mjs Umer\" runs greet.mjs with Umer, and the following output line \"Hello Umer\" matches the outcome exactly, with no error or contradiction.",false
+  note: "PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not"
+
+$ done-done receipt --outcome "running greet.mjs with Umer prints Hello Umer" "$evidence"
+command: receipt
+result: pass
+head: ca783630026370864950bce53bc5efab802d29d6
+tree: 3dff6448314deb0fe0325786bc9a7c2369366be6
+claim: running greet.mjs with Umer prints Hello Umer
+files: 1
+receipt: ~/.done-done/evidence/sample/.done-done/receipts/ca783630026370864950bce53bc5efab802d29d6.json
+judge:
+  route: "answerer:pi"
+  model: commandcode/deepseek/deepseek-v4.1-flash
+  independence: agent
+  author: claude (model claude-haiku-5-5)
+  judged[1]{path,verdict,reason,seen,cached}:
+    20261025T033042Z-ca783630-43267e.terminal.txt,pass,The output shows running greet.mjs with Umer and printing Hello Umer.,"I read the single capture entry. The command line \"$ node greet.mjs Umer\" runs greet.mjs with Umer, and the following output line \"Hello Umer\" matches the outcome exactly, with no error or contradiction.",true
+  note: "PNG and JPEG screens and text captures (logs, JSON, CLI output) are judged; video and other files are not"
