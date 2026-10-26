@@ -287,8 +287,9 @@ esac
   // init refuses a journey that only wraps the test script, and writes nothing.
   assert.match(drive(2, 'init', '--journey', 'check', '--', 'yarn run check > $DONE_DONE_EVIDENCE_ROOT/check.log'), /is code-only: a test, typecheck, lint or build run proves the code checks pass, not that the product works/);
   assert.equal(readFileSync(join(repo, '.done-done.yaml'), 'utf8'), config, 'init wrote nothing');
-  // The step record: a wrapper script that only runs the unit suite and logs it cannot satisfy a pane claim, a real CLI transcript
-  // still satisfies a CLI claim, and a run recorded before step records keeps working with a warning.
+  // The step record: a wrapper script that only runs the unit suite and logs it. The record's words are never matched to the
+  // claim's, so the pane claim reaches the stub judge; the record itself is still required, and a run recorded before step
+  // records keeps working with a warning.
   const withSteps = (rec) => `import { writeFileSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT;\n${rec}writeFileSync(out + '/steps.json', JSON.stringify(steps));\n`;
   writeFileSync(join(repo, 'wrapper.mjs'), withSteps(`writeFileSync(out + '/suite.log', 'ok 42 tests passed\\n');\nconst steps = { target: { version: '1.0.0' }, start: 'the repo checkout', steps: ['ran the unit suite'], result: '42 tests passed' };\n`));
   writeFileSync(join(repo, 'fixture-cli.mjs'), withSteps(`writeFileSync(out + '/greet.txt', '$ fixture-cli greet\\nhello\\n');\nconst steps = { target: { version: '1.0.0' }, start: 'fixture-cli installed, no config', steps: ['run fixture-cli greet'], result: 'fixture-cli greet prints hello' };\n`));
@@ -296,7 +297,15 @@ esac
   sh('add', '-A');
   sh('commit', '-qm', 'wrapper and cli journeys');
   const wrapRun = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'wrapper'))[1];
-  assert.match(drive(2, 'check', '--outcome', 'a user can attach to a pane and see its output', join(home, 'evidence', 'fixture', wrapRun, 'suite.log')), /no cited capture comes from a run whose step record covers the claim.*never mentions attach, pane/);
+  const wrapLog = join(home, 'evidence', 'fixture', wrapRun, 'suite.log');
+  dd('check', '--outcome', 'a user can attach to a pane and see its output', wrapLog);
+  // Remove the record and the same claim is refused before the judge, never guessed at.
+  const wrapRecord = join(home, 'evidence', 'fixture', '.done-done', 'runs', `${wrapRun}.json`);
+  const wrapKept = readFileSync(wrapRecord, 'utf8');
+  const { steps: wrapSteps, ...wrapBare } = JSON.parse(wrapKept);
+  writeFileSync(wrapRecord, JSON.stringify(wrapBare));
+  assert.match(drive(2, 'check', '--outcome', 'a user can attach to a pane and see its output', wrapLog), new RegExp(`no cited capture comes from a run with a well-formed step record: run ${wrapRun} has no step record`));
+  writeFileSync(wrapRecord, wrapKept);
   const cliRun = /run_id:\s*"?([^\s"]+)"?/.exec(dd('run', 'cli'))[1];
   dd('check', '--outcome', 'fixture-cli greet prints hello', join(home, 'evidence', 'fixture', cliRun, 'greet.txt'));
   const recFile = join(home, 'evidence', 'fixture', '.done-done', 'runs', `${cliRun}.json`);

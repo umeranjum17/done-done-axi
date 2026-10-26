@@ -860,8 +860,11 @@ async function runCheck(argv, run) {
             findings.push({ level: 'fail', why: `${name}: byte-identical to ${seen.get(hash)}` });
         if (!pair)
             seen.set(hash, name);
-        // A file in the evidence root is claimed by the record that lists its path; a copy elsewhere, by its bytes.
-        const claims = records.filter((r) => r.files.some((f) => f.sha256 === hash && (inRoot === null || f.path === inRoot)));
+        // A file in the evidence root is claimed by the record that lists its path; any other copy is claimed by its bytes, so a
+        // sealed or renamed copy of a run's own file still ties to that run. The path is only a tie-breaker between records.
+        const byHash = records.filter((r) => r.files.some((f) => f.sha256 === hash));
+        const byPath = inRoot === null ? [] : byHash.filter((r) => r.files.some((f) => f.path === inRoot));
+        const claims = byPath.length ? byPath : byHash;
         if (!claims.length && inRoot !== null) {
             const edited = records.filter((r) => r.files.some((f) => f.path === inRoot));
             if (edited.length) {
@@ -947,9 +950,10 @@ async function runCheck(argv, run) {
     const codeRuns = runs.size ? runsFault([...runs.values()]) : null;
     if (codeRuns)
         findings.push({ level: 'fail', why: codeRuns });
-    // The user steps behind the captures: a cited real run needs a step record covering the claim. Runs from before step records warn.
+    // The user steps behind the captures: a cited real run needs a well-formed step record (its words are never matched to the
+    // claim's: what the captures show is the judge's call). Runs from before step records warn.
     if (claim && runs.size && !codeRuns) {
-        const s = stepsFault([...runs.values()], claim.outcome);
+        const s = stepsFault([...runs.values()]);
         if (s.fault)
             findings.push({ level: 'fail', why: s.fault });
         if (s.warning)
@@ -1127,11 +1131,11 @@ function receiptFault(rec, short) {
     const code = runsFault(rec.runs);
     if (code)
         return `receipt for ${short} is no real-product proof: ${code}`;
-    const steps = stepsFault(rec.runs, rec.claim);
-    return steps.fault ? `receipt for ${short} has no step record covering its claim: ${steps.fault}` : null;
+    const steps = stepsFault(rec.runs);
+    return steps.fault ? `receipt for ${short} has no well-formed step record: ${steps.fault}` : null;
 }
 // The warning a well-formed receipt still carries: its runs were recorded before step records.
-const receiptWarning = (rec) => stepsFault(rec.runs, rec.claim).warning;
+const receiptWarning = (rec) => stepsFault(rec.runs).warning;
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
 function verifyReceipt(repo, cfg, headArg) {
