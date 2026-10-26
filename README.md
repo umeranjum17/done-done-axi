@@ -29,7 +29,7 @@ The last line is your first result: your agent drives the real app, a fresh judg
 
 [Website](https://umeranjum17.github.io/done-done-axi/) · [Quick start](#quick-start) · [Why](#why-not-just-green-tests) · [Reference](docs/reference.md) · [npm](https://www.npmjs.com/package/done-done-axi)
 
-[![npm](https://img.shields.io/npm/v/done-done-axi?label=done-done&color=5754d7)](https://www.npmjs.com/package/done-done-axi) [![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-3fb950)](https://nodejs.org) [![Early preview](https://img.shields.io/badge/status-preview-d29922)](#whats-next)
+[![npm](https://img.shields.io/npm/v/done-done-axi?label=done-done&color=5754d7)](https://www.npmjs.com/package/done-done-axi) [![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-3fb950)](https://nodejs.org) [![Early preview](https://img.shields.io/badge/status-preview-d29922)](#whats-next) [![X @umership](https://img.shields.io/badge/X-@umership-000000?logo=x&logoColor=white)](https://x.com/umership)
 
 </div>
 
