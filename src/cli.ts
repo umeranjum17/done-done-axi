@@ -115,6 +115,9 @@ const DOCTOR_TEXT = `doctor changes nothing except the --probe call record (the 
   judge_choice (the judge, and how far it is from the author: another agent, another model, or session-only), ffprobe (video evidence only).
   --probe also asks the agent one JSON-schema question (one call at the agent's model: its cheap default where it has one, else its own; set agent_config.<agent>.model to choose; its record goes to
   $DONE_DONE_HOME/agents/) and then requires a valid answer.
+  --setup is install health: the required rows are git, config, evidence_root, agent and judge, and the verify skill
+  or a repo with no journeys yet is a warning, never a failure. real_product, core_journey and upgrade_journey report
+  skipped (--setup) until the user records one; plain doctor requires them.
   doctor lists every check; --full changes nothing. A missing verify_skill or ffprobe, or a warning, never fails it.`;
 const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME moves it) and .done-done.yaml (the repo), repo over global.
   agent (either file): claude, codex, opencode, pi, gemini or acp:<target>, set by the user (done-done init --agent); done-done never picks one.
@@ -164,6 +167,8 @@ const FLAGS: Record<string, string> = {
   '--model <model>': 'with --agent: that agent\'s model, saved as agent_config.<agent>.model (opencode: provider/model)',
   '--judge <agent>': `the judge done-done starts (${JUDGES.join(' or ')}), saved as judge.route in ~/.done-done/config.yaml (any agent and model, the author's own too); without it, init asks in a terminal`,
   '--judge-model <model>': 'with --judge <agent>: the judge\'s model, saved as judge.model',
+  '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init',
+  '--setup': 'install health: git, config, evidence_root, agent and judge only; the verify skill and a repo with no journeys are warnings, and the journey rows are skipped',
   '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
   '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
   '--hook <agent>': 'also add a SessionStart hook to .claude/settings.json (claude), .codex/hooks.json (codex) or .gemini/settings.json (gemini) that shows `done-done` to each session, or a plugin to .opencode/plugins (opencode) or an extension to .pi/extensions (pi) that adds it to the first message of each session (opt-in)',
@@ -175,7 +180,8 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done init', 'write a minimal .done-done.yaml (evidence lives outside the repo) and, when absent, a commented ~/.done-done/config.yaml'],
       ['done-done init', 'have the agent write .agents/skills/done-done-verify-<app> from this repo\'s own proof paths (never overwrites; no agent, no skill)'],
       ['done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor', 'set the coding agent done-done starts and its model (in a terminal, init asks when none is set)'],
-      ['done-done init --judge pi --judge-model openai-codex/gpt-6-luna', 'set the judge done-done starts and its model (in a terminal, init asks when none is set)'],
+      ['done-done init --judge pi --judge-model openai-codex/gpt-6-luna', 'set the judge done-done starts and its model (in a terminal, init asks when none is set); answerer:pi, the route check docs use, saves the same route'],
+      ['done-done init --no-skill --agent pi --model <model> --judge answerer:pi --judge-model <model>', 'write the config and settings without asking the agent for the verify skill: what an installer runs'],
       ['done-done init --hook claude', 'also show this repo\'s done-done state at each Claude Code session start'],
       ['done-done init --hook claude --after-commit', 'also opt in to rerun affected journeys after a Bash commit; propose missing coverage without editing the skill'],
       ['done-done init --hook codex', 'also show this repo\'s done-done state at each Codex session start'],
@@ -186,15 +192,16 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done init --journey <name> --core -- <command...>', 'record the core user journey: the one thing a user cannot live without, end to end on the real target'],
       ['done-done init --journey upgrade --upgrade -- <command...>', 'record the release path: install the previous shipped version, upgrade over it in place, drive the core journey'],
     ],
-    flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--after-commit', '--journey <name>', '--core', '--upgrade', '-- <command...>'],
+    flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--after-commit', '--journey <name>', '--core', '--upgrade', '--no-skill', '-- <command...>'],
     more: [JOURNEYS_TEXT, CONFIG_TEXT],
   },
   doctor: {
     usage: [
       ['done-done doctor', 'check this repo is worth driving: git, config, evidence root, skill, agent, judge, ffprobe'],
       ['done-done doctor --probe', 'also ask the configured agent one question to prove it answers'],
+      ['done-done doctor --setup', 'install health: exit 0 once git, config, evidence root, agent and judge are ok, with the journey rows skipped until the user records one'],
     ],
-    flags: ['--probe'],
+    flags: ['--probe', '--setup'],
     more: [DOCTOR_TEXT, CONFIG_TEXT],
   },
   run: {
@@ -3298,7 +3305,8 @@ const ACP_TARGET = 'acp:<target>';
 // Save the user's agent or judge (and model) in the global config, in place, keeping its comments and every other key.
 function saveChoice(kind: Kind, { agent, model }: Choice): string {
   const file = join(home(), 'config.yaml');
-  let text = readFileSync(file, 'utf8');
+  const original = readFileSync(file, 'utf8');
+  let text = original;
   if (kind === 'agent') {
     const example = /^# agent: .*$/m;
     if (!parseDocument(text).has('agent')) text = example.test(text) ? text.replace(example, `agent: ${agent}`) : text.replace(/^(?=[a-z_]+:)/m, `agent: ${agent}\n`);
@@ -3313,8 +3321,12 @@ function saveChoice(kind: Kind, { agent, model }: Choice): string {
     if (model) doc.setIn(['judge', 'model'], model);
     else doc.deleteIn(['judge', 'model']);
   }
-  writeFileSync(`${file}.tmp`, doc.toString({ lineWidth: 0 }));
-  renameSync(`${file}.tmp`, file);
+  // A re-run with the same choices writes nothing: the file already says it.
+  const next = doc.toString({ lineWidth: 0 });
+  if (next !== original) {
+    writeFileSync(`${file}.tmp`, next);
+    renameSync(`${file}.tmp`, file);
+  }
   return `${kind === 'agent' ? agent : routeOf(agent)}${model ? ` (model ${model})` : ''} saved to ${file}`;
 }
 
@@ -3433,7 +3445,11 @@ function checkJudge(cfg: Config, agent: string, model: string) {
   if (!model && !modelFor(cfg, agent)) throw new UsageError(`judge: ${agent} has no default model, so a judge needs one`, `Save the judge with its model: done-done init --judge ${agent} --judge-model <model>`);
 }
 
-const commitFirst = (skill: string) => `.done-done.yaml and ${skill} before your first capture: check refuses proof from a tree with uncommitted changes`;
+const commitFirst = (skill: string, noSkill = false) => `${noSkill ? '.done-done.yaml' : `.done-done.yaml and ${skill}`} before your first capture: check refuses proof from a tree with uncommitted changes`;
+
+// init takes the route check docs use (answerer:pi) as well as the bare agent (pi); both save the same judge.route,
+// and any other form stays an error.
+const initJudge = (v: string) => (v.startsWith('answerer:') && routeOf(v.slice('answerer:'.length)) === v ? v.slice('answerer:'.length) : v);
 
 // An absolute path inside the repo in a recipe: the recipe is committed, so it would name this checkout only.
 const absoluteInside = (command: string, repo: string) => [...command.matchAll(/(?:^|[\s"'=])(\/[^\s"'`;|&<>]*)/g)].map((m) => m[1]).find((p) => p === repo || p.startsWith(`${repo}/`));
@@ -3442,26 +3458,29 @@ async function cmdInit(argv: string[]): Promise<number> {
   const dash = argv.indexOf('--');
   const { values } = parseArgs({
     args: dash < 0 ? argv : argv.slice(0, dash),
-    options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, 'after-commit': { type: 'boolean' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' } },
+    options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, 'after-commit': { type: 'boolean' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' }, 'no-skill': { type: 'boolean' } },
     allowPositionals: false,
   });
   const parts = dash < 0 ? [] : argv.slice(dash + 1);
   const journey = values.journey ?? null;
+  // --no-skill: an installer writes the config without the agent-written skill, so it costs no agent call.
+  const noSkill = values['no-skill'] === true;
+  const judge = values.judge === undefined ? undefined : initJudge(values.judge);
   if (values.hook !== undefined && !Object.hasOwn(HOOKS, values.hook))
     throw new UsageError(`--hook ${values.hook} is not supported; the supported values are ${Object.keys(HOOKS).join(', ')}`, `Run: done-done init --hook <${Object.keys(HOOKS).join('|')}>`);
   if (values['after-commit'] && values.hook !== 'claude') throw new UsageError('--after-commit needs --hook claude', 'Run: done-done init --hook claude --after-commit');
   if (values.model !== undefined && values.agent === undefined) throw new UsageError('--model needs --agent', `Run: done-done init --agent <agent> --model ${values.model}`);
   if (values.agent !== undefined) checkChoice(values.agent, values.model ?? '');
-  if (values['judge-model'] !== undefined && values.judge === undefined) throw new UsageError('--judge-model needs --judge', `Run: done-done init --judge <agent> --judge-model ${values['judge-model']}`);
+  if (values['judge-model'] !== undefined && judge === undefined) throw new UsageError('--judge-model needs --judge', `Run: done-done init --judge <agent> --judge-model ${values['judge-model']}`);
   if (journey === null && parts.length) throw new UsageError('init needs --journey <name> to record a command after --');
   if (journey === null && (values.core || values.upgrade)) throw new UsageError(`--${values.core ? 'core' : 'upgrade'} marks the journey init records, so it needs --journey <name> and a command after --`, `Run: done-done init --journey <name> --${values.core ? 'core' : 'upgrade'} -- '<command>'`);
   if (journey !== null && !parts.some((p) => p.trim())) throw new UsageError(`init --journey ${journey} needs a command after --`);
   if (journey !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(journey)) throw new UsageError(`invalid journey name ${journey}; use letters, digits, - or _`);
   if (journey !== null && codeOnly(commandOf(parts))) throw new UsageError(`init --journey ${journey}: ${commandOf(parts)} is code-only: ${RULE}, so check and gate never count its run as proof; nothing was written`, `Record a command that drives the real app, CLI or site the way a user does and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT: done-done init --journey ${journey} -- '<that command>'`);
   // Only the judge named: that is a machine setting, so it changes the global config alone, in any directory.
-  if (values.judge !== undefined && values.agent === undefined && values.hook === undefined && journey === null) {
+  if (judge !== undefined && values.agent === undefined && values.hook === undefined && journey === null) {
     const cfg = loadConfig(process.cwd());
-    const choice = { agent: values.judge, model: values['judge-model'] ?? (cfg.judge.route === routeOf(values.judge) ? cfg.judge.model : '') };
+    const choice = { agent: judge, model: values['judge-model'] ?? (cfg.judge.route === routeOf(judge) ? cfg.judge.model : '') };
     checkJudge(cfg, choice.agent, choice.model);
     const globalConfig = writeGlobal();
     emit({ command: 'init', result: 'pass', global_config: globalConfig, judge: saveChoice('judge', choice), help: ['Set up a repo: cd <your app> && done-done init'] });
@@ -3479,7 +3498,7 @@ async function cmdInit(argv: string[]): Promise<number> {
   const choice = values.agent !== undefined ? { agent: values.agent, model: values.model ?? '' } : !cfg.agent && interactive() ? await pick('agent', cfg) : undefined;
   if (choice) cfg.agent_config[choice.agent] = { ...cfg.agent_config[choice.agent], ...(choice.model && { model: choice.model }) };
   // The judge likewise: --judge, else with none set the user's pick in a terminal; checked that done-done can judge through it.
-  const judgeChoice = values.judge !== undefined ? { agent: values.judge, model: values['judge-model'] ?? (cfg.judge.route === routeOf(values.judge) ? cfg.judge.model : '') } :!cfg.judge.route && interactive() ? await pick('judge', { ...cfg, agent: choice?.agent ?? cfg.agent }) : undefined;
+  const judgeChoice = judge !== undefined ? { agent: judge, model: values['judge-model'] ?? (cfg.judge.route === routeOf(judge) ? cfg.judge.model : '') } :!cfg.judge.route && interactive() ? await pick('judge', { ...cfg, agent: choice?.agent ?? cfg.agent }) : undefined;
   if (judgeChoice) checkJudge({ ...cfg, agent: choice?.agent ?? cfg.agent }, judgeChoice.agent, judgeChoice.model);
   const writeAgent = (): { out: Record<string, string>; help: string[]; code: number } => {
     if (choice) {
@@ -3529,7 +3548,7 @@ async function cmdInit(argv: string[]): Promise<number> {
     const globalConfig = writeGlobal();
     const ag = writeAgent();
     const jg = writeJudge();
-    const verify = await scaffoldVerify(repo, loadConfig(repo));
+    const verify = noSkill ? { status: 'skipped (--no-skill)' } : await scaffoldVerify(repo, loadConfig(repo));
     const agentHook = writeHook();
     const code = ag.code !== PASS ? ag.code : verify.failed ? FAIL : PASS;
     emit({
@@ -3546,7 +3565,7 @@ async function cmdInit(argv: string[]): Promise<number> {
       ...(renamed && { skill_renamed: renamed }),
       verify_skill: verify.status,
       ...agentHook.out,
-      help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...journeyAsks(repo, fresh), ...agentHook.help, ...ag.help, ...jg.help, ...(verify.failed ? [SCAFFOLD_HELP] : []), `Commit ${commitFirst(fresh.skill)}`],
+      help: [`Capture proof: done-done run ${journey}, then: ${check}`, ...journeyAsks(repo, fresh), ...agentHook.help, ...ag.help, ...jg.help, ...(verify.failed ? [SCAFFOLD_HELP] : []), `Commit ${commitFirst(fresh.skill, noSkill)}`],
     });
     return code;
   }
@@ -3570,7 +3589,7 @@ app: ${JSON.stringify(cfg.app)}
   const globalConfig = writeGlobal();
   const ag = writeAgent();
   const jg = writeJudge();
-  const verify = await scaffoldVerify(repo, loadConfig(repo));
+  const verify = noSkill ? { status: 'skipped (--no-skill)' } : await scaffoldVerify(repo, loadConfig(repo));
   const agentHook = writeHook();
   const code = ag.code !== PASS ? ag.code : verify.failed ? FAIL : PASS;
   emit({
@@ -3595,7 +3614,7 @@ app: ${JSON.stringify(cfg.app)}
       ...ag.help,
       ...jg.help,
       ...(verify.failed ? [SCAFFOLD_HELP] : []),
-      `Commit ${commitFirst(cfg.skill)}`,
+      `Commit ${commitFirst(cfg.skill, noSkill)}`,
     ],
   });
   return code;
@@ -3634,7 +3653,7 @@ function writableDir(p: string): boolean {
 const PROBE_SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
 // A tool-less probe starts in seconds; an agent silent for this long is stuck, so doctor says why instead of waiting the agent_timeout.
 const PROBE_IDLE_MS = 30_000;
-type DoctorCheck = { check: string; status: 'ok' | 'warning' | 'missing'; detail: string; fix: string };
+type DoctorCheck = { check: string; status: 'ok' | 'warning' | 'missing' | 'skipped'; detail: string; fix: string };
 const unknownRow = (check: string, detail = 'unknown without a valid config', fix = ''): DoctorCheck => ({ check, status: 'missing', detail, fix });
 // Each effective setting of the agent and the file it came from: the global config, the repo's .done-done.yaml, or the built-in default.
 function agentSettings(cfg: Config, agent: string): string {
@@ -3659,13 +3678,18 @@ const modelPhrase = (agent: string, model: string) => (model ? `model ${model}` 
 // Is this repo worth driving: git, a valid config, a writable evidence root, the agent and the judge are
 // required; the verify skill and ffprobe are listed but never fail it.
 // doctor changes nothing except the --probe call record (the agent itself may keep its own session files): a missing repo or config is a finding, never a crash.
+// --setup is install health: the verify skill and a repo with no journeys are warnings, and the journey rows an install
+// does not have yet are skipped, so a freshly configured repo exits 0.
 async function cmdDoctor(argv: string[]): Promise<number> {
-  let values: { probe?: boolean };
+  let values: { probe?: boolean; setup?: boolean };
   try {
-    ({ values } = parseArgs({ args: argv, options: { probe: { type: 'boolean' } }, allowPositionals: false }));
+    ({ values } = parseArgs({ args: argv, options: { probe: { type: 'boolean' }, setup: { type: 'boolean' } }, allowPositionals: false }));
   } catch (e) {
     throw new UsageError((e as Error).message, 'Run `done-done doctor` (or `done-done doctor --probe`) with no other arguments');
   }
+  const setup = values.setup === true;
+  // --setup reports a journey row an install does not have yet as skipped instead of failing it.
+  const setupSkipped = (check: string, why: string): DoctorCheck => ({ check, status: 'skipped', detail: `skipped (--setup): ${why}`, fix: '' });
   let repo: string | null = null;
   try {
     repo = git(process.cwd(), 'rev-parse', '--show-toplevel');
@@ -3709,8 +3733,8 @@ async function cmdDoctor(argv: string[]): Promise<number> {
     else
       checks.push({
         check: 'verify_skill',
-        status: 'missing',
-        detail: `no ${shown(repo, skillFile)}; checks still pass with "no verify skill"`,
+        status: setup ? 'warning' : 'missing',
+        detail: `no ${shown(repo, skillFile)}; ${setup ? 'doctor --setup does not need it: the user writes it later with done-done init' : 'checks still pass with "no verify skill"'}`,
         fix: `Write ${shown(repo, skillFile)} describing how to drive this app (a later done-done init will scaffold it)`,
       });
   }
@@ -3808,6 +3832,8 @@ async function cmdDoctor(argv: string[]): Promise<number> {
     const fix = `Record a journey that drives the real app and saves screenshots, a recording or its transcript into $DONE_DONE_EVIDENCE_ROOT: done-done init --journey <name> -- '<command>'; then delete ${code.join(', ')} from .done-done.yaml`;
     checks.push(
       configFault(cfg.journeys) ? { check: 'real_product', status: 'missing', detail: configFault(cfg.journeys)!, fix }
+      : setup && !names.length ? { check: 'real_product', status: 'warning', detail: 'no journeys yet: the user records a core journey after install, for real proof', fix: CORE_FIX }
+      : setup ? setupSkipped('real_product', `${names.join(', ')} ${names.length > 1 ? 'drive' : 'drives'} the product`)
       : code.length ? { check: 'real_product', status: 'warning', detail: `${code.join(', ')} ${code.length > 1 ? 'are' : 'is'} code-only (${RULE}): proof only from ${code.length > 1 ? 'them' : 'it'} is refused; ${names.filter((n) => !code.includes(n)).join(', ')} drive${names.length - code.length > 1 ? '' : 's'} the product`, fix: `Cite captures from the journeys that drive the product; delete ${code.join(', ')} from .done-done.yaml if it is not needed` }
       : { check: 'real_product', status: 'ok', detail: names.length ? `${names.join(', ')} drive${names.length > 1 ? '' : 's'} the product` : 'no journeys: verify has the agent drive the verify skill\'s features', fix: '' },
     );
@@ -3820,6 +3846,7 @@ async function cmdDoctor(argv: string[]): Promise<number> {
     const core = namedJourney('core', cfg.journeys, map);
     checks.push(core
       ? { check: 'core_journey', status: 'ok', detail: `${core} is the core user journey`, fix: '' }
+      : setup ? setupSkipped('core_journey', 'no core user journey yet: the user records one after install, for real proof')
       : { check: 'core_journey', status: 'missing', detail: `no core user journey is named: a journey with core: true that drives the product, or a ${MARK.core} entry in ${cfg.skill}/features/README.md`, fix: CORE_FIX });
     const ships = shipped(repo);
     const upgrade = namedJourney('upgrade', cfg.journeys, map);
@@ -3827,8 +3854,10 @@ async function cmdDoctor(argv: string[]): Promise<number> {
       ? { check: 'upgrade_journey', status: 'ok', detail: 'no tracked file shows an installable or upgradable artifact, so no upgrade journey is needed', fix: '' }
       : upgrade
         ? { check: 'upgrade_journey', status: 'ok', detail: `${upgrade} upgrades in place (the app ships ${ships.slice(0, 3).join('; ')})`, fix: '' }
+        : setup ? setupSkipped('upgrade_journey', `the app ships an installable artifact (${ships.slice(0, 3).join('; ')}) and no upgrade journey is recorded yet: record it before the next release`)
         : { check: 'upgrade_journey', status: 'missing', detail: `the app ships an installable artifact (${ships.slice(0, 3).join('; ')}${ships.length > 3 ? `; +${ships.length - 3} more` : ''}) and no upgrade journey is named: a fresh install alone is no release proof`, fix: UPGRADE_FIX });
   }
+  // --setup keeps the same required list; the journey rows it skips are never 'missing', so only a real config fault fails it.
   const required = ['git', 'config', 'evidence_root', 'real_product', 'core_journey', 'upgrade_journey', 'agent', 'judge', ...(values.probe ? ['probe'] : [])];
   const missingRequired = checks.filter((c) => c.status === 'missing' && required.includes(c.check));
   const result: Record<string, unknown> = { command: 'doctor', result: missingRequired.length ? 'fail' : 'pass', checks };

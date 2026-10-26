@@ -43,6 +43,25 @@ You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in 
 
 Commit `.done-done.yaml` and the verify skill so later runs and your teammates use the same recipe. Captures go to your judge's provider, on your plan or key.
 
+## For installers
+
+Installing done-done from another installer (a fleet bootstrap, a Juggernaut-style one-command install) takes three calls and no prompts. Pin the version:
+
+```sh
+npm install -g done-done-axi@0.6.18
+done-done init --no-skill --agent <agent> --model <model> --judge <route> --judge-model <model>
+done-done doctor --setup --json
+```
+
+- `done-done --version` prints the installed version (here `0.6.18`); check it before anything else.
+- `init --no-skill` writes `.done-done.yaml` and the global `~/.done-done/config.yaml`, and starts no agent: it skips the verify skill, so it spends nothing and asks nothing. `<route>` is `answerer:<agent>` or a bare agent name. Exit `0` when the agent is set and the config is valid, `2` when it is not.
+- `doctor --setup --json` is install health: exit `0` when git, the config, the evidence root, the agent and the judge are ok, `2` when one of them is not. The verify skill and the journey rows are warnings, so a fresh install passes.
+- Exit codes: `0` pass, `2` usage or config error ([all codes](docs/reference.md#exit-codes)).
+- Re-running `init` changes nothing: a second call writes no file, reports the config unchanged and exits `0`.
+- Real proof comes later: the user records a core journey, `done-done init --journey <name> --core -- <command>`, and it is their agent and judge that drive and check it.
+
+The verify skill is not part of an install: the first plain `done-done init` writes it from the repo's own files.
+
 ## Why: not just green tests
 
 | | Green tests, or an agent's word | done-done |

@@ -2179,6 +2179,37 @@ test('init writes no verify skill when the agent fails or cites a file the repo 
   assert.equal(existsSync(dir), false);
 });
 
+test('init --no-skill writes the config with no agent call, and a second run is a no-op', () => {
+  const { repo, env } = shapeRepo('proof', 'notes');
+  const s = stubAgents(env, 'error'); // an agent that would fail: --no-skill must never ask it
+  const skill = join(repo, '.agents', 'skills', 'done-done-verify-notes');
+  const global = join(env.DONE_DONE_HOME, 'config.yaml');
+  const project = join(repo, '.done-done.yaml');
+  const args = ['init', '--no-skill', '--agent', 'claude', '--model', 'stub-model', '--judge', 'answerer:opencode', '--judge-model', 'opencode-go/x'];
+  const r = doctorIn(repo, s.env, ...args);
+  assert.equal(r.code, 0, r.out);
+  const o = toon(r);
+  assert.equal(o.verify_skill, 'skipped (--no-skill)');
+  assert.equal(o.config, 'unchanged');
+  assert.doesNotMatch(o.help.join(' '), /verify-notes/, 'the help asks for no commit of a skill that was never written');
+  assert.equal(existsSync(skill), false, 'no verify skill');
+  assert.equal(s.calls().length, 0, 'the agent is never started');
+  const g = parse(readFileSync(global, 'utf8'));
+  assert.deepEqual([g.agent, g.agent_config.claude.model, g.judge.route, g.judge.model], ['claude', 'stub-model', 'answerer:opencode', 'opencode-go/x']);
+  // Idempotent: the same call again writes no file and still exits 0.
+  const before = [global, project].map((f) => ({ f, text: readFileSync(f, 'utf8'), mtime: statSync(f).mtimeMs }));
+  const again = doctorIn(repo, s.env, ...args);
+  assert.equal(again.code, 0, again.out);
+  assert.deepEqual([toon(again).config, toon(again).global_config, toon(again).verify_skill], ['unchanged', 'unchanged', 'skipped (--no-skill)']);
+  for (const b of before) assert.deepEqual([readFileSync(b.f, 'utf8'), statSync(b.f).mtimeMs], [b.text, b.mtime], `${b.f} is untouched`);
+  assert.equal(s.calls().length, 0);
+  // With no agent set it keeps today's exit 2.
+  writeFileSync(global, 'judge:\n  route: answerer:opencode\n  model: opencode-go/x\n');
+  const none = doctorIn(repo, s.env, 'init', '--no-skill');
+  assert.equal(none.code, 2, none.out);
+  assert.equal(toon(none).agent, 'not set');
+});
+
 test('init moves an older verify-<app> skill to the done-done- name once, and says so', () => {
   const { repo, dd, sh } = shapeRepo('cli', 'notes');
   const old = join(repo, '.agents', 'skills', 'verify-notes');
@@ -4470,6 +4501,15 @@ test('init --judge saves the user\'s judge, the author\'s own agent and model to
   const other = t.dd('init', '--judge', 'opencode', '--judge-model', 'opencode-go/other-model');
   assert.equal(toon(other).judge, `answerer:opencode (model opencode-go/other-model) saved to ${join(t.env.DONE_DONE_HOME, 'config.yaml')}`);
   assert.equal(toon(t.dd('init')).judge, 'unchanged (answerer:opencode)');
+  // The route form the check docs use saves the same canonical route as the bare agent name.
+  const routed = t.dd('init', '--judge', 'answerer:pi', '--judge-model', 'openai-codex/gpt-6-luna');
+  assert.equal(routed.code, 0, routed.out);
+  assert.equal(toon(routed).judge, `answerer:pi (model openai-codex/gpt-6-luna) saved to ${join(t.env.DONE_DONE_HOME, 'config.yaml')}`);
+  assert.deepEqual(parse(readFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'utf8')).judge, { route: 'answerer:pi', model: 'openai-codex/gpt-6-luna' });
+  // Only a form done-done really judges through is taken: an alias that names no route stays an error.
+  const misrouted = t.dd('init', '--judge', 'answerer:claude');
+  assert.equal(misrouted.code, 2, misrouted.out);
+  assert.match(toon(misrouted).error, /^done-done cannot judge through answerer:claude; it judges through /);
 });
 
 test('init --judge alone changes only the global config, and judge.env_file supplies the key the shell does not export', () => {
@@ -4900,6 +4940,51 @@ test('doctor passes in a set-up repo and lists every check', () => {
   assert.equal(row.status, 'missing');
   assert.match(row.detail, /every journey in \.done-done\.yaml is code-only \(check, types\)/);
   assert.match(row.fix, /done-done init --journey <name> -- '<command>'; then delete check, types from \.done-done\.yaml/);
+});
+
+// The one-install gap: a freshly configured repo has no core journey yet, so plain doctor exits 2 and an installer cannot
+// tell a broken install from an unfinished one. --setup is install health: the journey rows are skipped, not failed.
+test('doctor --setup passes a fresh install with no core journey, and still fails without the agent or the judge', () => {
+  const { repo, env } = shapeRepo('proof', 'notes');
+  const s = stubAgents(env, scaffoldAnswer());
+  const global = join(env.DONE_DONE_HOME, 'config.yaml');
+  // What an installer does: config and settings in one non-interactive call, no verify skill.
+  const init = doctorIn(repo, s.env, 'init', '--no-skill', '--agent', 'claude', '--model', 'stub-model', '--judge', 'answerer:opencode', '--judge-model', 'opencode-go/x');
+  assert.equal(init.code, 0, init.out);
+  // A fresh install records no journey yet.
+  writeFileSync(join(repo, '.done-done.yaml'), 'app: notes\n');
+  const r = doctorIn(repo, s.env, 'doctor', '--setup', '--json');
+  assert.equal(r.code, 0, r.out);
+  const d = JSON.parse(r.out);
+  assert.equal(d.result, 'pass');
+  const row = (n) => d.checks.find((c) => c.check === n);
+  assert.deepEqual([row('git').status, row('config').status, row('evidence_root').status, row('agent').status, row('judge').status], ['ok', 'ok', 'ok', 'ok', 'ok'], 'the install-health rows');
+  assert.equal(row('verify_skill').status, 'warning', 'a --no-skill install has no verify skill yet, and that is not a failure');
+  assert.equal(row('real_product').status, 'warning');
+  assert.equal(row('real_product').detail, 'no journeys yet: the user records a core journey after install, for real proof');
+  assert.deepEqual([row('core_journey').status, row('core_journey').detail, row('core_journey').fix], ['skipped', 'skipped (--setup): no core user journey yet: the user records one after install, for real proof', '']);
+  assert.equal(row('upgrade_journey').status, 'ok', 'this repo ships no installable artifact');
+  assert.match(d.help[0], /Add a journey to \.done-done\.yaml/, 'the help names the journey to record');
+  // Plain doctor is unchanged: the same repo fails on the missing core journey and verify skill.
+  const plain = doctorIn(repo, s.env, 'doctor', '--json');
+  assert.equal(plain.code, 2, plain.out);
+  const p = JSON.parse(plain.out);
+  assert.equal(p.checks.find((c) => c.check === 'core_journey').status, 'missing');
+  assert.equal(p.checks.find((c) => c.check === 'verify_skill').status, 'missing');
+  // An app that ships an artifact and has no upgrade journey is skipped too, never fatal.
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'notes', bin: { notes: 'engine.js' } }));
+  const shipped = JSON.parse(doctorIn(repo, s.env, 'doctor', '--setup', '--json').out);
+  assert.equal(shipped.checks.find((c) => c.check === 'upgrade_journey').status, 'skipped');
+  assert.match(shipped.checks.find((c) => c.check === 'upgrade_journey').detail, /^skipped \(--setup\): the app ships an installable artifact .*no upgrade journey is recorded yet/);
+  // No agent, then no judge: each is required and exits 2.
+  writeFileSync(global, 'judge:\n  route: answerer:opencode\n  model: opencode-go/x\n');
+  const noAgent = doctorIn(repo, s.env, 'doctor', '--setup', '--json');
+  assert.equal(noAgent.code, 2, noAgent.out);
+  assert.equal(JSON.parse(noAgent.out).checks.find((c) => c.check === 'agent').status, 'missing');
+  writeFileSync(global, 'agent: claude\n');
+  const noJudge = doctorIn(repo, s.env, 'doctor', '--setup', '--json');
+  assert.equal(noJudge.code, 2, noJudge.out);
+  assert.equal(JSON.parse(noJudge.out).checks.find((c) => c.check === 'judge').status, 'missing');
 });
 
 // The muxr miss: a config whose proof never drove the one flow users need (pair, open a pane, type, see output), and a release

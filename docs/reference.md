@@ -24,6 +24,16 @@ done-done init --agent opencode --model opencode-go/muse-spark-1.3-contributor
 
 `init --agent <agent> [--model <model>]` saves the coding agent done-done starts, and its model, into the global `~/.done-done/config.yaml` (`agent` and `agent_config.<agent>.model`), in place, keeping its comments and every other key; the result's `agent` says what was saved. Without `--agent`, when no agent is set, `init` asks in a terminal (a numbered list of agents, then of models; a wrong answer is named before the list asks again, and a typed opencode model must be one `opencode models` lists, or, when opencode is not on PATH, it is saved with a notice that it was not checked; any other agent's model, pi's included, is saved with that notice too) before it writes anything; elsewhere it writes the rest of the config, reports `agent: not set` with the line to ask the user and the save command, and exits 2. When a repo's `.done-done.yaml` sets a different agent, the result's `agent` says the saved agent is overridden by that one. An agent done-done cannot start, `--model` without `--agent`, or an opencode model that is not `provider/model` exits 2 before any write. done-done never picks an agent for you (see [Agents](#agents)). Headless `opencode run` needs `--auto` (or allows the evidence root, `~/.done-done`, in opencode's `external_directory` permission) for done-done to run.
 
+For an installer, set everything in one non-interactive call and skip the agent-written skill:
+
+```sh
+done-done init --no-skill --agent pi --model <model> --judge answerer:pi --judge-model <model>
+```
+
+`--no-skill` writes the project config and saves the agent and judge settings exactly as `init` does above, and then writes no verify skill: no agent is started, so it costs no call, and the result says `verify_skill: skipped (--no-skill)`. It exits 0 when the agent is set and the config is valid, and 2 when no agent is set, as `init` always does. It combines with `--journey` (the journey is recorded and the skill is still skipped). Nothing in it asks a question, reads a secret or needs a terminal, so re-running it is a no-op: a second run writes no file, reports `config: unchanged` and still exits 0. The user records the verify skill later with a plain `done-done init`, and a core journey for real proof with `done-done init --journey <name> --core -- <command>`.
+
+`init --judge` also takes the route form the [check docs](#check-a-claim) use, `answerer:<agent>`, as well as the bare agent name: `--judge answerer:pi` stores the same `judge.route: answerer:pi` that `--judge pi` stores. `check --judge` already takes only the route form.
+
 Record a journey's capture recipe in the repo so any checkout can re-run the proof:
 
 ```sh
@@ -93,6 +103,12 @@ done-done doctor --probe
 ```
 
 `--probe` also asks the agent one JSON-schema question (one call at its model) and adds a `probe` item that is then required: `ok` only when the agent answers with a valid object. Codex is the exception: it cannot be asked tool-less, so its `probe` row is a `warning` that gives the reason and asks nothing (see [Agents](#agents)). The call record goes to `$DONE_DONE_HOME/agents/` (mode 0600); it keeps the agent, model, effort, extra flags, binary, schema, tools, cwd, timeout, argv, prompt size in bytes, timing, exit code, answer or error, and the last 2000 characters of stderr, never the prompt text. A failed probe row shows one clean line: the agent's last line that names an error, or else its last meaningful line, with no colour codes or stack frames and at most 200 characters. The raw stderr stays in the record.
+
+```sh
+done-done doctor --setup
+```
+
+`--setup` is install health: the answer an installer needs after `init --no-skill`, with the same rows, detail lines and `--json` output. The required rows are `git`, `config`, `evidence_root`, `agent` and `judge`; a missing `verify_skill` and a repo with no journeys yet are `warning`s, and `real_product`, `core_journey` and `upgrade_journey` report `skipped (--setup)` rather than failing, since the user records a core journey after install for real proof. It exits 0 when every required row is ok and 2 otherwise, exactly like `doctor`, and plain `doctor` is unchanged.
 
 #### Agents
 
@@ -724,7 +740,7 @@ Running `done-done` with no subcommand prints the repo's config state (`config: 
 | 3 | inconclusive (could not be proven either way) |
 | 4 | the run is still running, or a `verify` run waits at its gate (`verify`, `maintain --no-wait`, `rerun`, `status`, `respond`) |
 
-`doctor` exits 2 when a required item (`git`, `config`, `evidence_root`, `real_product`, `core_journey`, `upgrade_journey`, `agent`, `judge`, and `probe` with `--probe`) is missing.
+`doctor` exits 2 when a required item (`git`, `config`, `evidence_root`, `real_product`, `core_journey`, `upgrade_journey`, `agent`, `judge`, and `probe` with `--probe`) is missing. With `--setup` the required items are `git`, `config`, `evidence_root`, `agent` and `judge`: the journey rows report `skipped (--setup)` instead of failing, so a freshly installed repo exits 0.
 
 ### Merge gate on the desktop
 
