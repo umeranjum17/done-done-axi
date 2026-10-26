@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -195,7 +195,7 @@ test('check and receipt refuse proof from code-only journeys: a test, typecheck 
 // A journey script that drives something, saves one capture and writes its step record (or none, or a broken one).
 const driver = (capture, text, steps) => `import { writeFileSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT;\nwriteFileSync(out + '/${capture}', ${JSON.stringify(text)});\n${steps === undefined ? '' : `writeFileSync(out + '/steps.json', ${JSON.stringify(typeof steps === 'string' ? steps : JSON.stringify(steps))});\n`}`;
 
-test('a claim needs a step record that covers it: a wrapped test log cannot prove a pane claim, a real CLI transcript still proves a CLI claim', () => {
+test('a claim needs a well-formed step record, never one that matches its words', () => {
   const journeys = {
     // A script that only runs the unit suite and logs it: not code-only by its name, so only its step record says what it did.
     wrapper: driver('suite.log', 'ok 42 tests passed\n', { target: { version: '1.0.0' }, start: 'the repo checkout', steps: ['ran the unit suite'], result: '42 tests passed' }),
@@ -228,14 +228,13 @@ test('a claim needs a step record that covers it: a wrapped test log cannot prov
   assert.equal(pass.code, 0, pass.out);
   assert.equal(toon(pass).warnings, undefined);
 
-  // A wrapped test log: its honest record says it ran the unit suite, so it cannot prove a claim about a pane.
+  // A wrapped test log: its honest record says it ran the unit suite. The record's prose is never matched to the claim's, so a
+  // claim about a pane reaches the judge, which decides whether the log shows one. The record itself stays required below.
   const wrapper = ran('wrapper', 'suite.log');
   const wrapped = dd('check', '--outcome', 'a user can attach to a pane and see its output', wrapper.file);
-  assert.equal(wrapped.code, 2, wrapped.out);
-  assert.match(wrapped.out, new RegExp(`the judge was not asked.*no cited capture comes from a run whose step record covers the claim: run ${wrapper.id}'s step record \\(1 step, target 1\\.0\\.0\\) never mentions attach, pane`));
-  assert.match(wrapped.out, /Have the journey write steps\.json into \$DONE_DONE_EVIDENCE_ROOT/, 'the help says how to record the steps');
-  assert.equal(dd('receipt', '--outcome', 'a user can attach to a pane and see its output', wrapper.file).code, 2, 'no receipt either');
-  // The same log is no proof of a claim it does not mention, and a claim it names is covered: the record, not the file name, decides.
+  assert.equal(wrapped.code, 0, wrapped.out);
+  assert.deepEqual(toon(wrapped).judge.judged.map((r) => r.verdict), ['pass'], 'the judge is asked, and it decides');
+  assert.equal(dd('receipt', '--outcome', 'a user can attach to a pane and see its output', wrapper.file).code, 0, 'and the claim can be receipted');
   assert.equal(dd('check', '--outcome', 'the unit suite passes with 42 tests', wrapper.file).code, 0);
 
   // A run with no step record, an invalid one, or one with a step list that is empty is refused, with the cause.
@@ -260,6 +259,79 @@ test('a claim needs a step record that covers it: a wrapped test log cannot prov
   const warned = dd('check', '--outcome', 'notes greet prints hello', cli.file);
   assert.equal(warned.code, 0, warned.out);
   assert.match(toon(warned).warnings[0], new RegExp(`run ${cli.id} was recorded before step records.*re-run the journey so it writes steps\\.json`));
+});
+
+test('real shapes: a claim in its own words and sealed copies of a run\'s own files both reach the judge, by the record and its bytes', () => {
+  // Two real refusals, as fixtures. muxr #1069: a descriptive claim about a 270 dp history walk whose words the run's honest
+  // step record never uses was refused before the judge. muxr #1070: sealed copies of the very files a run wrote were reported
+  // as in no run record, because their path was not the one the record lists. Neither is a word or path rule: the record is
+  // required, and a cited file's bytes tie it to the run that wrote them wherever it sits.
+  const walk = { target: { version: '0.2.15' }, start: 'a fullscreen Claude Code pane printing MARK-1..1200 at 100 lines/s', steps: ['open the Claude Code pane from Home', 'walk back through the history in 30 stepped drags', 'tap Latest'], result: 'each drag walks the view back through the history and Latest returns to the newest output (MARK-1200)' };
+  const journeys = { walk: driver('walk.log', 'MARK-1189 -> MARK-999\n', walk) };
+  const { dir, repo, env, sh, dd, head } = setup(`${JUDGED}${Object.keys(journeys).map((j) => `  ${j}:\n    command: node ${j}.mjs\n`).join('')}`);
+  for (const [j, code] of Object.entries(journeys)) writeFileSync(join(repo, `${j}.mjs`), code);
+  sh('add', '-A');
+  sh('commit', '-qm', 'journeys');
+  const recordOf = (id) => JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'runs', `${id}.json`), 'utf8'));
+
+  // 1069: the same walk in the claim's own words, none of them in the record, reaches the judge and passes its verdict.
+  const descriptive = 'The 270 dp history copy keeps a screen a Herdr frame moved off whole, so a walk across thirty drags never loses lines longer; any three rows still missing because the host frame never carried them is filed as its own follow-up';
+  const walkRun = toon(dd('run', 'walk')).run_id;
+  assert.ok(!/whole|copy|keeps|frame|thirty/i.test(JSON.stringify(recordOf(walkRun).steps)), "the record never uses the claim's words");
+  const described = dd('check', '--outcome', descriptive, `.proof/${walkRun}/walk.log`);
+  assert.equal(described.code, 0, described.out);
+  assert.equal(toon(described).judge.judged[0].verdict, 'pass', 'the judge was asked about the claim the record words differently');
+  // The record itself is still required: the same capture with its steps removed is refused, not judged.
+  const stepsFile = join(repo, '.proof', '.done-done', 'runs', `${walkRun}.json`);
+  const kept = readFileSync(stepsFile, 'utf8');
+  const { steps, ...noSteps } = JSON.parse(kept);
+  writeFileSync(stepsFile, JSON.stringify(noSteps));
+  const bare = dd('check', '--outcome', descriptive, `.proof/${walkRun}/walk.log`);
+  assert.equal(bare.code, 2, bare.out);
+  assert.match(bare.out, new RegExp(`no cited capture comes from a run with a well-formed step record: run ${walkRun} has no step record \\(steps\\.json beside its captures\\)`));
+  writeFileSync(stepsFile, kept);
+
+  // 1070: a five-file run whose sealed copies are cited at another path, inside the evidence root and outside it.
+  writeFileSync(join(repo, 'sealed.mjs'), `import { copyFileSync, writeFileSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT;\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/terminal.png');\ncopyFileSync(${JSON.stringify(join(dir, 'screen2.png'))}, out + '/paired-home.png');\nfor (const n of ['approval', 'matching-words']) writeFileSync(out + '/' + n + '.log', 'the host reads ' + n + '\\n');\nwriteFileSync(out + '/journey.log', 'pair, approve, open the pane\\n');\nwriteFileSync(out + '/steps.json', JSON.stringify({ target: { version: '0.2.15' }, start: 'a Mac with the host installed and no paired client', steps: ['pair the PWA', 'approve in the host', 'open the pane and type'], result: 'the host pairs, approves and the pane shows the typed output' }));\n`);
+  writeFileSync(join(repo, '.done-done.yaml'), `${JUDGED}  walk:\n    command: node walk.mjs\n  sealed:\n    command: node sealed.mjs\n`);
+  sh('add', '-A');
+  sh('commit', '-qm', 'sealed journey');
+  const sealedRun = toon(dd('run', 'sealed')).run_id;
+  const names = ['terminal.png', 'paired-home.png', 'approval.log', 'matching-words.log', 'journey.log'];
+  const claim = 'A Mac can package and run the desktop host from an arm64 DMG, pair its private PWA and use a live terminal';
+  const copyTo = (root) => {
+    mkdirSync(join(root, sealedRun), { recursive: true });
+    for (const n of names) copyFileSync(join(repo, '.proof', sealedRun, n), join(root, sealedRun, n));
+    return names.map((n) => join(root, sealedRun, n));
+  };
+  const tied = (r) => {
+    assert.equal(r.code, 0, r.out);
+    const d = toon(r);
+    assert.equal(d.files, names.length, 'every cited copy ties to a run');
+    assert.equal(d.judge.judged.length, names.length, 'and all five reach the judge');
+    assert.deepEqual(d.judge.judged.map((x) => x.verdict), names.map(() => 'pass'));
+  };
+  // Inside the evidence root at a path no run record lists (the 1070 refusal), and outside the root (the shape 0.6.16 kept).
+  tied(dd('check', '--outcome', claim, ...copyTo(join(repo, '.proof', 'sealed', 'pockit'))));
+  const outside = copyTo(join(dir, 'sealed-outside'));
+  tied(dd('check', '--outcome', claim, ...outside));
+  // The receipt keeps all five files tied to that one run: the tie is the run's recorded sha256 for each.
+  assert.equal(dd('receipt', '--outcome', claim, ...outside).code, 0);
+  const sealedReceipt = JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'receipts', `${head()}.json`), 'utf8'));
+  assert.equal(sealedReceipt.files.length, names.length);
+  assert.deepEqual(sealedReceipt.runs.map((x) => x.run_id), [sealedRun], 'all five tie to the run that wrote them');
+  // Bytes decide, not the path: an edited copy is tied to no run, and an edit at the recorded path is still named as changed after it.
+  const editedCopy = join(repo, '.proof', 'sealed', 'edited', sealedRun);
+  mkdirSync(editedCopy, { recursive: true });
+  copyFileSync(join(repo, '.proof', sealedRun, 'approval.log'), join(editedCopy, 'approval.log'));
+  writeFileSync(join(editedCopy, 'approval.log'), 'the host reads something else\n');
+  const edited = dd('check', '--outcome', claim, join(editedCopy, 'approval.log'));
+  assert.equal(edited.code, 2, edited.out);
+  assert.match(edited.out, /approval\.log: not in any done-done run record, so it is not tied to a commit/);
+  writeFileSync(join(repo, '.proof', sealedRun, 'journey.log'), 'pair, approve, then something else\n');
+  const atPath = dd('check', '--outcome', claim, `.proof/${sealedRun}/journey.log`);
+  assert.equal(atPath.code, 2, atPath.out);
+  assert.match(atPath.out, new RegExp(`journey\\.log: changed after run ${sealedRun}`));
 });
 
 test('a receipt carries the step record of its runs, and gate refuses one whose runs have none', () => {
@@ -290,10 +362,11 @@ test('a receipt carries the step record of its runs, and gate refuses one whose 
   const { steps, ...noSteps } = rec.runs[0];
   const none = gateOn({ ...rec, runs: [noSteps] }, 'receipt without steps');
   assert.equal(none.code, 1);
-  assert.match(none.out, /^FAIL: receipt for .* has no step record covering its claim: .*run \S+ has no step record/);
+  assert.match(none.out, /^FAIL: receipt for .* has no well-formed step record: .*run \S+ has no step record/);
+  // A receipt of a real run gated on a claim its record words differently keeps passing: the gate never reads the claim's words.
   const other = gateOn({ ...rec, claim: 'a user can attach to a pane' }, 'receipt claiming a pane');
-  assert.equal(other.code, 1);
-  assert.match(other.out, /^FAIL: .*never mentions attach, pane/);
+  assert.equal(other.code, 0, other.out);
+  assert.equal(other.out, 'PASS\n');
   // A receipt from a run recorded before step records (no tool, no steps) passes, with a warning.
   const { tool, ...legacy } = noSteps;
   const warned = gateOn({ ...rec, runs: [legacy] }, 'receipt from before step records');

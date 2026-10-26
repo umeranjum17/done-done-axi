@@ -102,7 +102,7 @@ export function configFault(journeys: Record<string, { command: string }>): stri
 }
 
 // What a run did, written by the journey beside its captures (STEPS_FILE in the run's folder): the version it drove, the state
-// it started from, the steps a user takes and the result a user can see. The check reads the claim against it.
+// it started from, the steps a user takes and the result a user can see. The check requires it; the judge weighs it.
 export type StepRecord = { target: { version: string }; start: string; steps: string[]; result: string };
 export const STEPS_FILE = 'steps.json';
 export const STEPS_SHAPE = '{"target": {"version": "<version of the app driven>"}, "start": "<the state it started from>", "steps": ["<a step a user takes>", ...], "result": "<what a user can see at the end>"}';
@@ -131,41 +131,23 @@ export function runsFault(runs: CaptureRun[] | undefined): string | null {
   return `every cited capture comes from a code-only run (${[...new Set(runs.map((r) => r.journey ?? r.command!))].join(', ')}): ${RULE}`;
 }
 
-// Words that carry no claim: the claim's own scaffolding, not what a user does or sees.
-const GENERIC = new Set('that this with from into when then than have will does your their they them user users able now works work working shows show shown once after before also each every what which while where there here only just more most some such same been being were should would could done proof proves prove outcome correct correctly properly real product the and for are can its'.split(' '));
-const words = (t: string) => t.toLowerCase().match(/[a-z0-9]{3,}/g) ?? [];
-// A word of the claim is in the record when the record has a word that starts like it (attach, attaches, attached).
-const same = (a: string, b: string) => a.startsWith(b.slice(0, Math.min(5, b.length))) || b.startsWith(a.slice(0, Math.min(5, a.length)));
-
-// The words of the claim that the step record never mentions, or [] when it covers the claim: at least half of the claim's
-// words are in the record, and one of them in its result. A pure word match, no model: a test log's record ("ran the unit
-// suite") cannot cover a claim about a pane, and a CLI transcript whose record names the command and its output covers a CLI claim.
-export function uncovered(outcome: string, s: StepRecord): string[] {
-  const terms = [...new Set(words(outcome).filter((w) => w.length >= 4 && !GENERIC.has(w)))];
-  if (!terms.length) return [];
-  const all = words([s.start, ...s.steps, s.result].join(' '));
-  const result = words(s.result);
-  const hit = terms.filter((t) => all.some((w) => same(t, w)));
-  return hit.length * 2 >= terms.length && hit.some((t) => result.some((w) => same(t, w))) ? [] : terms.filter((t) => !hit.includes(t));
-}
-
-// Whether the runs behind a claim carry a step record covering it. A fault: no real run (one that is not code-only) has one.
+// Whether the runs behind a claim carry a well-formed step record. A fault: no real run (one that is not code-only) has one.
 // A warning: a real run was recorded before step records existed, so it keeps working but nothing ties its captures to user steps.
-export function stepsFault(runs: CaptureRun[], outcome: string): { fault: string | null; warning: string | null } {
+// The record's words are never matched against the claim's: a claim describes an outcome in its own words, and whether the
+// captures show it is the judge's call, not a word test's. Requiring the record is what keeps the user steps behind a capture.
+export function stepsFault(runs: CaptureRun[]): { fault: string | null; warning: string | null } {
   const real = runs.filter((r) => !codeOnly(r.command));
   const why = (r: CaptureRun) => {
     if (r.steps_error) return `run ${r.run_id}'s step record ${STEPS_FILE} is invalid: ${r.steps_error}`;
     if (!r.steps) return `run ${r.run_id} has no step record (${STEPS_FILE} beside its captures)`;
     const bad = stepRecordFault(r.steps);
-    if (bad) return `run ${r.run_id}'s step record ${STEPS_FILE} is invalid: ${bad}`;
-    const miss = uncovered(outcome, r.steps);
-    return miss.length ? `run ${r.run_id}'s step record (${r.steps.steps.length} step${r.steps.steps.length > 1 ? 's' : ''}, target ${r.steps.target.version}) never mentions ${miss.join(', ')}` : '';
+    return bad ? `run ${r.run_id}'s step record ${STEPS_FILE} is invalid: ${bad}` : '';
   };
   const reasons = real.map(why);
   if (!real.length || reasons.some((w) => !w)) return { fault: null, warning: null };
   const old = real.filter((r) => !r.tool);
   if (old.length) return { fault: null, warning: `run ${old.map((r) => r.run_id).join(', ')} was recorded before step records, so nothing shows the user steps behind its captures; re-run the journey so it writes ${STEPS_FILE}` };
-  return { fault: `no cited capture comes from a run whose step record covers the claim: ${reasons.join('; ')}`, warning: null };
+  return { fault: `no cited capture comes from a run with a well-formed step record: ${reasons.join('; ')}`, warning: null };
 }
 
 // The core user journey and the release path, the rule init, doctor and the verify skill share. The core journey is the

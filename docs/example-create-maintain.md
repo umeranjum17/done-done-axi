@@ -56,7 +56,7 @@ journeys:
     core: true
 ```
 
-`scripts/prove-core.mjs` (already in the sample; `npm install` fetched `playwright-core`) opens `$DONE_DONE_BASE_URL` in headless Chrome at 390x844 with `playwright-core` (`executablePath` from `DONE_DONE_CHROME`, else `/usr/bin/chromium`), fills `Type a note` with `milk`, clicks `Save note`, waits for `milk` in the list and saves `$DONE_DONE_EVIDENCE_ROOT/note-listed.png`. It also writes `steps.json` beside it (target version, start state, the user's steps, the end result): `check` refuses a capture whose run has no step record that covers the claim ([Step record](reference.md#step-record)).
+`scripts/prove-core.mjs` (already in the sample; `npm install` fetched `playwright-core`) opens `$DONE_DONE_BASE_URL` in headless Chrome at 390x844 with `playwright-core` (`executablePath` from `DONE_DONE_CHROME`, else `/usr/bin/chromium`), fills `Type a note` with `milk`, clicks `Save note`, waits for `milk` in the list and saves `$DONE_DONE_EVIDENCE_ROOT/note-listed.png`. It also writes `steps.json` beside it (target version, start state, the user's steps, the end result): `check` requires that record and never matches its words to the claim's - the judge says whether the capture shows the outcome ([Step record](reference.md#step-record)).
 
 The repo's own `journeys/create-maintain.mjs` runs this whole walkthrough unattended (`done-done run create-maintain`).
 
