@@ -6,6 +6,14 @@ on:
 permissions:
   contents: read
 
+# This workflow runs on pull_request only, so a new push to the same PR cancels
+# the run it superseded and queued duplicates stop burning runner minutes. It
+# never runs on push to main or on a release, so it can never cancel a main or
+# release run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
