@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { accessSync, appendFileSync, closeSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, appendFileSync, closeSync, constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -548,6 +548,29 @@ function writeRecord(cfg: Config, rec: RunRecord) {
 // The random suffix keeps two runs in the same second at one commit apart; mkdir without recursive refuses a reused id.
 const newRunId = (commit: string) => `${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${commit.slice(0, 8)}-${randomBytes(3).toString('hex')}`;
 
+// A passing check seals the evidence it accepted that no run at this commit holds, so a proof made by `check` alone leaves a run
+// record at HEAD (exit 0, byte-for-byte copies, hashes). Its command names the seal, so it is never taken for a command that ran;
+// it keeps the step record of the run it copies from, so a later check that ties to it passes the same rules.
+function sealEvidence(repo: string, cfg: Config, items: { path: string; source: RunRecord }[]): string {
+  const rec = openRun(repo, cfg, null, 'check (sealed)');
+  const names = new Set<string>();
+  rec.files = items.map(({ path }) => {
+    let name = basename(path);
+    for (let n = 2; names.has(name); n++) name = `${n}-${basename(path)}`;
+    names.add(name);
+    copyFileSync(path, join(runDir(cfg, rec.run_id), name));
+    const b = readFileSync(join(runDir(cfg, rec.run_id), name));
+    return { path: join(rec.run_id, name), sha256: sha256(b), bytes: b.length };
+  });
+  const from = items.find((i) => i.source.steps || i.source.steps_error)?.source;
+  if (from?.steps) rec.steps = from.steps;
+  if (from?.steps_error) rec.steps_error = from.steps_error;
+  rec.ended_at = new Date().toISOString();
+  rec.exit = 0;
+  writeRecord(cfg, rec);
+  return `${rec.run_id} (${shown(repo, join(recordsDir(cfg), `${rec.run_id}.json`))})`;
+}
+
 function openRun(repo: string, cfg: Config, journey: string | null, command: string | null, id?: string): RunRecord {
   const h = head(repo);
   const runId = id ?? newRunId(h.commit);
@@ -847,6 +870,8 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const seen = new Map<string, string>();
   const hashes: string[] = [];
   const cited: { path: string; sha256: string }[] = [];
+  // Cited files no run at this commit holds yet: a pass seals them (sealEvidence), so a check-only proof leaves a run record at HEAD.
+  const unsealed: { path: string; source: RunRecord }[] = [];
   const captures: Capture[] = [];
   // The run behind each cited capture, for the real-product rule and the receipt.
   const runs = new Map<string, CaptureRun>();
@@ -919,6 +944,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
       continue;
     }
     const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
+    if (!byHash.some((r) => r.commit === now.commit && r.exit === 0)) unsealed.push({ path, source: rec });
     runs.set(rec.run_id, { run_id: rec.run_id, commit: rec.commit, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }), ...(rec.tool && { tool: rec.tool }), ...(rec.steps && { steps: rec.steps }), ...(rec.steps_error && { steps_error: rec.steps_error }) });
     // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
     const c: Capture = { name, bytes, sha256: hash, media: v };
@@ -1079,6 +1105,10 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   if (rep.code === PASS) {
     mkdirSync(dirname(ledger), { recursive: true });
     appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
+    if (unsealed.length) {
+      if (now.dirty) rep.result.not_sealed = 'the tree has uncommitted changes, so a run record at this commit would not be clean proof; commit, then check again to seal the evidence';
+      else rep.result.sealed = sealEvidence(repo, cfg, unsealed);
+    }
   }
   return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings, warnings, ...(evals && { evals }) };
 }
