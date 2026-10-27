@@ -8285,3 +8285,48 @@ test('a sealed proof survives a head change that touches no journey it covered, 
   assert.equal(stale.code, 2, stale.out);
   assert.match(stale.out, /evidence is for commit/);
 });
+
+// check-only proof: a run at an earlier commit, then a docs-only commit. The check passes on that evidence, and it must leave a run record at HEAD.
+test('a passing check seals the evidence no run holds at HEAD: one record, no duplicate, none on a fail or a dirty tree', () => {
+  const t = setup();
+  const { repo, sh, dd, head } = t;
+  const outcome = 'home and settings render';
+  const { files } = t.shots(outcome);
+  const records = () => readdirSync(join(repo, '.proof', '.done-done', 'runs')).map((n) => JSON.parse(readFileSync(join(repo, '.proof', '.done-done', 'runs', n), 'utf8')));
+  const atHead = () => records().filter((r) => r.commit === head());
+  writeFileSync(join(repo, 'docs', 'guide.md'), '# guide\n\nmore\n');
+  sh('commit', '-qam', 'docs only');
+  assert.equal(atHead().length, 0, 'the gap: no run record at HEAD');
+
+  // A failed check seals nothing, and neither does a pass on a dirty tree (which says why).
+  assert.equal(dd('check', '--outcome', outcome, '.proof/nope/missing.png').code, 2);
+  assert.equal(atHead().length, 0);
+  writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 2;\n');
+  const dirty = dd('check', '--outcome', outcome, ...files);
+  assert.equal(toon(dirty).sealed, undefined, dirty.out);
+  sh('checkout', '--', 'src/app.js');
+  assert.equal(atHead().length, 0, 'a dirty tree seals nothing');
+
+  const pass = dd('check', '--outcome', outcome, ...files);
+  assert.equal(pass.code, 0, pass.out);
+  const [sealed] = atHead();
+  assert.equal(atHead().length, 1);
+  assert.match(toon(pass).sealed, new RegExp(`^${sealed.run_id} `));
+  assert.deepEqual([sealed.exit, sealed.dirty, sealed.schema, sealed.command, sealed.tool, sealed.commit], [0, false, 1, 'check (sealed)', JSON.parse(readFileSync(join(CLI, '..', '..', 'package.json'), 'utf8')).version, head()]);
+  assert.ok(sealed.ended_at);
+  const real = files.map((f) => ({ sha256: createHash('sha256').update(readFileSync(join(repo, f))).digest('hex'), bytes: statSync(join(repo, f)).size }));
+  assert.deepEqual(sealed.files.map(({ sha256, bytes }) => ({ sha256, bytes })).sort((a, b) => a.sha256.localeCompare(b.sha256)), real.sort((a, b) => a.sha256.localeCompare(b.sha256)));
+  for (const f of sealed.files) assert.equal(createHash('sha256').update(readFileSync(join(repo, '.proof', f.path))).digest('hex'), f.sha256, 'copied byte for byte');
+
+  // A second pass at the same head reuses it, also when it cites the sealed copies themselves.
+  assert.equal(dd('check', '--outcome', outcome, ...files).code, 0);
+  assert.equal(dd('check', '--outcome', outcome, ...sealed.files.map((f) => `.proof/${f.path}`)).code, 0, 'the seal keeps the step record');
+  assert.equal(atHead().length, 1, 'no duplicate record');
+  assert.equal(dd('receipt', '--outcome', outcome, ...files).code, 0);
+  assert.equal(atHead().length, 1);
+
+  // Hand-made evidence no run wrote is still not proof, and seals nothing.
+  writeFileSync(join(repo, '.proof', 'hand.txt'), 'hello\n');
+  assert.notEqual(dd('check', '--outcome', outcome, '.proof/hand.txt').code, 0);
+  assert.equal(atHead().length, 1);
+});
