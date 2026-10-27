@@ -11,13 +11,14 @@ import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason } from './agents.js';
 import { AGENTS, CHEAP, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
-import { backend, judge, judgeable, onPath, quote, screen } from './judge.js';
+import { backend, judge, judgeable, judgeEnv, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, inWorktree, maintainSteps, journeyProposal, named, pathspec, readerProblem, repoState, triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
 import { design, interactions, KINDS } from './design.js';
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
+import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, scoresOf, totals } from './evals.js';
 import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
@@ -116,6 +117,12 @@ const DOCTOR_TEXT = `doctor changes nothing except the --probe call record (the 
   or a repo with no journeys yet is a warning, never a failure. real_product, core_journey and upgrade_journey report
   skipped (--setup) until the user records one; plain doctor requires them.
   doctor lists every check; --full changes nothing. A missing verify_skill or ffprobe, or a warning, never fails it.`;
+const EVALS_TEXT = `evals (.done-done.yaml, opt-in): output-quality proof for an app whose output is a model's. init detects one from tracked files (a provider SDK, a committed prompt file or
+  prompt-building code), turns evals on by default and has the agent propose evals/prompts.jsonl (12 prompts from the repo's routes, commands, tests and README), evals/rubric.md,
+  evals/README.md and the block: enabled, prompts, rubric, app.command (prompt on stdin, answer on stdout), baseline.model (or baseline.command) and bar {min_win_rate 0.7, min_score 0.75}.
+  Other apps get no block. init --evals forces it on, --no-evals off, and --no-skill leaves it off (no agent call). An enabled block missing a key is a config error (exit 2).
+  The eval command runs the full set: the app, a plain-model baseline through the judge route, and one blind pairwise judge call with the rubric. It seals a run with results.jsonl and report.md.
+  check and receipt then need a passing full eval at the same commit, the receipt records evals: pass <run id>, and gate refuses a receipt without it. eval never runs in CI and reads no key.`;
 const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME moves it) and .done-done.yaml (the repo), repo over global.
   agent (either file): claude, codex, opencode, pi, gemini or acp:<target>, set by the user (done-done init --agent); done-done never picks one.
   global only: agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
@@ -157,13 +164,15 @@ const FLAGS = {
     '--post': 'with signoff: post the message to the sign-off board through sign-off-axi and record the card on the run (the opt-in: without it, signoff only writes the message)',
     '--board <file>': 'with signoff: the board file to post to (default: the nearest .sign-off/ board sign-off-axi finds)',
     '--timeout <duration>': 'with signoff --wait: how long to wait for the answer (default 10m)',
-    '--limit <n>': 'how many past runs to list (default all)',
+    '--limit <n>': 'history: how many past runs to list (default all); eval: run only the first n prompts, a quick local loop that never satisfies the gate (the report says so)',
     '--out <file.png>': 'where look writes the screenshot; its page-check record goes next to it as <file>.dom.json (default: look.png in $DONE_DONE_EVIDENCE_ROOT inside a journey, else in the current folder)',
     '--agent <agent>': 'the coding agent done-done starts (claude, codex, opencode, pi, gemini or acp:<target>), saved as agent in ~/.done-done/config.yaml; without it, init asks in a terminal',
     '--model <model>': 'with --agent: that agent\'s model, saved as agent_config.<agent>.model (opencode: provider/model)',
     '--judge <agent>': `the judge done-done starts (${JUDGES.join(' or ')}), saved as judge.route in ~/.done-done/config.yaml (any agent and model, the author's own too); without it, init asks in a terminal`,
     '--judge-model <model>': 'with --judge <agent>: the judge\'s model, saved as judge.model',
-    '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init',
+    '--evals': 'force output-quality evals on: the agent proposes the prompt set and rubric from the repo, and init writes them with an evals block (an AI-output app gets this by default)',
+    '--no-evals': 'force evals off (a detected AI-output app is then recorded as evals.enabled: false)',
+    '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init; evals stay off too, since the prompt set needs the agent',
     '--setup': 'install health: git, config, evidence_root, agent and judge only; the verify skill and a repo with no journeys are warnings, and the journey rows are skipped',
     '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
     '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
@@ -188,8 +197,8 @@ const COMMANDS = {
             ['done-done init --journey <name> --core -- <command...>', 'record the core user journey: the one thing a user cannot live without, end to end on the real target'],
             ['done-done init --journey upgrade --upgrade -- <command...>', 'record the release path: install the previous shipped version, upgrade over it in place, drive the core journey'],
         ],
-        flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--after-commit', '--journey <name>', '--core', '--upgrade', '--no-skill', '-- <command...>'],
-        more: [JOURNEYS_TEXT, CONFIG_TEXT],
+        flags: ['--agent <agent>', '--model <model>', '--judge <agent>', '--judge-model <model>', '--hook <agent>', '--after-commit', '--journey <name>', '--core', '--upgrade', '--no-skill', '--evals', '--no-evals', '-- <command...>'],
+        more: [JOURNEYS_TEXT, EVALS_TEXT, CONFIG_TEXT],
     },
     doctor: {
         usage: [
@@ -260,6 +269,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
         more: [`design: one judge request per screen (the judge the user set); it fails a screen on any defect it names:
   ${Object.keys(KINDS).join(', ')}; capture each variant (dark, small width, large font) as its own screen; exit 0 every screen
   passed, 1 a screen failed, 3 none failed but one is unsure`],
+    },
+    eval: {
+        usage: [['done-done eval [--limit <n>]', 'run the evals block: every prompt through the app and a plain-model baseline, judged pairwise with the rubric; exit 0 when win rate and mean score meet the bar, 1 when not, 2 on a config or judge error']],
+        flags: ['--limit <n>'],
+        more: [EVALS_TEXT],
     },
     look: {
         usage: [['done-done look <url> [--act <selector>]... [--mock <file>] [--out <file.png>]', 'open a page in headless Chrome at a phone viewport, click each action, capture it with its page-check record, and fail on any squashed, clipped or cut-off UI, an action that changes nothing, or a mismatch with the design']],
@@ -998,6 +1012,7 @@ async function runCheck(argv, run) {
     let judgeLevel;
     if (!captures.some(judgeable))
         throw new UsageError(`check: the judge was not asked, so there is no verdict: ${[...findings.map((f) => f.why), 'no cited capture is one the judge reads (a PNG or JPEG screen, or a text capture, from a done-done run)'].join('; ')}`, 'Cite a screen or a text capture of the outcome from a done-done run, then re-run this check');
+    const evals = evalPass(cfg, now.commit);
     // No result without the judge: once the plain checks pass, with none set it asks the user, or stops with the command that saves one.
     await withChoice('judge', cfg);
     run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
@@ -1082,6 +1097,8 @@ async function runCheck(argv, run) {
     const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel, warnings });
     if (touches.length)
         rep.result.interaction_checklist = touches;
+    if (evals)
+        rep.result.evals = evals;
     if (matches.length)
         rep.result.design = matches;
     const excluded = cfg.approved_requirements.filter(r => r.exclusion).map(({ kind, name, exclusion }) => ({ kind, name, exclusion }));
@@ -1091,7 +1108,119 @@ async function runCheck(argv, run) {
         mkdirSync(dirname(ledger), { recursive: true });
         appendFileSync(ledger, hashes.filter((h) => !used.get(h)?.has(claimId)).map((h) => `${h} ${claimId}\n`).join(''));
     }
-    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings, warnings };
+    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings, warnings, ...(evals && { evals }) };
+}
+// evals.enabled: the newest full eval run on a clean tree at this commit must have passed. Missing or failing refuses with the next command.
+function evalPass(cfg, commit) {
+    if (!cfg.evals?.enabled)
+        return undefined;
+    const last = loadRecords(cfg).filter((r) => r.eval && !r.eval.partial && !r.dirty && r.commit === commit).sort((a, b) => a.started_at.localeCompare(b.started_at)).at(-1);
+    const short = commit.slice(0, 12);
+    if (!last)
+        throw new UsageError(`evals are on (evals.enabled) and no full eval run exists for ${short}, so output quality is not proven`, 'Commit, then run the full prompt set: done-done eval, and re-run this command');
+    if (!last.eval.pass)
+        throw new UsageError(`evals are on and the newest eval run ${last.run_id} for ${short} failed (win rate ${last.eval.win_rate}, mean score ${last.eval.mean_score}; bar ${cfg.evals.bar.min_win_rate} and ${cfg.evals.bar.min_score})`, 'Improve the app (or edit the prompts and rubric), commit, then run: done-done eval');
+    return `pass ${last.run_id}`;
+}
+// `done-done eval`: every prompt through the app and a plain-model baseline, then one blind pairwise judge call with the rubric.
+// The judge and the baseline use the configured judge route (the user's own sign-in), never a key, and eval never runs in CI.
+async function cmdEval(argv) {
+    const { values } = parseArgs({ args: argv, options: { limit: { type: 'string' } }, allowPositionals: false });
+    const repo = repoRoot();
+    const cfg = loadConfig(repo);
+    const ev = cfg.evals;
+    if (!ev?.enabled)
+        throw new UsageError('evals are not enabled in .done-done.yaml', 'Turn them on: done-done init --evals (the agent proposes the prompt set), or set evals.enabled: true with prompts, rubric, app.command and a baseline');
+    const limit = values.limit === undefined ? 0 : Number(values.limit);
+    if (values.limit !== undefined && !(Number.isInteger(limit) && limit > 0))
+        throw new UsageError(`--limit ${values.limit} is not a positive whole number`);
+    const rubric = readFileSync(join(repo, ev.rubric), 'utf8');
+    const criteria = criteriaOf(rubric);
+    if (!criteria.length)
+        throw new UsageError(`${ev.rubric} names no criteria`, `Add lines such as "- facts: every fact in the request is kept" to ${ev.rubric}`);
+    const all = readPrompts(readFileSync(join(repo, ev.prompts), 'utf8'), ev.prompts);
+    const prompts = limit ? all.slice(0, limit) : all;
+    const choice = await preflightJudge(cfg, false);
+    if (choice.route !== 'claude-code' && !choice.route.startsWith('answerer:'))
+        throw new UsageError(`eval judges through your own sign-in (claude-code or answerer:<agent>), and ${choice.route} reads an API key, which eval never does`, 'Set another judge: done-done init --judge claude --judge-model claude-haiku-5-5');
+    const rec = openRun(repo, cfg, null, 'done-done eval');
+    const dir = runDir(cfg, rec.run_id);
+    const store = join(runsRoot(cfg.app), rec.run_id, 'agents');
+    let calls = 0;
+    const ask = async (name, prompt, schema, model) => {
+        const a = await askAgent({ ...agentRun(cfg, choice.agent, model), prompt, schema, cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, record: join(store, `${name}.json`) });
+        try {
+            calls += JSON.parse(readFileSync(a.record, 'utf8')).attempts ?? 1;
+        }
+        catch {
+            calls++;
+        }
+        if (!a.ok)
+            throw new UsageError(`eval ${name}: ${choice.agent} did not answer: ${a.error}`, 'Check the judge with done-done doctor --probe, then re-run: done-done eval');
+        return a.answer;
+    };
+    // A command that reads the prompt on stdin and prints the answer; why is set when it did not.
+    const sh = (command, input) => {
+        const r = spawnSync(command, { shell: true, cwd: repo, input, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 << 20, env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: dir } });
+        const out = (r.stdout ?? '').trim();
+        return { out, why: r.error && r.status === null ? r.error.message : r.status !== 0 ? `exited ${r.status}: ${(r.stderr ?? '').trim().slice(-200)}` : out ? '' : 'printed nothing' };
+    };
+    const rows = [];
+    try {
+        for (const [i, p] of prompts.entries()) {
+            const app = sh(ev.app.command, p.input);
+            const none = Object.fromEntries(criteria.map((c) => [c, 0]));
+            if (app.why)
+                rows.push({ id: p.id, input: p.input, app_output: app.out, baseline_output: '', scores: none, baseline_scores: none, winner: 'baseline', reason: `the app command ${app.why}`, error: app.why });
+            else {
+                const plain = ev.baseline.command ? sh(ev.baseline.command, p.input) : { out: String((await ask(`${p.id}-baseline`, baselinePrompt(p.input), BASELINE_SCHEMA, ev.baseline.model)).output ?? '').trim(), why: '' };
+                if (plain.why || !plain.out)
+                    throw new UsageError(`eval ${p.id}: the baseline ${plain.why || 'printed nothing'}`, 'Fix evals.baseline, then re-run: done-done eval');
+                const appFirst = i % 2 === 0; // the app is answer A on even prompts and B on odd ones, so a lean to one side cancels out
+                const j = await ask(`${p.id}-judge`, judgePrompt(rubric, criteria, p.input, appFirst ? app.out : plain.out, appFirst ? plain.out : app.out), judgeSchema(criteria), choice.model);
+                const a = scoresOf(j.scores_a, criteria), b = scoresOf(j.scores_b, criteria);
+                if (typeof a === 'string' || typeof b === 'string')
+                    throw new UsageError(`eval ${p.id}: the judge's answer is unusable: ${typeof a === 'string' ? `A ${a}` : `B ${b}`}`, 'Re-run: done-done eval');
+                const winner = j.winner === 'tie' ? 'tie' : (j.winner === 'A') === appFirst ? 'app' : 'baseline';
+                rows.push({ id: p.id, input: p.input, app_output: app.out, baseline_output: plain.out, scores: appFirst ? a : b, baseline_scores: appFirst ? b : a, winner, reason: String(j.reason ?? '') });
+            }
+            process.stderr.write(`eval ${i + 1}/${prompts.length} ${p.id}: ${rows.at(-1).winner}\n`);
+        }
+    }
+    catch (e) {
+        rmSync(dir, { recursive: true, force: true });
+        throw e;
+    }
+    const t = totals(rows, criteria, ev.bar);
+    const partial = prompts.length < all.length;
+    writeFileSync(join(dir, 'results.jsonl'), rows.map((r) => JSON.stringify({ ...r, commit: rec.commit, run_id: rec.run_id })).join('\n') + '\n');
+    const judged = `${choice.route} ${choice.model}`;
+    writeFileSync(join(dir, 'report.md'), reportMd({ app: cfg.app, commit: rec.commit, run_id: rec.run_id, judge: judged, baseline: ev.baseline.model ? `${ev.baseline.model} with no app prompt` : ev.baseline.command, bar: ev.bar, rows, total: all.length, calls, t }));
+    const round = (n) => Math.round(n * 100) / 100;
+    rec.eval = { pass: t.pass, partial, prompts: prompts.length, total: all.length, win_rate: round(t.win_rate), mean_score: round(t.mean_score), model_calls: calls };
+    const closed = closeRun(repo, cfg, rec);
+    if (closed.reason)
+        throw new UsageError(`eval: ${closed.reason}`, 'Commit or stop changing the tree, then re-run: done-done eval');
+    const failing = cap(rows.filter((r) => r.winner !== 'app').map((r) => ({ prompt: r.id, winner: r.winner, reason: r.reason })));
+    emit({
+        command: 'eval',
+        result: t.pass ? 'pass' : 'fail',
+        run_id: rec.run_id,
+        commit: rec.commit,
+        prompts: `${prompts.length} of ${all.length}${partial ? ' (--limit: a partial run never satisfies the gate)' : ''}`,
+        win_rate: rec.eval.win_rate,
+        mean_score: rec.eval.mean_score,
+        bar: `win rate ${ev.bar.min_win_rate}, mean score ${ev.bar.min_score}`,
+        judge: judged,
+        model_calls: calls,
+        report: shown(repo, join(dir, 'report.md')),
+        results: shown(repo, join(dir, 'results.jsonl')),
+        ...(rec.dirty && { warning: 'the tree has uncommitted changes, so check and receipt will not count this run; commit, then re-run' }),
+        failing: failing.items,
+        ...(failing.omitted && { failing_omitted: failing.omitted }),
+        help: [t.pass ? (partial ? 'Run the full set before check: done-done eval' : 'Evals passed: record the claim with done-done receipt --from <file|->') : 'Improve the app (or edit evals/prompts.jsonl and evals/rubric.md), commit, then re-run: done-done eval'],
+    });
+    return t.pass ? PASS : FAIL;
 }
 async function cmdCheck(argv) {
     const r = await runCheck(argv);
@@ -1135,6 +1264,8 @@ function receiptFault(rec, short) {
         if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256)))))
             return `receipt for ${short} has a malformed interaction-checklist verdict`;
     }
+    if (rec.evals !== undefined && !/^pass \S+$/.test(String(rec.evals)))
+        return `receipt for ${short} has a malformed evals line`;
     const code = runsFault(rec.runs);
     if (code)
         return `receipt for ${short} is no real-product proof: ${code}`;
@@ -1175,6 +1306,10 @@ function verifyReceipt(repo, cfg, headArg) {
     if (now.commit !== commit)
         return fail(`HEAD is ${now.commit.slice(0, 12)}, not ${short}`);
     const records = loadRecords(cfg);
+    if (cfg.evals?.enabled && !rec.evals)
+        return fail(`receipt for ${short} records no evals line, and evals.enabled is on: output quality is not proven`);
+    if (rec.evals && !records.some((r) => r.run_id === rec.evals.slice(5) && r.eval?.pass && r.commit === commit))
+        return fail(`receipt for ${short} names eval run ${rec.evals.slice(5)}, which is not a passing run at this head in ${recordsDir(cfg)}`);
     const bad = [];
     for (const f of rec.files) {
         let bytes;
@@ -1194,7 +1329,7 @@ function verifyReceipt(repo, cfg, headArg) {
     }
     if (bad.length)
         return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 async function cmdReceipt(argv) {
     const vi = argv.indexOf('--verify');
@@ -1230,9 +1365,9 @@ function recordReceipt(repo, cfg, r) {
     // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
     if (!r.cited.length)
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock };
+    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }) };
     const path = writeReceipt(cfg, rec);
-    const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+    const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
@@ -1336,7 +1471,7 @@ const STALE_MS = 60_000;
 const runsRoot = (app) => join(home(), 'runs', app);
 const verifySteps = (cfg) => ['resolve', 'drive', 'check', 'judge', ...(cfg.auto_fix.verify ? ['triage', 'fix'] : []), 'gate', 'receipt', 'report'];
 // Commands an agent drive must not run: they answer a gate, write a receipt or start a run that can write one.
-const DRIVE_REFUSED = ['respond', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit', 'journey'];
+const DRIVE_REFUSED = ['respond', 'eval', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit', 'journey'];
 // One agent drive may launch the app, drive it and save captures; past this it is killed with everything it started.
 const DRIVE_SCHEMA = {
     type: 'object',
@@ -2399,7 +2534,7 @@ function cmdStatus(argv) {
     const cfg = loadConfig(repo);
     const root = runsRoot(cfg.app);
     const verify = values.run ? /^[\w-]+$/.test(values.run) && existsSync(join(root, values.run, 'run.json')) : runsIn(root).some((r) => r.repo === repo);
-    const rec = verify ? undefined : loadRecords(cfg).filter((r) => !values.run || r.run_id === values.run).sort((a, b) => a.started_at.localeCompare(b.started_at)).pop();
+    const rec = verify ? undefined : loadRecords(cfg).filter((r) => !r.eval && (!values.run || r.run_id === values.run)).sort((a, b) => a.started_at.localeCompare(b.started_at)).pop();
     if (rec)
         return showRecord(repo, cfg, rec);
     return showRun(join(root, pickId(root, repo, 'status', cfg, values.run)), cfg, 'status');
@@ -3685,11 +3820,63 @@ const commitFirst = (skill, noSkill = false) => `${noSkill ? '.done-done.yaml' :
 const initJudge = (v) => (v.startsWith('answerer:') && routeOf(v.slice('answerer:'.length)) === v ? v.slice('answerer:'.length) : v);
 // An absolute path inside the repo in a recipe: the recipe is committed, so it would name this checkout only.
 const absoluteInside = (command, repo) => [...command.matchAll(/(?:^|[\s"'=])(\/[^\s"'`;|&<>]*)/g)].map((m) => m[1]).find((p) => p === repo || p.startsWith(`${repo}/`));
+// init's evals step. An existing block stays. Otherwise an AI-output app (detected from tracked files) is opted in, --evals forces
+// it on and --no-evals off; on needs the agent to propose the prompt set, so --no-skill (no agent call) leaves evals off. A block is
+// written only complete: the three files and the config together, never half.
+async function setupEvals(repo, cfg, force, noSkill) {
+    if (cfg.evals)
+        return { status: `unchanged (evals.enabled is ${cfg.evals.enabled} in .done-done.yaml${force !== undefined && force !== cfg.evals.enabled ? '; edit it there to change it' : ''})` };
+    const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] }).split('\0').filter(Boolean);
+    const reason = detectAi(tracked, (f) => repoText(join(repo, f)));
+    const guess = reason ? `AI-output app: ${reason}` : 'not an AI-output app: no model provider SDK, prompt file or prompt-building code in tracked files';
+    const file = join(repo, '.done-done.yaml');
+    const append = (body) => { writeFileSync(`${file}.tmp`, readFileSync(file, 'utf8').replace(/\n*$/, '\n') + body); renameSync(`${file}.tmp`, file); };
+    if (!(force ?? !!reason)) {
+        if (!reason || force !== false)
+            return { status: `off (${guess}); done-done init --evals turns it on` };
+        append('\n# Output-quality evals are off for this AI-output app (init --no-evals); set enabled: true and run done-done init --evals to propose a prompt set.\nevals:\n  enabled: false\n');
+        return { status: `off (${guess}; --no-evals recorded evals.enabled: false)` };
+    }
+    if (noSkill)
+        return { status: `off (${guess}); --no-skill makes no agent call, so no prompt set was proposed and no evals block was written; run: done-done init --evals` };
+    if (!cfg.agent)
+        return { status: `not written (${guess}): no agent is set, and the agent proposes the prompt set; set one with done-done init --agent <agent> --model <model>, then run: done-done init --evals` };
+    const targets = [PROMPTS_FILE, RUBRIC_FILE, README_FILE];
+    const have = targets.filter((t) => existsSync(join(repo, t)));
+    if (have.length)
+        return { status: `skipped: ${have.join(', ')} already exist; point an evals block in .done-done.yaml at them (done-done init --help lists its keys)` };
+    const agent = selectAgent(cfg);
+    const toolless = agent.agent !== 'claude';
+    if (toolless && toollessReason(agent.agent))
+        return { status: `not written: ${toollessReason(agent.agent)}; set the agent to claude, codex, opencode, pi or acp with done-done init --agent <agent> --model <model>`, failed: true };
+    const context = repoContext(repo, cfg.skill);
+    if (!context.files.size)
+        return { status: "not written: the repo has no tracked files to cite; commit the repo's files, then re-run init", failed: true };
+    const record = join(home(), 'agents', `init-evals-${new Date().toISOString().replace(/[:.]/g, '-')}-${agent.agent.replace(/[^\w-]/g, '-')}.json`);
+    const a = await askAgent({ ...agent, prompt: evalsPrompt(cfg.app, context.text, toolless), schema: EVALS_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record });
+    if (!a.ok)
+        return { status: `not written: ${agent.agent} did not answer: ${a.error}; done-done doctor --probe checks the agent`, failed: true };
+    const p = a.answer;
+    const problem = evalsProblem(a.answer, context.files, toolless ? context.read : context.files, cited, (c) => SECRET.test(c)) || (typeof p.app_command === 'string' && codeOnly(p.app_command) ? `the app_command ${p.app_command.trim()} is code-only: ${RULE}` : '');
+    if (problem)
+        return { status: `not written: ${agent.agent}'s proposal is unusable: ${problem}`, failed: true };
+    const judge = (() => { try {
+        return selectJudge(cfg, NO_AUTHOR).model;
+    }
+    catch {
+        return CHEAP.claude.model;
+    } })();
+    mkdirSync(join(repo, 'evals'), { recursive: true });
+    for (const [f, body] of [[PROMPTS_FILE, promptsJsonl(p)], [RUBRIC_FILE, rubricMd(cfg.app, p)], [README_FILE, readmeMd(cfg.app, p)]])
+        writeFileSync(join(repo, f), body);
+    append(evalsYaml(p, judge));
+    return { status: `on (${guess}); wrote ${targets.join(', ')} and an evals block: ${p.prompts.length} prompts, baseline ${judge}; edit and commit them, then run: done-done eval` };
+}
 async function cmdInit(argv) {
     const dash = argv.indexOf('--');
     const { values } = parseArgs({
         args: dash < 0 ? argv : argv.slice(0, dash),
-        options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, 'after-commit': { type: 'boolean' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' }, 'no-skill': { type: 'boolean' } },
+        options: { agent: { type: 'string' }, model: { type: 'string' }, judge: { type: 'string' }, 'judge-model': { type: 'string' }, hook: { type: 'string' }, 'after-commit': { type: 'boolean' }, journey: { type: 'string' }, core: { type: 'boolean' }, upgrade: { type: 'boolean' }, 'no-skill': { type: 'boolean' }, evals: { type: 'boolean' }, 'no-evals': { type: 'boolean' } },
         allowPositionals: false,
     });
     const parts = dash < 0 ? [] : argv.slice(dash + 1);
@@ -3697,6 +3884,10 @@ async function cmdInit(argv) {
     // --no-skill: an installer writes the config without the agent-written skill, so it costs no agent call.
     const noSkill = values['no-skill'] === true;
     const judge = values.judge === undefined ? undefined : initJudge(values.judge);
+    if (values.evals && values['no-evals'])
+        throw new UsageError('--evals and --no-evals contradict each other', 'Pass one: done-done init --evals, or done-done init --no-evals');
+    if (journey !== null && (values.evals || values['no-evals']))
+        throw new UsageError('--evals and --no-evals set the repo\'s evals, not a journey', 'Run them without --journey: done-done init --evals');
     if (values.hook !== undefined && !Object.hasOwn(HOOKS, values.hook))
         throw new UsageError(`--hook ${values.hook} is not supported; the supported values are ${Object.keys(HOOKS).join(', ')}`, `Run: done-done init --hook <${Object.keys(HOOKS).join('|')}>`);
     if (values['after-commit'] && values.hook !== 'claude')
@@ -3840,8 +4031,9 @@ app: ${JSON.stringify(cfg.app)}
     const ag = writeAgent();
     const jg = writeJudge();
     const verify = noSkill ? { status: 'skipped (--no-skill)' } : await scaffoldVerify(repo, loadConfig(repo));
+    const evals = await setupEvals(repo, loadConfig(repo), values.evals ? true : values['no-evals'] ? false : undefined, noSkill);
     const agentHook = writeHook();
-    const code = ag.code !== PASS ? ag.code : verify.failed ? FAIL : PASS;
+    const code = ag.code !== PASS ? ag.code : verify.failed || evals.failed ? FAIL : PASS;
     emit({
         command: 'init',
         result: code === PASS ? 'pass' : 'fail',
@@ -3854,6 +4046,7 @@ app: ${JSON.stringify(cfg.app)}
         gitignore: added ? `added ${rel.replace(/\/+$/, '')}/` : 'unchanged',
         ...(renamed && { skill_renamed: renamed }),
         verify_skill: verify.status,
+        evals: evals.status,
         ...agentHook.out,
         help: [
             ...(Object.keys(cfg.journeys).length
@@ -3864,6 +4057,7 @@ app: ${JSON.stringify(cfg.app)}
             ...ag.help,
             ...jg.help,
             ...(verify.failed ? [SCAFFOLD_HELP] : []),
+            ...(evals.failed ? ['The evals were not written: fix the cause evals names, then re-run: done-done init --evals'] : []),
             `Commit ${commitFirst(cfg.skill, noSkill)}`,
         ],
     });
@@ -4195,6 +4389,12 @@ function gateFault(repo, tip, dir, pushed, warnings) {
     const names = git(repo, '-c', 'core.quotepath=off', 'ls-tree', '-r', '--name-only', tip, '--', dir).split('\n').filter((n) => n.endsWith('.json'));
     if (!names.length)
         return `no receipt in ${dir}/ at ${short}`;
+    // A repo whose committed config turns evals on needs the eval line in its receipt; reading it is git objects only, no model.
+    let wantsEvals = false;
+    try {
+        wantsEvals = parseDocument(git(repo, 'show', `${tip}:.done-done.yaml`)).toJS()?.evals?.enabled === true;
+    }
+    catch { }
     const reasons = [];
     for (const name of names) {
         const why = (() => {
@@ -4208,6 +4408,8 @@ function gateFault(repo, tip, dir, pushed, warnings) {
             const fault = receiptFault(rec, basename(name));
             if (fault)
                 return fault;
+            if (wantsEvals && !rec.evals)
+                return `receipt ${basename(name)} records no evals line, and evals.enabled is true at ${short}: run done-done eval, then done-done receipt again`;
             if (name !== `${dir}/${rec.head}.json`)
                 return `${name} does not name its own head ${String(rec.head).slice(0, 12)}`;
             try {
@@ -4573,6 +4775,8 @@ async function main(argv) {
             return await cmdDoctor(rest);
         if (cmd === 'run')
             return await cmdRun(rest);
+        if (cmd === 'eval')
+            return await cmdEval(rest);
         if (cmd === 'check')
             return await cmdCheck(rest);
         if (cmd === 'receipt')
