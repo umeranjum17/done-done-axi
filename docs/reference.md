@@ -617,6 +617,30 @@ interaction_checklist:
 
 A surface that does not exist must be explicitly `not_applicable` with its reason, never silently passed. Applicability is a declared inventory, not automatic surface discovery: reviewers must check those reasons and enumerate all relevant actions. Receipts preserve all six results under `judge.interaction_checklist`; passing frame hashes are bound to cited evidence, and receipt/gate validation rejects flagged or malformed entries. Without this config key, existing approved-design behavior is unchanged. `interaction_checklist: {}` opts in and flags all six; ad-hoc `design` is still only a visual check.
 
+### Evals
+
+An app whose product is a model's output needs more than a proven journey: it needs the output to be good. `evals` is an opt-in block in `.done-done.yaml` that adds an output-quality gate; a repo without it is unchanged.
+
+```yaml
+evals:
+  enabled: true
+  prompts: evals/prompts.jsonl      # {"id": "...", "input": "..."} per line
+  rubric: evals/rubric.md           # lines "- name: what a good answer does"
+  app: { command: "node app.mjs" }  # prompt on stdin, answer on stdout
+  baseline: { model: claude-haiku-5-5 }   # or { command: "..." }: a plain model, no app prompt
+  bar: { min_win_rate: 0.7, min_score: 0.75 }
+```
+
+`init` detects an AI app from tracked files: a provider SDK in a manifest or an import (anthropic, openai, google genai or generative-ai, ollama, langchain, litellm, groq, mistral, cohere), a committed prompt or system-prompt file, or prompt-building code (tests, docs, examples, fixtures and vendored code are skipped). It reports the guess in its `evals` field. A detected app gets `enabled: true`, and the agent proposes 12 prompts from the repo's routes, commands, tests and README, a rubric of 2 to 8 criteria and an `evals/README.md`; init writes the three files and the block (all or nothing, cited files must be tracked). The baseline model is the judge's model. `init --evals` forces it on, `init --no-evals` records `enabled: false`, and `--no-skill` makes no agent call, so it leaves evals off and says so. A non-AI repo gets no block. An enabled block must name `prompts`, `rubric`, `app.command` and one baseline (`model` or `command`) and the files must exist, else the config is an error (exit 2) naming the key. The prompt set and rubric are committed and yours to edit.
+
+```sh
+done-done eval [--limit <n>]
+```
+
+`eval` runs every prompt: the app command gets the prompt on stdin (with `DONE_DONE_EVIDENCE_ROOT` and `DONE_DONE_RUN_ID` set); the baseline answers the same prompt through the judge route with a plain instruction; one judge call sees both answers blind (the app is A on even prompts, B on odd) with the rubric and returns per-criterion scores, a winner and a reason. It seals a run holding `results.jsonl` (id, input, app and baseline output, scores, winner, reason) and a one-page `report.md` (bar, totals, win rate, mean score per criterion, failing prompts with reasons, commit, judge route and model, exact model-call count). A tie or a crashed app counts as a lost prompt. It passes when the win rate and mean score meet `evals.bar` (defaults 0.7 and 0.75): exit 0 pass, 1 fail, 2 usage, config or judge error. It runs on a subscription judge route (`claude-code` or `answerer:<agent>`) and refuses a key route; no key is read and it never runs in CI. `--limit` is for a quick local loop: the report says it is partial and a partial run never satisfies the gate.
+
+On a repo with `evals.enabled: true`, `check` and `receipt` refuse unless the newest full eval run at HEAD, on a clean tree, passed, and name `done-done eval` as the next command. A receipt records `evals: pass <run id>`, `receipt --verify` re-checks the run, and `gate` (model-free) fails a receipt without that line when the committed config enables evals.
+
 ### Record a receipt
 
 A receipt ties one passing check to one commit and to the exact bytes it cited, so a merge gate (or `gate` in CI) can re-verify the same proof later.
@@ -736,7 +760,7 @@ Running `done-done` with no subcommand prints the repo's config state (`config: 
 |---|---|
 | 0 | pass |
 | 1 | fail |
-| 2 | usage or config error |
+| 2 | usage or config error (`eval`: also a judge or baseline error) |
 | 3 | inconclusive (could not be proven either way) |
 | 4 | the run is still running, or a `verify` run waits at its gate (`verify`, `maintain --no-wait`, `rerun`, `status`, `respond`) |
 
@@ -773,7 +797,7 @@ The receipt is committed in a follow-up commit, because a receipt cannot sit ins
 - has a head that is `<head>` (default `HEAD`) or an ancestor of it, with every file changed since that head inside the receipts folder, so the proof still covers the code;
 - was made no later than the push (`--pushed`, an ISO time; default the commit time of `<head>`), compared to the second.
 
-A receipt whose runs were recorded before step records passes with `WARN: ...` lines after `PASS`. `gate` trusts the committed JSON: it does not re-hash the evidence, which only `receipt --verify` can do, on the machine that holds it. It says so by name and does not claim more.
+On a repo whose committed `.done-done.yaml` sets `evals.enabled: true`, the receipt must also carry an `evals: pass <run id>` line ([Evals](#evals)). A receipt whose runs were recorded before step records passes with `WARN: ...` lines after `PASS`. `gate` trusts the committed JSON: it does not re-hash the evidence, which only `receipt --verify` can do, on the machine that holds it. It says so by name and does not claim more.
 
 ### Where proof lives
 

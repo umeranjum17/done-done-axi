@@ -1,6 +1,6 @@
 {
   "name": "done-done-axi",
-  "version": "0.6.18",
+  "version": "0.6.19",
   "license": "Apache-2.0",
   "description": "Prove your app really works: done-done drives your app the way a user does, a fresh judge checks every capture, and the proof is tied to a commit.",
   "type": "module",

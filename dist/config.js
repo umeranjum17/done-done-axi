@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { checkMatrix } from './matrix.js';
 import { parseDom, parseLook } from './dom.js';
+import { parseEvals } from './evals.js';
 export class UsageError extends Error {
     help;
     // The exact next command, when the error has one.
@@ -69,6 +70,7 @@ const KEYS = {
     matrix: { scope: 'repo', type: 'matrix' },
     dom: { scope: 'repo', type: 'dom' },
     look: { scope: 'repo', type: 'look' },
+    evals: { scope: 'repo', type: 'evals' },
     approved_design: { scope: 'repo', type: 'approved_design' },
     approved_requirements: { scope: 'repo', type: 'approved_requirements' },
     interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
@@ -302,6 +304,14 @@ function apply(target, text, file, scope) {
             target.look = l;
             continue;
         }
+        if (key === 'evals') {
+            const e = parseEvals(value, dirname(file));
+            if (typeof e === 'string')
+                throw new UsageError(`${file}: evals ${e}`, `Fix the evals block in ${file}, or run: done-done init --evals`);
+            target.from[key] = scope;
+            target.evals = e;
+            continue;
+        }
         if (!ok)
             throw new UsageError(`${file}: ${key} must be ${want[spec.type] ?? `a ${spec.type}`}${key === 'matrix' ? `: ${checkMatrix(value)}` : ''}`);
         if (key === 'agent_config')
@@ -363,6 +373,7 @@ function defaultConfig(repo) {
         matrix: null,
         dom: null,
         look: null,
+        evals: null,
         approved_requirements: [],
         approved_design: [],
         interaction_checklist: null,

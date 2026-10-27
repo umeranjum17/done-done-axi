@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 import type { Instance } from './instance.js';
 import { checkMatrix, type Matrix } from './matrix.js';
 import { type Dom, type LookRef, parseDom, parseLook } from './dom.js';
+import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
 
 export class UsageError extends Error {
@@ -42,6 +43,8 @@ export type Config = {
   dom: Dom | null;
   // The look step's approved design reference (tokens, the tallest control); null when unset: today's behaviour.
   look: LookRef | null;
+  // Output-quality evals (opt-in): the prompt set, rubric, app command, baseline and bar; null when the repo has no block: today's behaviour.
+  evals: Evals | null;
   approved_requirements: ApprovedRequirement[]; // approved assets, color tokens, interactions and reference images beyond the screens; [] when unset
   approved_design: ApprovedScreen[]; // committed screen x pixel size x theme manifest; [] when unset
   interaction_checklist: InteractionEvidence | null; // opt-in; omitted items are flagged
@@ -100,7 +103,7 @@ export const EFFORT_FLAGS: Record<string, (level: string) => string[]> = {
 const AGENT_TIMEOUT = '30m';
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'approved_design' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   agent_config: { scope: 'global', type: 'agent_config' },
@@ -117,6 +120,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   matrix: { scope: 'repo', type: 'matrix' },
   dom: { scope: 'repo', type: 'dom' },
   look: { scope: 'repo', type: 'look' },
+  evals: { scope: 'repo', type: 'evals' },
   approved_design: { scope: 'repo', type: 'approved_design' },
   approved_requirements: { scope: 'repo', type: 'approved_requirements' },
   interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
@@ -318,6 +322,13 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       target.look = l;
       continue;
     }
+    if (key === 'evals') {
+      const e = parseEvals(value, dirname(file));
+      if (typeof e === 'string') throw new UsageError(`${file}: evals ${e}`, `Fix the evals block in ${file}, or run: done-done init --evals`);
+      target.from[key] = scope;
+      target.evals = e;
+      continue;
+    }
     if (!ok) throw new UsageError(`${file}: ${key} must be ${want[spec.type] ?? `a ${spec.type}`}${key === 'matrix' ? `: ${checkMatrix(value)}` : ''}`);
     if (key === 'agent_config')
       for (const [a, c] of Object.entries(value as Record<string, { model?: string; effort?: string }>)) {
@@ -370,6 +381,7 @@ function defaultConfig(repo: string): Config {
     matrix: null,
     dom: null,
     look: null,
+    evals: null,
     approved_requirements: [],
     approved_design: [],
     interaction_checklist: null,
