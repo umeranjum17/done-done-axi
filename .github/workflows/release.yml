@@ -3,6 +3,8 @@ name: release
 on:
   push:
     branches: [main]
+    # A docs-only push cannot change the version, so it cannot publish.
+    paths-ignore: ['docs/**', '**.md', LICENSE]
   workflow_dispatch:
 
 permissions:
@@ -23,17 +25,27 @@ jobs:
           node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
-      # Trusted publishing (OIDC) needs npm 11.5 or newer.
-      - run: npx -y semver@7 -r '>=11.5.0' "$(npm -v)"
-      - run: npm ci
-      - run: npm test
-      - run: npm run build:skill -- --check
-      - name: Publish if this version is not on npm
+      # The PR already ran npm test and build:skill on this tree, so main
+      # re-runs them only when it is about to publish. A version already on
+      # npm needs neither the install nor the gate.
+      - id: unpublished
         run: |
           name=$(node -p 'require("./package.json").name')
           version=$(node -p 'require("./package.json").version')
           if [ -n "$(npm view "$name@$version" version 2>/dev/null)" ]; then
-            echo "$name@$version is already on npm; skipping publish"
+            echo "$name@$version is already on npm; skipping install, tests and publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           else
-            npm publish --provenance --access public
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
+      # Trusted publishing (OIDC) needs npm 11.5 or newer.
+      - if: steps.unpublished.outputs.publish == 'true'
+        run: npx -y semver@7 -r '>=11.5.0' "$(npm -v)"
+      - if: steps.unpublished.outputs.publish == 'true'
+        run: npm ci
+      - if: steps.unpublished.outputs.publish == 'true'
+        run: npm test
+      - if: steps.unpublished.outputs.publish == 'true'
+        run: npm run build:skill -- --check
+      - if: steps.unpublished.outputs.publish == 'true'
+        run: npm publish --provenance --access public

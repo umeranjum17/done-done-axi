@@ -1,7 +1,12 @@
 name: ci
 
+# Default pull_request types (opened, synchronize, reopened) plus
+# ready_for_review, so a draft PR runs nothing until it is marked ready.
+# "edited" is left out on purpose: no job here reads the PR title or body,
+# so a body edit must not start a run.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -15,7 +20,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A skipped job reports as passing to a required check, so a draft PR is not
+  # blocked once it is marked ready (ready_for_review starts the real run).
   test:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +55,7 @@ jobs:
       - if: steps.changes.outputs.docs_only != 'true'
         run: npm run build:skill -- --check
   proof:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
