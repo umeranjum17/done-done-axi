@@ -2881,6 +2881,7 @@ type Scaffold = {
   observe: string;
   isolate: string;
   features: { title: string; reach: string; drive: string; source: string; capture: 'screenshot' | 'text'; core: boolean; upgrade: boolean }[];
+  behaviour?: { title: string; user_does: string; user_sees: string; source: string }[]; // asked only of an AI-output app
 };
 type Feature = Scaffold['features'][number] & { slug: string };
 
@@ -2899,6 +2900,14 @@ const SCAFFOLD_SCHEMA = {
   },
   required: ['surface', 'first_release', 'launch', 'ready', 'harness', 'observe', 'isolate', 'features'],
   additionalProperties: false,
+};
+
+// An AI-output app (evals.ts detectAi) is also asked for a few basic behaviour journeys; any other app gets the schema above unchanged.
+const BEHAVIOUR = { min: 3, max: 6 };
+const scaffoldSchema = (ai: boolean) => !ai ? SCAFFOLD_SCHEMA : {
+  ...SCAFFOLD_SCHEMA,
+  properties: { ...SCAFFOLD_SCHEMA.properties, behaviour: { type: 'array', minItems: BEHAVIOUR.min, maxItems: BEHAVIOUR.max, items: { type: 'object', properties: { title: STR, user_does: STR, user_sees: STR, source: STR }, required: ['title', 'user_does', 'user_sees', 'source'], additionalProperties: false } } },
+  required: [...SCAFFOLD_SCHEMA.required, 'behaviour'],
 };
 
 const NO_EDIT = 'The drive changes no repo file: note findings in the run\'s report; after the drive, run done-done maintain to see what drifted, then fix the skill';
@@ -2962,7 +2971,7 @@ function repoContext(repo: string, skill: string): { files: Set<string>; read: S
   return { files: new Set(files), read, text: `${list}\n\n${parts.join('\n\n')}${out}` };
 }
 
-function scaffoldPrompt(cfg: Config, context: string, toolless: boolean, ships: string[]): string {
+function scaffoldPrompt(cfg: Config, context: string, toolless: boolean, ships: string[], ai = ''): string {
   return `You write the verify skill for the app ${cfg.app}, which \`done-done init\` saves at ${cfg.skill}: how an agent launches this repo's app safely, drives it the way a user does, and captures proof that it works. Do not edit, create or delete any file, and do not run the app or any command.
 ${toolless ? "You have no tools: the repo's tracked file list and the text of its key files are below, and they are all you can read." : 'The repository is your working directory: read the files below first, then any other file you need.'} Use only what the repo shows: never invent a command, path, flag, route or label. Never open a secret-looking file: a .env or .env.* file, a path whose name contains secret, credential, token or password, or a *.pem, *.key or *.p12 file. Never write a secret value into steps or why; name the environment variable instead.
 
@@ -2977,14 +2986,14 @@ A proof drives the running product the way a user does: a test suite, typecheck,
 - first_release: true only when the repo explicitly says no earlier release yet; false when an earlier version shipped or you cannot tell. This records upgrade proof as pending, never as passed. Do not invent a previous version or an upgrade drive when none exists.
 - core: true on exactly one feature, listed first: the core user journey, the one thing a user cannot live without, driven end to end on the real target the way a user does it (for a remote terminal app: pair, open a pane, type, see the output), never a part of it or a setting. Every other feature has core false.
 ${ships.length ? `- upgrade: this app ships an installable or upgradable artifact (${ships.slice(0, 3).join('; ')}), so users get each release by upgrading over the version they have. Set upgrade true on one feature whose drive installs the previous shipped version, upgrades over it in place the way a user does (install the new APK over the old one, update the host or CLI package in place), then drives the core journey; a fresh install alone is no release proof. It may be the core feature itself when its drive does all of that. Exception: when first_release is true, upgrade may be false on every feature; the skill will record the upgrade journey as pending until there is a published version to upgrade from.` : '- upgrade: false on every feature: no tracked file shows the app ships an installable or upgradable artifact.'}
-Each source is one path exactly as the tracked file list spells it, with no other words (scripts/verify/drive.sh, never a list or a note); launch.source may be empty only when safe is false.
+${ai ? `- behaviour: this app's output is a model's (${ai}), so also propose ${BEHAVIOUR.min} to ${BEHAVIOUR.max} basic behaviour journeys: few and plain, not a test suite. Each is one thing a user does end to end on the real product that shows its model-driven behaviour is right (a tool the app calls, a decision it takes, an answer it shows), {title: a short name, user_does: what the user does through the repo's real handles, user_sees: what they see when the behaviour is right, source: the repo file that shows it}. Use generic examples, never private names or data.\n` : ''}Each source is one path exactly as the tracked file list spells it, with no other words (scripts/verify/drive.sh, never a list or a note); launch.source may be empty only when safe is false.
 
 ${context}`;
 }
 
 // Why an answer cannot be rendered into the skill, or '' when it can. A citation must be a tracked file the agent was
 // shown: shown is every tracked file for claude, which reads the repo itself, and the text plain code gave a tool-less agent.
-function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown: Set<string>, ships: string[]): string {
+function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown: Set<string>, ships: string[], ai = ''): string {
   const s = a as Scaffold;
   const text = (v: unknown) => typeof v === 'string' && clause(v) !== '';
   const citation = (p: string) => {
@@ -3010,10 +3019,26 @@ function scaffoldProblem(a: Record<string, unknown>, tracked: Set<string>, shown
   const cores = kept.filter((f) => f.core).length;
   if (cores !== 1) return `names ${cores} core journeys among its first ${MAX_FEATURES} features, and the skill needs exactly one: the one thing a user cannot live without, end to end on the real target`;
   if (ships.length && !kept.some((f) => f.upgrade) && s.first_release !== true) return `names no upgrade journey, and the app ships an installable artifact (${ships.slice(0, 3).join('; ')}): a fresh install alone is no release proof`;
+  if (ai) {
+    const b = s.behaviour;
+    if (!Array.isArray(b) || b.length < BEHAVIOUR.min || b.length > BEHAVIOUR.max) return `has ${Array.isArray(b) ? b.length : 0} behaviour journeys, and an AI-output app needs ${BEHAVIOUR.min} to ${BEHAVIOUR.max}`;
+    for (const j of b) {
+      if (!j || typeof j !== 'object' || !text(j.title) || !text(j.user_does) || !text(j.user_sees) || !text(j.source)) return 'has a behaviour journey without a title, user_does, user_sees or source';
+      const why = citation(j.source);
+      if (why) return `the behaviour journey "${j.title}" ${why}`;
+      if (codeOnly(j.user_does)) return `the behaviour journey "${j.title}" user_does ${j.user_does.trim()} is code-only: ${RULE}`;
+    }
+  }
   return '';
 }
 
-function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolean, features: Feature[], omitted: number, ships: string[]): string {
+// One proposed journey as the line the user keeps or deletes, with the command that accepts it (a one-line description in plain words).
+const proposedJourney = (j: NonNullable<Scaffold['behaviour']>[number]) => {
+  const desc = `${clause(j.title)}: ${clause(j.user_does)}; expect ${clause(j.user_sees).replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase())}`.replace(/\s+/g, ' ');
+  return `- ${clause(j.title)}: ${clause(j.user_does)}. Expect: ${clause(j.user_sees)}. (\`${cited(j.source)}\`)\n  Accept: \`done-done journey add '${desc.replace(/'/g, "'\\''")}'\``;
+};
+
+function verifySkillMd(app: string, agent: string, s: Scaffold, isolated: boolean, features: Feature[], omitted: number, ships: string[], ai = ''): string {
   const name = `done-done-verify-${app}`;
   const source = cited(s.launch.source);
   const launch = isolated
@@ -3052,7 +3077,7 @@ ${found.join('\n')}
 ## Core journey
 
 ${link(core)} is the core user journey: the one thing a user cannot live without. A proof that the app works drives it end to end on the real target; a proof of another feature alone does not show the app works.
-${ships.length ? `\n## Release proof\n\nThis app ships an installable artifact (${ships.slice(0, 3).join('; ')}), and users get a release by upgrading over the version they have. ${upgrade ? `${link(upgrade)} is the release proof: install the previous shipped version, upgrade over it in place, then drive the core journey. A fresh install alone is no release proof.` : 'Upgrade journey pending: no earlier release yet. Before the next release, install the first published version, upgrade over it in place, then drive the core journey. This is not upgrade proof; doctor still reports the missing upgrade journey until one is named.'}\n` : ''}
+${ai && s.behaviour ? `\n## Behaviour journeys (proposed)\n\nThis app's output is a model's (${ai}), so \`done-done init\` proposes a few basic journeys that show its behaviour. They are proposals, not part of the feature map: the user accepts or drops each one, and nothing here runs until accepted. Accept one by running its command (the configured agent writes its capture script and runs it once); drop one by deleting its line. A kept journey is captured from the real product and graded by the judge the user chose; never pick a judge.\n\n${s.behaviour.map(proposedJourney).join('\n')}\n` : ''}${ships.length ? `\n## Release proof\n\nThis app ships an installable artifact (${ships.slice(0, 3).join('; ')}), and users get a release by upgrading over the version they have. ${upgrade ? `${link(upgrade)} is the release proof: install the previous shipped version, upgrade over it in place, then drive the core journey. A fresh install alone is no release proof.` : 'Upgrade journey pending: no earlier release yet. Before the next release, install the first published version, upgrade over it in place, then drive the core journey. This is not upgrade proof; doctor still reports the missing upgrade journey until one is named.'}\n` : ''}
 ## Evidence
 
 What to capture: ${clause(s.observe)}. Exercise the real user path, not internal setters; done-done's judge checks every capture in the run folder against the outcome, so save only captures of the resulting state there and keep any of earlier steps outside it; verify side effects alongside what is visible. Evidence goes to the run folder \`done-done run\` prints.
@@ -3235,10 +3260,11 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   if (!context.files.size) return { status: "not written: the repo has no tracked files to cite; commit the repo's files, then re-run init", failed: true };
   const record = join(home(), 'agents', `init-${new Date().toISOString().replace(/[:.]/g, '-')}-${agent.agent.replace(/[^\w-]/g, '-')}.json`);
   const ships = shipped(repo);
-  const a = await askAgent({ ...agent, prompt: scaffoldPrompt(cfg, context.text, toolless, ships), schema: SCAFFOLD_SCHEMA, cwd: repo, tools: toolless ? 'none' : 'read', record });
+  const ai = detectAi([...context.files], (f) => repoText(join(repo, f)));
+  const a = await askAgent({ ...agent, prompt: scaffoldPrompt(cfg, context.text, toolless, ships, ai), schema: scaffoldSchema(!!ai), cwd: repo, tools: toolless ? 'none' : 'read', record });
   const where = a.record ? `; record ${a.record}` : a.recordError ? `; the call record could not be written: ${a.recordError}` : '';
   if (!a.ok) return { status: `not written: ${agent.agent} did not answer: ${a.error}; done-done doctor --probe checks the agent${where}`, failed: true };
-  const problem = scaffoldProblem(a.answer as Record<string, unknown>, context.files, toolless ? context.read : context.files, ships);
+  const problem = scaffoldProblem(a.answer as Record<string, unknown>, context.files, toolless ? context.read : context.files, ships, ai);
   if (problem) return { status: `not written: ${agent.agent}'s answer is unusable: ${problem}${where}`, failed: true };
   const s = a.answer as Scaffold;
   const source = cited(s.launch.source);
@@ -3252,7 +3278,7 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
   const omitted = s.features.length - features.length;
   const files = new Map<string, string>([[join('features', 'README.md'), verifyFeaturesMd(cfg.app, features, omitted)]]);
   for (const f of features) files.set(join('features', `${f.slug}.md`), verifyFeatureMd(cfg.app, s, f));
-  files.set('SKILL.md', verifySkillMd(cfg.app, agent.agent, s, isolated, features, omitted, ships));
+  files.set('SKILL.md', verifySkillMd(cfg.app, agent.agent, s, isolated, features, omitted, ships, ai));
   const targets = [...files].map(([rel, body]) => ({ rel, p: join(dir, rel), body }));
   link = linked(targets.map(({ p }) => p));
   if (link !== undefined) return skipLink(link);
@@ -3296,7 +3322,7 @@ async function scaffoldVerify(repo: string, cfg: Config): Promise<{ status: stri
     return { status: `not written: the verify skill could not be written (${(e as Error).message}); nothing was left behind, so fix the cause and re-run init`, failed: true };
   }
   try { rmSync(tmp, { recursive: true, force: true }); } catch { }
-  return { status: `written by ${agent.agent}${isolated ? '' : '; its launch is not isolated, so read Launch before a drive'}` };
+  return { status: `written by ${agent.agent}${isolated ? '' : '; its launch is not isolated, so read Launch before a drive'}${ai ? `; proposed ${s.behaviour!.length} behaviour journeys (AI-output app: ${ai}), each accepted or dropped in its Behaviour journeys section` : ''}` };
 }
 
 // The session-start hook `init --hook <agent>` adds; the agent shows its stdout to the session.

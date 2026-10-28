@@ -38,7 +38,7 @@ The last line is your first result: your agent drives the real app, a fresh judg
 You need **[Node 22.18+](https://nodejs.org) and git**, plus your own signed-in coding agent or API key for the judge.
 
 1. **Install.** The first line above puts `done-done` and `done-done-axi` on your PATH. No `sudo`? Add `--prefix ~/.local` and put `~/.local/bin` on your `PATH`.
-2. **Set up your repo.** `init` asks which coding agent drives your app and which judge checks it, and never picks either for you. It writes a minimal `.done-done.yaml` and a verify skill that says how to launch and drive your app. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>`.
+2. **Set up your repo.** `init` asks which coding agent drives your app and which judge checks it, and never picks either for you. It writes a minimal `.done-done.yaml` and a verify skill that says how to launch and drive your app. For an AI app (a model SDK, prompt file or prompt-building code in the repo) the skill also proposes 3 to 6 basic behaviour journeys; you accept or drop each, and the judge you chose grades the ones you keep. Outside a terminal, pass `--agent <agent> --model <model> --judge <agent> --judge-model <model>`.
 3. **Get your first result.** Say what works now, in plain words. Your agent drives the real product as a user would and saves screenshots, a recording or output; a fresh judge checks whether each capture shows your claim. A pass names the capture and writes a receipt for this commit; anything else stops at a gate with the judge's reason, which `done-done respond` answers.
 
 Commit `.done-done.yaml` and the verify skill so later runs and your teammates use the same recipe. Captures go to your judge's provider, on your plan or key.
