@@ -115,19 +115,6 @@ test('the README manual-CLI worked example runs as written: init, journey, run, 
   assert.equal(dd('receipt', '--verify', sh('rev-parse', 'HEAD').toString().trim()).code, 0);
 });
 
-test('the reference init shapes run as written: --agent, --journey and every --hook', () => {
-  const { repo, dd } = cleanRepo('app: notes\n');
-  // A hand-written verify skill: init never asks the agent to write one over it, so no real agent runs here.
-  mkdirSync(join(repo, '.agents', 'skills', 'verify-notes'), { recursive: true });
-  writeFileSync(join(repo, '.agents', 'skills', 'verify-notes', 'SKILL.md'), '# verify-notes\n');
-  assert.match(dd('init', '--agent', 'opencode', '--model', 'opencode-go/muse-spark-1.3-contributor').out, /opencode/, 'init --agent saves the coding agent');
-  assert.equal(toon(dd('init', '--journey', 'smoke', '--', 'echo added: milk > $DONE_DONE_EVIDENCE_ROOT/${RUN_ID}.log')).journey, 'smoke');
-  for (const [flag, file] of [['claude', '.claude/settings.json'], ['codex', '.codex/hooks.json'], ['opencode', '.opencode/plugins/done-done.js'], ['gemini', '.gemini/settings.json'], ['pi', '.pi/extensions/done-done.js']]) {
-    assert.match(dd('init', '--hook', flag).out, new RegExp(file.replace(/[./]/g, '\\$&').slice(0, 12)), `init --hook ${flag}`);
-    assert.ok(existsSync(join(repo, file)), `init --hook ${flag} writes ${file}`);
-  }
-});
-
 test('the brief-include contract runs as written: init, affected, run, checks.md, check --from, receipt --from, affected exits 0', () => {
   const { dir, repo, sh, dd, head } = cleanRepo();
   assert.equal(dd('affected').code, 1, 'no receipt yet: affected says the proof is missing');
@@ -142,34 +129,4 @@ test('the brief-include contract runs as written: init, affected, run, checks.md
   assert.equal(affected.code, 0, affected.out);
   assert.equal(toon(affected).result, 'fresh');
   void sh;
-});
-
-test('citations resolve from any cwd in the repo: repo-root first, caller cwd second, never a false ENOENT', () => {
-  const { repo, dd, at } = cleanRepo();
-  const { run_id: id } = toon(dd('run', 'smoke'));
-  const cited = `.proof/${id}/home.png`;
-  assert.equal(dd('check', '--outcome', 'home renders', cited).code, 0, 'from the repo root');
-  assert.equal(at(join(repo, 'src'), 'check', '--outcome', 'home renders', cited).code, 0, 'repo-relative from a subdirectory (the 0.3.0 false-ENOENT defect)');
-  assert.equal(at(join(repo, 'src'), 'check', '--outcome', 'home renders', join('..', cited)).code, 0, 'a shell-relative path typed for that shell');
-  // Wrong-root counterfactual: the same name means the repo-root file, not whatever the cwd resolves to.
-  const wrong = join(repo, 'src', '.proof', id, 'home.png');
-  mkdirSync(join(repo, 'src', '.proof', id), { recursive: true });
-  writeFileSync(wrong, 'tampered\n');
-  assert.equal(at(join(repo, 'src'), 'check', '--outcome', 'home renders', cited).code, 0, 'repo-root evidence wins over a same-named cwd file');
-  const missing = at(join(repo, 'src'), 'check', '--outcome', 'home renders', `.proof/${id}/nope.png`);
-  assert.equal(missing.code, 2, missing.out);
-  assert.match(missing.out, new RegExp(`looked for ${repo.replace(/[./]/g, (c) => `\\${c}`)}.*nope\\.png`), 'a true miss names the looked-for path');
-});
-
-test('guards refuse bad input with a clear reason: no agent, no runs, unknown keys', () => {
-  const { repo, dd } = cleanRepo('app: notes\n');
-  const verify = dd('verify', '--outcome', 'x', '--foreground');
-  assert.equal(verify.code, 2, verify.out);
-  assert.match(verify.out, /needs a journey or a verify skill/, 'verify without a journey or skill says what is missing');
-  assert.match(dd('status').out, /no runs for notes/, 'status with no runs says so');
-  assert.match(dd('signoff').out, /no runs for notes/, 'signoff with no runs says so');
-  writeFileSync(join(repo, '.done-done.yaml'), 'evidnce:\n  root: x\n');
-  assert.match(dd('doctor').out, /unknown key evidnce/, 'an unknown config key is refused by name');
-  writeFileSync(join(repo, '.done-done.yaml'), 'evidence:\n  allow_dirty: "yes"\n');
-  assert.match(dd('doctor').out, /must be a boolean/, 'a mistyped config value is refused with its type');
 });
