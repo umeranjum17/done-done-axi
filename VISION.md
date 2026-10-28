@@ -100,3 +100,4 @@ These four rules keep every report and evidence card the same on the board, so t
 2. **Every producer emits exactly that shape.** done-done evidence and gates, learn-from-mistakes reports and findings, and any project all use the same shape.
 3. **Shared conformance tests.** Each kind has a fixture. Each tool's CI runs the fixtures against the validator.
 4. **Each skill teaches the exact command and shape.** It gives one worked example, so agents use the tool right the first time.
+
