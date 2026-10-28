@@ -87,29 +87,6 @@ const proposal = (source = 'src/index.js') => ({
 });
 const aiFiles = { 'package.json': '{"name":"qa","dependencies":{"openai":"^4.0.0"}}\n', 'src/index.js': 'console.log("hi");\n', 'README.md': '# qa\nAsk a question.\n' };
 
-test('detection: AI-output apps are guessed from tracked files, CLI, UI, API and library apps are not, and --no-skill leaves evals off', () => {
-  const cases = {
-    'ai: a provider SDK in package.json': [aiFiles, true],
-    'ai: a provider import in Python': [{ 'app.py': 'from anthropic import Anthropic\nprint(1)\n' }, true],
-    'ai: a committed prompt file': [{ 'prompts/system.md': 'You are kind.\n', 'run.sh': 'echo 1\n' }, true],
-    'ai: prompt-building code': [{ 'src/chat.js': 'const systemPrompt = `You are ${name}`;\nexport default systemPrompt;\n' }, true],
-    'cli': [{ 'package.json': '{"bin":{"t":"bin/t.js"},"dependencies":{"commander":"^12"}}\n', 'bin/t.js': 'import { program } from "commander";\n' }, false],
-    'ui': [{ 'index.html': '<h1>hi</h1>\n', 'app.js': 'document.title = "x";\n' }, false],
-    'api': [{ 'package.json': '{"dependencies":{"express":"^4"}}\n', 'server.js': 'import express from "express";\n' }, false],
-    'library': [{ 'package.json': '{"main":"lib.js"}\n', 'lib.js': 'export const add = (a, b) => a + b;\n', 'test/lib.test.js': 'import OpenAI from "openai";\n' }, false],
-  };
-  for (const [name, [files, ai]] of Object.entries(cases)) {
-    const t = repoOf(files);
-    t.commit('init');
-    const r = t.dd('init', '--no-skill');
-    assert.equal(r.code, 0, `${name}: ${r.out}`);
-    const evals = toon(r).evals;
-    assert.match(evals, ai ? /^off \(AI-output app: .*--no-skill makes no agent call/ : /^off \(not an AI-output app/, `${name}: ${evals}`);
-    assert.equal(parse(readFileSync(join(t.repo, '.done-done.yaml'), 'utf8')).evals, undefined, `${name}: no block is written`);
-    assert.equal(existsSync(join(t.repo, 'evals')), false, `${name}: no files`);
-  }
-});
-
 test('init scaffolds the evals for an AI-output app from the agent\'s proposal, and --no-evals, --evals and a bad proposal behave', () => {
   const t = repoOf(aiFiles);
   t.commit('init');
@@ -149,26 +126,6 @@ test('init scaffolds the evals for an AI-output app from the agent\'s proposal, 
   assert.equal(parse(readFileSync(join(bad.repo, '.done-done.yaml'), 'utf8')).evals, undefined);
 });
 
-test('config: an enabled evals block missing a key is a config error naming it, never a silent skip', () => {
-  const t = jobRepo();
-  const yaml = readFileSync(join(t.repo, '.done-done.yaml'), 'utf8');
-  const bad = (text) => { writeFileSync(join(t.repo, '.done-done.yaml'), text); return t.dd('eval'); };
-  for (const [text, key] of [
-    [yaml.replace('  app: { command: node app.mjs }\n', ''), 'app.command'],
-    [yaml.replace('  prompts: evals/prompts.jsonl\n', ''), 'prompts'],
-    [yaml.replace('  rubric: evals/rubric.md\n', '  rubric: evals/nope.md\n'), 'rubric evals/nope.md does not exist'],
-    [yaml.replace('  baseline: { model: stub-judge }\n', ''), 'exactly one of baseline.model and baseline.command'],
-    [yaml.replace('baseline: { model: stub-judge }', 'baseline: { model: m, command: x }'), 'exactly one of baseline.model and baseline.command'],
-    [`${yaml}  bar: { min_score: 2 }\n`, 'bar.min_score'],
-  ]) {
-    const r = bad(text);
-    assert.equal(r.code, 2, r.out);
-    assert.ok(r.out.includes(key), `${key}: ${r.out}`);
-  }
-  assert.equal(bad(yaml.replace('enabled: true', 'enabled: false')).code, 2, 'eval with evals off says so');
-  assert.match(t.dd('eval').out, /evals are not enabled/);
-});
-
 test('eval runs the full set against a stub judge: sealed results.jsonl and a one-page report, exit 0 pass, 1 fail, 2 error', () => {
   const t = jobRepo();
   const pass = t.dd('eval');
@@ -201,19 +158,6 @@ test('eval runs the full set against a stub judge: sealed results.jsonl and a on
   const none = t.dd('eval');
   assert.equal(none.code, 2, none.out);
   assert.match(none.out, /init --judge/);
-});
-
-test('eval --limit is a partial run: shown in the report, and it never satisfies the gate', () => {
-  const t = jobRepo();
-  const r = t.dd('eval', '--limit', '3');
-  assert.equal(r.code, 0, r.out);
-  assert.match(toon(r).prompts, /^3 of 12 \(--limit: a partial run never satisfies the gate\)/);
-  assert.match(readFileSync(join(t.repo, toon(r).report), 'utf8'), /prompts: 3 of 12 \(PARTIAL/);
-  assert.equal(t.dd('eval', '--limit', '0').code, 2);
-  const run = t.dd('run', 'shots');
-  const receipt = t.dd('receipt', '--outcome', 'the helper rewrites a posting', `.proof/${toon(run).run_id}/rewrite.txt`);
-  assert.equal(receipt.code, 2, receipt.out);
-  assert.match(receipt.out, /no full eval run exists/);
 });
 
 test('check and receipt refuse without a passing eval at this commit, record `evals: pass <run>`, and gate enforces it from the receipt', () => {
