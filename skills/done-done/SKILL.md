@@ -89,6 +89,7 @@ receipt it wrote (`<evidence root>/.done-done/receipts/<head>.json`) into `.done
 
 `init` also has that agent write the repo's `.agents/skills/done-done-verify-<app>/SKILL.md` (never overwriting one): read it before
 you drive the app, and fix it when it is wrong.
+For an AI-output app that skill has a `Behaviour journeys (proposed)` section: show the user each journey and let them accept it (run its `journey add` command) or drop it (delete its lines); never keep one unasked, and the judge that grades it is the one the user chose.
 
 done-done starts a coding agent the user chose. When it says no agent is set, ask the user which agent
 (and model) to use and save their answer with the command it prints; never choose one for them.

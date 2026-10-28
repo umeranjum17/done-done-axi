@@ -257,3 +257,61 @@ test('check and receipt refuse without a passing eval at this commit, record `ev
   const passed = gate(rec);
   assert.equal(passed.code, 0, passed.out);
 });
+
+// init's verify skill: an AI-output app also gets 3 to 6 proposed behaviour journeys; any other repo's skill and agent call are unchanged.
+const scaffold = (over = {}) => ({
+  surface: 'CLI', first_release: false,
+  launch: { steps: 'node src/index.js', source: 'src/index.js', safe: true, why: 'the stub mode of src/index.js with no key' },
+  ready: 'the command exits 0', harness: 'a terminal', observe: 'terminal transcripts', isolate: 'each run uses its own folder',
+  features: [{ title: 'Ask a question', reach: 'the ask command', drive: 'run node src/index.js ask hello', source: 'src/index.js', capture: 'text', core: true, upgrade: false }],
+  ...over,
+});
+const journey = (n, source = 'README.md') => ({ title: `Case ${n}`, user_does: `ask question ${n} in the app's own words`, user_sees: `a plain answer to question ${n}`, source });
+// Logs the prompt and the schema the agent was given, so a test can read what init asked.
+const spyAgent = (t, answer) => writeFileSync(join(t.bins, 'claude'), `#!${process.execPath}\nconst fs = require('node:fs');\nfs.appendFileSync(${JSON.stringify(join(t.bins, 'calls.jsonl'))}, JSON.stringify({ args: process.argv.slice(2), stdin: fs.readFileSync(0, 'utf8') }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'result', is_error: false, structured_output: ${JSON.stringify(answer)} }));\n`, { mode: 0o755 });
+const asked = (t) => readFileSync(join(t.bins, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+const skillOf = (t) => readFileSync(join(t.repo, '.agents/skills/done-done-verify-repo/SKILL.md'), 'utf8');
+
+test('init proposes behaviour journeys for an AI-output app, each accepted or dropped by the user, and changes nothing for other apps', () => {
+  const ai = repoOf(aiFiles);
+  ai.commit('init');
+  spyAgent(ai, scaffold({ behaviour: [journey(1), journey(2), journey(3, 'src/index.js')] }));
+  const r = ai.dd('init', '--no-evals');
+  assert.equal(r.code, 0, r.out);
+  assert.match(toon(r).verify_skill, /^written by claude; proposed 3 behaviour journeys \(AI-output app: a model provider SDK in package\.json\)/);
+  const [call] = asked(ai);
+  assert.match(call.stdin, /behaviour: this app's output is a model's \(a model provider SDK in package\.json\), so also propose 3 to 6 basic behaviour journeys/);
+  assert.ok(call.args.some((a) => a.includes('"behaviour"')), 'the schema asks for behaviour');
+  const body = skillOf(ai);
+  assert.match(body, /^## Behaviour journeys \(proposed\)\n/m);
+  assert.match(body, /graded by the judge the user chose; never pick a judge/);
+  assert.equal(body.match(/^  Accept: `done-done journey add '/gm).length, 3, 'every journey carries its accept command');
+  assert.match(body, /- Case 1: ask question 1 in the app's own words\. Expect: a plain answer to question 1\. \(`README\.md`\)\n  Accept: `done-done journey add 'Case 1: ask question 1 in the app'\\''s own words; expect a plain answer to question 1'`/);
+  const featureMap = readFileSync(join(ai.repo, '.agents/skills/done-done-verify-repo/features/README.md'), 'utf8');
+  assert.doesNotMatch(featureMap, /Case 1/, 'a proposal is not in the feature map until accepted');
+  // Dropping a journey is deleting its two lines; the skill still passes maintain.
+  assert.equal(parse(readFileSync(join(ai.repo, '.done-done.yaml'), 'utf8')).journeys?.['case-1'], undefined, 'nothing is added to the config unaccepted');
+
+  // A proposal outside 3 to 6 journeys, or citing an untracked file, writes no skill.
+  for (const [behaviour, why] of [[[journey(1), journey(2)], /has 2 behaviour journeys/], [[journey(1), journey(2), journey(3, 'src/gone.js')], /src\/gone\.js, which is not a tracked file/]]) {
+    const bad = repoOf(aiFiles);
+    bad.commit('init');
+    spyAgent(bad, scaffold({ behaviour }));
+    const f = bad.dd('init', '--no-evals');
+    assert.equal(f.code, 1, f.out);
+    assert.match(toon(f).verify_skill, why);
+    assert.equal(existsSync(join(bad.repo, '.agents/skills/done-done-verify-repo')), false);
+  }
+
+  // A CLI repo: no behaviour in the prompt or schema, and no section in the skill.
+  const cli = repoOf({ 'package.json': '{"private":true,"bin":{"t":"bin/t.js"},"dependencies":{"commander":"^12"}}\n', 'bin/t.js': 'import { program } from "commander";\n', 'src/index.js': 'console.log(1);\n' });
+  cli.commit('init');
+  spyAgent(cli, scaffold());
+  const c = cli.dd('init');
+  assert.equal(c.code, 0, c.out);
+  assert.equal(toon(c).verify_skill, 'written by claude');
+  const [plain] = asked(cli);
+  assert.doesNotMatch(plain.stdin, /behaviour/);
+  assert.ok(!plain.args.some((a) => a.includes('behaviour')), 'the schema is unchanged');
+  assert.doesNotMatch(skillOf(cli), /Behaviour journeys|journey add/);
+});
