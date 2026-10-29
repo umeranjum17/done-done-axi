@@ -214,7 +214,7 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
     const malformed = (a) => Object.keys(questions).filter((k) => /^(malformed|no answer)/.test(a[k].reason ?? ''));
     // The parts rule reads the lists the answer carries, so a reply that leaves one out has not answered: without them the
     // rule would silently require no part.
-    const noLists = (a) => Object.keys(questions).filter((k) => questions[k].answerFields?.includes('parts') && coverageOf(a[k]) === undefined);
+    const noLists = (a) => Object.keys(questions).filter((k) => questions[k].answerFields?.some(f => FIELDS.includes(f)) && coverageOf(a[k]) === undefined);
     const unreadable = (a) => [...malformed(a), ...noLists(a)];
     try {
         const ask = async () => resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
