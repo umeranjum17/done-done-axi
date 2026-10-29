@@ -145,6 +145,8 @@ process.stdout.write(JSON.stringify({response: JSON.stringify(Object.fromEntries
   let files = t.shots('design done').files.slice(0, 1);
   const pass = t.dd('check', '--outcome', 'design done', ...files);
   assert.equal(pass.code, 0, pass.out); assert.equal(toon(pass).comparison_basis, basis);
+  const nativeCall = readdirSync(join(t.env.DONE_DONE_HOME, 'agents')).find(n => n.startsWith('requirement-'));
+  assert.ok(JSON.parse(readFileSync(join(t.env.DONE_DONE_HOME, 'agents', nativeCall), 'utf8')).schema.properties.requirement.required.includes('personReason'));
   const receipt = toon(t.dd('receipt', '--outcome', 'design done', ...files));
   assert.equal(receipt.comparison_basis, basis);
   const verified = toon(t.dd('receipt', '--verify', 'HEAD'));
