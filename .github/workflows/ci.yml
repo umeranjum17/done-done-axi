@@ -43,6 +43,24 @@ jobs:
             esac
           done
           echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
+      # The release workflow skips install, tests and publish when the
+      # package version is already on npm, so a bump to a published version
+      # would merge and never ship. Catch it here: a changed version must
+      # not be on npm yet. Reads the public registry, needs no token.
+      - name: Bumped version is unpublished
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          base=$(git show HEAD^1:package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if [ "$version" = "$base" ]; then
+            echo "version unchanged: $version"
+            exit 0
+          fi
+          if [ -n "$(npm view "$name@$version" version)" ]; then
+            echo "::error::$name@$version is already on npm; pick the next unpublished version"
+            exit 1
+          fi
+          echo "$name@$version is not on npm yet"
       - if: steps.changes.outputs.docs_only != 'true'
         uses: actions/setup-node@v4
         with:
