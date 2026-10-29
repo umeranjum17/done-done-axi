@@ -15,7 +15,7 @@ import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath,
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
-import { design, interactions, type InteractionResult, KINDS } from './design.js';
+import { design, interactions, type InteractionResult, KINDS, redesign } from './design.js';
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
@@ -53,6 +53,7 @@ const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DO
   matrix (.done-done.yaml): with theme, width or form axes the journey runs once per required cell with DONE_DONE_THEME, DONE_DONE_WIDTH, DONE_DONE_FORM and DONE_DONE_CELL (the capture name suffix) set; name each capture with its suffix, so every cell is captured or skipped with a reason`;
 // A claim about how the product looks or what it outputs needs a comparison with the approved result.
 const DESIGN_CLAIM = /\b(design(ed|s)?|redesign(ed)?|mock(up)?s?|prototype|approved)\b/i;
+const REDESIGN_CLAIM = /\bredesign(ed|s|ing)?\b/i;
 const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then these four keys, each at the start of a line:
   outcome: <what a user can now do>
   repro: <command that failed before and passes now, or n/a; a fix PR needs one>
@@ -60,6 +61,8 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   evidence: <the evidence file paths, or "not proven: <cause>">
   approved_design (.done-done.yaml): a non-empty manifest of {screen, size: <width>x<height>, theme, mock: <repo PNG/JPEG>, capture: <unique filename>};
   every claim needs every listed live screen, paired with its mock and a passing design verdict; missing or unsure matches fail by screen/size/theme
+  approved_redesign (.done-done.yaml): a non-empty manifest of {screen, size: <width>x<height>, theme, capture: <unique filename>} for a claim that says redesign:
+  each capture is one live image of the unchanged source and the redesign side by side, judged blind; a redesign claim with no manifest fails as not compared to approved result
   approved_requirements (.done-done.yaml): approved assets, color tokens and interactions as {kind: asset|color|interaction, name, capture, mock?}; skip one only with {kind, name, exclusion: <reason>}
   (reference images under design/, mocks/, approved/ or prototype/ must be listed or excluded; a design claim with no approved reference or base_ref baseline fails as not compared to approved result)
   interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
@@ -803,7 +806,8 @@ function loadRecords(cfg: Config): RunRecord[] {
 
 // The judge block a receipt keeps: who judged, how apart from the author (recorded, never enforced), and each judged capture's verdict.
 type DesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; mock: string; mock_sha256: string; verdict: string };
-type JudgeBlock = { interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
+type RedesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; verdict: string; reason?: string };
+type JudgeBlock = { interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -962,12 +966,21 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   }
   // The approved inventory is the contract, not the subset the claim happened to cite. Enforce it on every
   // claim when configured, so rewording a design-done/release outcome cannot bypass missing screens.
-  const approved = cfg.approved_design.map(entry => ({ entry, live: captures.filter(c => screen(c) && basename(cite(c.name)) === entry.capture) }));
+  // A redesign claim differs from its source on purpose, so it is proven by the blind pair judge, not by layout match.
+  const redesigning = !!claim && REDESIGN_CLAIM.test(claim.outcome);
+  const redesigns = redesigning ? cfg.approved_redesign.map(entry => ({ entry, live: captures.filter(c => screen(c) && basename(cite(c.name)) === entry.capture) })) : [];
+  const approved = (redesigning ? [] : cfg.approved_design).map(entry => ({ entry, live: captures.filter(c => screen(c) && basename(cite(c.name)) === entry.capture) }));
   const coverageFaults: string[] = [];
   for (const { entry: e, live } of approved) {
     const label = `${e.screen} / ${e.size} / ${e.theme}`;
     if (live.length !== 1) coverageFaults.push(`${label}: ${live.length ? 'ambiguous live captures' : 'no live capture'} (${e.capture})`);
     else if (`${live[0].media.w}x${live[0].media.h}` !== e.size) coverageFaults.push(`${label}: live capture is ${live[0].media.w}x${live[0].media.h}, not the approved size`);
+  }
+  const redesignFaults: string[] = [];
+  for (const { entry: e, live } of redesigns) {
+    const label = `${e.screen} / ${e.size} / ${e.theme}`;
+    if (live.length !== 1) redesignFaults.push(`${label}: ${live.length ? 'ambiguous live captures' : 'no live capture'} (${e.capture})`);
+    else if (`${live[0].media.w}x${live[0].media.h}` !== e.size) redesignFaults.push(`${label}: live capture is ${live[0].media.w}x${live[0].media.h}, not the approved size`);
   }
   // Approved assets, color tokens and interactions: each needs its own live capture, or an explicit exclusion with a reason.
   const requirements = cfg.approved_requirements.filter(r => r.capture).map(r => ({ r, live: captures.filter(c => screen(c) && basename(cite(c.name)) === r.capture) }));
@@ -979,8 +992,11 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   if (unlisted.length) coverageFaults.push(`approved reference material is not in the approved_design manifest: ${unlisted.join(', ')}; list each as an approved_design screen, an approved_requirements mock, or {kind: reference, name: <path>, exclusion: <reason>}`);
   // A design or output claim must be compared to the approved result (a manifest mock, or the base_ref baseline), not only rendered.
   const compared = approved.length > 0 || requirements.some(({ r }) => r.mock) || heads.some(([c]) => c.before);
-  if (claim && !compared && DESIGN_CLAIM.test(claim.outcome)) coverageFaults.push('not compared to approved result: the claim is about design or output but nothing is compared to an approved reference or a same-model baseline; add an approved_design manifest (or an approved_requirements row with a mock) or set base_ref, because render, fit and dark-mode checks alone do not prove it');
+  if (redesigning && !redesigns.length) redesignFaults.push('not compared to approved result: the claim is a redesign but nothing is compared to its source; add an approved_redesign manifest of live side-by-side source/redesign captures, because render, fit and dark-mode checks alone do not prove it');
+  else if (claim && !redesigning && !compared && DESIGN_CLAIM.test(claim.outcome)) coverageFaults.push('not compared to approved result: the claim is about design or output but nothing is compared to an approved reference or a same-model baseline; add an approved_design manifest (or an approved_requirements row with a mock) or set base_ref, because render, fit and dark-mode checks alone do not prove it');
   for (const why of coverageFaults) findings.push({ level: 'fail', why: `approved design: ${why}` });
+  for (const why of redesignFaults) findings.push({ level: 'fail', why: `approved redesign: ${why}` });
+  coverageFaults.push(...redesignFaults);
   // A head capture of a base_ref run with no base capture of its name is reported, then judged alone.
   for (const [c, inRoot, rec] of heads)
     if (!(c.before = befores.get(inRoot ?? '')))
@@ -1081,6 +1097,17 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     });
     if (judgeBlock) judgeBlock.approved_design = matches;
   }
+  let redesigned: RedesignMatch[] = [];
+  if (redesigns.length) {
+    const verdicts = await redesign(cfg, choice!, redesigns.map(r => r.live[0]), agentRecords);
+    redesigned = verdicts.map((v, i) => {
+      const { screen, size, theme } = redesigns[i].entry;
+      const reason = v.failed.length ? v.failed.map(d => `${d.kind}: ${d.where}`).join('; ') : v.reason;
+      if (v.verdict !== 'pass') findings.push({ level: v.verdict === 'fail' ? 'fail' : 'inconclusive', why: `approved redesign: ${screen} / ${size} / ${theme}: ${v.verdict === 'unsure' ? 'redesign not proven: ' : ''}${reason}`, file: v.path });
+      return { screen, size, theme, path: receiptPath(repo, cfg, cite(v.path)), sha256: redesigns[i].live[0].sha256, verdict: v.verdict, ...(reason && { reason }) };
+    });
+    if (judgeBlock) judgeBlock.approved_redesign = redesigned;
+  }
   const withMock = requirements.filter(({ r }) => r.mock);
   if (withMock.length) {
     const pairs = withMock.map(({ r, live }) => pairUp(`${r.kind} ${r.name}`, r.mock!, live[0]));
@@ -1100,6 +1127,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   if (touches.length) rep.result.interaction_checklist = touches;
   if (evals) rep.result.evals = evals;
   if (matches.length) rep.result.design = matches;
+  if (redesigned.length) rep.result.redesign = redesigned;
   const excluded = cfg.approved_requirements.filter(r => r.exclusion).map(({ kind, name, exclusion }) => ({ kind, name, exclusion }));
   if (excluded.length) rep.result.approved_exclusions = excluded;
   if (rep.code === PASS) {
@@ -1264,6 +1292,7 @@ function receiptFault(rec: Receipt, short: string): string | null {
     || !j.verdicts.every((v) => v && v.verdict === 'pass' && rec.files.some((f) => f.path === v.path && f.sha256 === v.sha256));
   if (badJudge) return `receipt for ${short} has a malformed judge block`;
   if (j.approved_design !== undefined && (!Array.isArray(j.approved_design) || !j.approved_design.length || !j.approved_design.every(v => v && v.verdict === 'pass' && [v.screen, v.size, v.theme].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256) && rec.files.some(f => f.path === v.mock && f.sha256 === v.mock_sha256)))) return `receipt for ${short} has a malformed approved-design verdict`;
+  if (j.approved_redesign !== undefined && (!Array.isArray(j.approved_redesign) || !j.approved_redesign.length || !j.approved_redesign.every(v => v && v.verdict === 'pass' && [v.screen, v.size, v.theme].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256)))) return `receipt for ${short} has a malformed approved-redesign verdict`;
   if (j.interaction_checklist !== undefined) {
     const rows = j.interaction_checklist;
     if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256))))) return `receipt for ${short} has a malformed interaction-checklist verdict`;
@@ -1416,6 +1445,7 @@ function checkHelp(code: number, findings: Finding[], files: string[], { cfg, re
       : `${absent} named file${absent > 1 ? 's are' : ' is'} not under --citation-base ${arg(citationBase)} either: check the paths in the Checks block`);
   }
   if (findings.some((f) => f.why.includes('step record'))) help.push(`Have the journey write ${STEPS_FILE} into $DONE_DONE_EVIDENCE_ROOT, shaped ${STEPS_SHAPE}, naming the steps and the result the claim is about; then re-run it (${captureHint(cfg)}) and cite the new files`);
+  if (findings.some((f) => f.why.includes('add an approved_redesign manifest'))) help.push('Add approved_redesign to .done-done.yaml: one {screen, size, theme, capture} row per screen, each capture a live image of the unchanged source and the redesign side by side; commit it, capture the pairs in a run, then cite them');
   // Proof refused as code-only needs a journey that drives the product, not a re-capture of the same run.
   if (findings.some((f) => f.why.endsWith(RULE))) help.push(`Capture the real product: ${captureHint(cfg).startsWith('done-done init') ? captureHint(cfg) : `${captureHint(cfg)}, or ${RECORD_REAL}`}, then cite its files`);
   else if (findings.some((f) => f.level === 'fail' && f.missing !== 'checkout')) help.push(`Commit your change, re-capture with ${capture}, then check the new files`);

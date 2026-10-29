@@ -45,6 +45,11 @@ Source: `src/` (built to `dist/`), `skills/done-done/SKILL.md`, `integrations/fi
 Source: src/config.ts, src/cli.ts, src/design.ts and journeys/approved-design.mjs.
 Drive `node dist/cli.js run approved-design`. Its isolated three-screen fixture drives the built CLI's run/check/receipt path: home and settings alone fail naming `today / 200x120 / light`; a new sealed run adding Today passes with three paired per-screen verdicts. A mismatch fails and receipt re-verification checks the approved mock hashes. Capture `approved-design.log` in the run's evidence folder. The deterministic fixture judge proves the CLI integration, not hosted visual-model accuracy. Every assertion must pass.
 
+## Redesign coverage
+
+Source: src/config.ts, src/cli.ts, src/design.ts and journeys/redesign.mjs.
+Drive `node dist/cli.js run redesign`. Its isolated two-screen "board" fixture drives the built CLI's run/check/receipt/gate path under the claim "the board is redesigned": a missing or wrong-size side-by-side capture fails naming screen/size/theme before any judge call; sealed pairs pass the blind judge (`two-versions`, `complete`, `preserved`) and `result.redesign` lists both rows; a `no` on any kind fails naming it; a below-floor answer is inconclusive; no `approved_redesign` fails `not compared to approved result`; an implement-the-mock claim still runs layout match and a redesign-worded claim does not; `receipt --verify` and `gate` accept the recorded passing verdict and refuse a malformed one. Capture `redesign.log`, `redesign-summary.txt` and `steps.json` in the run's evidence folder. The deterministic fixture judge proves the CLI integration, not hosted visual-model accuracy. Every assertion must pass.
+
 ## Interaction checklist
 
 Source: src/config.ts, src/design.ts, src/cli.ts, skills/done-done/interaction-checklist.json and journeys/approved-design.mjs.

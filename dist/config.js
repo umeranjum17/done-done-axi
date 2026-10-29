@@ -72,6 +72,7 @@ const KEYS = {
     look: { scope: 'repo', type: 'look' },
     evals: { scope: 'repo', type: 'evals' },
     approved_design: { scope: 'repo', type: 'approved_design' },
+    approved_redesign: { scope: 'repo', type: 'approved_redesign' },
     approved_requirements: { scope: 'repo', type: 'approved_requirements' },
     interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
     base_ref: { scope: 'repo', type: 'string' },
@@ -288,6 +289,28 @@ function apply(target, text, file, scope) {
             target.from[key] = scope;
             continue;
         }
+        if (key === 'approved_redesign') {
+            const fail = () => { throw new UsageError(`${file}: approved_redesign must be a non-empty list of unique {screen, size: <width>x<height> in pixels, theme, capture: <unique PNG/JPEG filename>}`); };
+            const relativeImage = (p) => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
+            if (!Array.isArray(value) || !value.length)
+                fail();
+            const rows = value;
+            const ids = new Set(), names = new Set();
+            for (const r of rows) {
+                if (!isMap(r) || Object.keys(r).length !== 4 || !['screen', 'size', 'theme', 'capture'].every(k => typeof r[k] === 'string' && r[k].trim()))
+                    fail();
+                if (!/^[1-9]\d*x[1-9]\d*$/.test(r.size) || !relativeImage(r.capture) || /[\\/]/.test(r.capture))
+                    fail();
+                const id = JSON.stringify([r.screen, r.size, r.theme]);
+                if (ids.has(id) || names.has(r.capture))
+                    fail();
+                ids.add(id);
+                names.add(r.capture);
+            }
+            target.approved_redesign = rows;
+            target.from[key] = scope;
+            continue;
+        }
         if (key === 'dom') {
             const d = parseDom(value);
             if (typeof d === 'string')
@@ -376,6 +399,7 @@ function defaultConfig(repo) {
         evals: null,
         approved_requirements: [],
         approved_design: [],
+        approved_redesign: [],
         interaction_checklist: null,
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },

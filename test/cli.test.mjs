@@ -125,6 +125,14 @@ test('approved design coverage: real CLI names a missing screen, then passes the
   assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
+test('redesign claims: the blind side-by-side judge proves a redesign, layout match stays for the approved mock', () => {
+  const t = setup();
+  const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys', 'redesign.mjs')], {
+    env: { ...t.env, DONE_DONE_EVIDENCE_ROOT: join(t.dir, 'evidence') }, encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
+
 test('check and receipt refuse proof from code-only journeys: a test, typecheck or lint log is not the product', () => {
   // The config that shipped a broken app: a journey that wraps the repo's check script, whose log says the code checks pass.
   const checkJourney = '  check:\n    command: npm run check > $DONE_DONE_EVIDENCE_ROOT/check.log 2>&1\n';

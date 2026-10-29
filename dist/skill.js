@@ -90,6 +90,14 @@ with a surface-specific reason. \`check\`, \`receipt\` and \`verify\` flag omitt
 can pass. Static controls do not prove motion or timing. Capture the interaction, never substitute a mock. Without the key, approved-design behavior is unchanged;
 \`done-done check --help\` and \`docs/reference.md\` explain wiring.
 
+A claim that says an app, screen or flow is redesigned has no approved mock to match, so layout match cannot pass it. List
+\`approved_redesign\` rows \`{screen, size: <width>x<height>, theme, capture: <filename>}\` in \`.done-done.yaml\`, each capture one live PNG/JPEG of
+the unchanged source and the redesign side by side (either order), written by the redesign journey into its run. \`check\`, \`receipt\` and
+\`verify\` then send each pair alone to the judge blind, asking whether it shows two versions, whether both are complete and whether
+both keep the same content, navigation and function; a \`no\` fails naming the kind, below-floor is inconclusive, and a missing or wrong-size
+capture fails before any judge call. A redesign claim with no \`approved_redesign\` fails as not compared to approved result. A claim that implements
+an approved mock keeps layout match. Receipts keep the pass under \`judge.approved_redesign\`; \`gate\` re-checks it with no model call.
+
 To gate a worker's claim cheaply, \`done-done lint <PR URL | report file> <evidence folder>\` reads the newest \`## Checks\` block
 with no judge or model and prints \`PASS\` or \`FAIL: <reason>\` (exit 1 on a fail): missing lines, evidence that is absent,
 empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
