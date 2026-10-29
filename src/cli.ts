@@ -15,7 +15,7 @@ import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath,
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
-import { design, interactions, type InteractionResult, KINDS, redesign } from './design.js';
+import { design, interactions, type InteractionResult, KINDS, redesign, writtenRequirement, type RequirementMatch } from './design.js';
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
@@ -64,7 +64,9 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   approved_redesign (.done-done.yaml): a non-empty manifest of {screen, size: <width>x<height>, theme, capture: <unique filename>} for a claim that says redesign:
   each capture is one live image of the unchanged source and the redesign side by side, judged blind; a redesign claim with no manifest fails as not compared to approved result
   approved_requirements (.done-done.yaml): approved assets, color tokens and interactions as {kind: asset|color|interaction, name, capture, mock?}; skip one only with {kind, name, exclusion: <reason>}
-  (reference images under design/, mocks/, approved/ or prototype/ must be listed or excluded; a design claim with no approved reference or base_ref baseline fails as not compared to approved result)
+  for a new screen with no mock: commit {kind: spec, name, requirement: <written requirement>, capture: <live filename>}; each row needs a clear AI pass with a visible-evidence reason, never an exclusion
+  check, receipt and the signoff card name the comparison basis; an approved mock still wins over written requirements
+  (reference images under design/, mocks/, approved/ or prototype/ must be listed or excluded; a design claim with no approved reference, written requirements or base_ref baseline fails as not compared to approved result)
   interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
   or {not_applicable: <reason>}; detail-navigation, instant-state, destructive-undo, scroll-restoration, list-search, empty-next-step.
   check/receipt/verify report every item: pass only with judged real-product frames, not_applicable with a reason, otherwise flagged (exit 1).
@@ -807,7 +809,7 @@ function loadRecords(cfg: Config): RunRecord[] {
 // The judge block a receipt keeps: who judged, how apart from the author (recorded, never enforced), and each judged capture's verdict.
 type DesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; mock: string; mock_sha256: string; verdict: string };
 type RedesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; verdict: string; reason?: string };
-type JudgeBlock = { interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
+type JudgeBlock = { comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -986,14 +988,23 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const requirements = cfg.approved_requirements.filter(r => r.capture).map(r => ({ r, live: captures.filter(c => screen(c) && basename(cite(c.name)) === r.capture) }));
   for (const { r, live } of requirements)
     if (live.length !== 1) coverageFaults.push(`${r.kind} ${r.name}: ${live.length ? 'ambiguous live captures' : 'no live capture'} (${r.capture})`);
+  const specs = requirements.filter(({ r }) => r.kind === 'spec');
+  if (specs.length) {
+    let committed: unknown;
+    try { committed = loadConfig(repo, git(repo, 'show', `${values['trusted-ref'] ?? now.commit}:.done-done.yaml`)).approved_requirements.filter(r => r.kind === 'spec'); } catch { }
+    if (JSON.stringify(committed) !== JSON.stringify(specs.map(({ r }) => r))) coverageFaults.push('written requirements must match the committed .done-done.yaml; commit the spec rows before capturing');
+  }
   // Committed approved reference images (design/, mocks/ ...) that no manifest row or exclusion accounts for.
   const accounted = new Set([...cfg.approved_design.map(e => e.mock), ...cfg.approved_requirements.flatMap(r => [r.mock, r.kind === 'reference' ? r.name : undefined])]);
   const unlisted = claim ? git(repo, 'ls-files', '-z', '--', ':(icase)design*/**', ':(icase)mock*/**', ':(icase)approved*/**', ':(icase)prototype*/**').split('\0').filter(f => /\.(png|jpe?g)$/i.test(f) && !accounted.has(f)) : [];
   if (unlisted.length) coverageFaults.push(`approved reference material is not in the approved_design manifest: ${unlisted.join(', ')}; list each as an approved_design screen, an approved_requirements mock, or {kind: reference, name: <path>, exclusion: <reason>}`);
-  // A design or output claim must be compared to the approved result (a manifest mock, or the base_ref baseline), not only rendered.
-  const compared = approved.length > 0 || requirements.some(({ r }) => r.mock) || heads.some(([c]) => c.before);
+  // Written requirements are an explicit fallback, never a replacement for a configured mock.
+  const comparisonBasis = approved.length || requirements.some(({ r }) => r.mock) ? 'judged against approved reference image' : heads.some(([c]) => c.before) ? 'judged against base_ref baseline' : specs.length ? 'judged against written requirements (no approved reference image)' : undefined;
+  const wordsOnly = specs.some(({ r }) => !r.mock && !approved.some(({ entry }) => entry.capture === r.capture));
+  const basis = comparisonBasis && wordsOnly && comparisonBasis !== 'judged against written requirements (no approved reference image)' ? `${comparisonBasis}; also judged against written requirements (rows without a reference image are not mock matches)` : comparisonBasis;
+  const compared = !!basis;
   if (redesigning && !redesigns.length) redesignFaults.push('not compared to approved result: the claim is a redesign but nothing is compared to its source; add an approved_redesign manifest of live side-by-side source/redesign captures, because render, fit and dark-mode checks alone do not prove it');
-  else if (claim && !redesigning && !compared && DESIGN_CLAIM.test(claim.outcome)) coverageFaults.push('not compared to approved result: the claim is about design or output but nothing is compared to an approved reference or a same-model baseline; add an approved_design manifest (or an approved_requirements row with a mock) or set base_ref, because render, fit and dark-mode checks alone do not prove it');
+  else if (claim && !redesigning && !compared && DESIGN_CLAIM.test(claim.outcome)) coverageFaults.push('not compared to approved result: the claim is about design or output but nothing is compared to an approved reference or a same-model baseline; add an approved_design manifest (or an approved_requirements row with a mock or kind: spec and requirement text) or set base_ref, because render, fit and dark-mode checks alone do not prove it');
   for (const why of coverageFaults) findings.push({ level: 'fail', why: `approved design: ${why}` });
   for (const why of redesignFaults) findings.push({ level: 'fail', why: `approved redesign: ${why}` });
   coverageFaults.push(...redesignFaults);
@@ -1117,6 +1128,15 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
       if (v.verdict !== 'pass') findings.push({ level: 'fail', why: `approved design: ${r.kind} ${r.name}: ${v.verdict === 'unsure' ? 'match not proven: ' + v.reason : v.defects.map(d => `${d.kind}: ${d.where}`).join('; ')}`, file: v.path });
     }
   }
+  const written: RequirementMatch[] = [];
+  for (const { r, live } of specs) {
+    const v = await writtenRequirement(cfg, choice!, r.name, r.requirement!, live[0], agentRecords);
+    v.path = receiptPath(repo, cfg, cite(v.path));
+    v.basis = r.mock || approved.some(({ entry }) => entry.capture === r.capture) ? 'judged against approved reference image and written requirements' : 'judged against written requirements (no approved reference image)'; written.push(v);
+    if (v.verdict !== 'pass') findings.push({ level: 'fail', why: `written requirement: ${r.name}: ${v.reason}`, file: v.path });
+  }
+  if (basis) { judged.comparison_basis = basis; if (judgeBlock) judgeBlock.comparison_basis = basis; }
+  if (written.length && judgeBlock) judgeBlock.approved_requirements = written;
   const touches = await interactions(cfg, choice!, captures, agentRecords);
   for (const r of touches) {
     r.captures = r.captures.map(c => ({ ...c, path: receiptPath(repo, cfg, cite(c.path)) }));
@@ -1126,6 +1146,8 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel, warnings });
   if (touches.length) rep.result.interaction_checklist = touches;
   if (evals) rep.result.evals = evals;
+  if (basis) rep.result.comparison_basis = basis;
+  if (written.length) rep.result.approved_requirements = written;
   if (matches.length) rep.result.design = matches;
   if (redesigned.length) rep.result.redesign = redesigned;
   const excluded = cfg.approved_requirements.filter(r => r.exclusion).map(({ kind, name, exclusion }) => ({ kind, name, exclusion }));
@@ -1293,6 +1315,7 @@ function receiptFault(rec: Receipt, short: string): string | null {
   if (badJudge) return `receipt for ${short} has a malformed judge block`;
   if (j.approved_design !== undefined && (!Array.isArray(j.approved_design) || !j.approved_design.length || !j.approved_design.every(v => v && v.verdict === 'pass' && [v.screen, v.size, v.theme].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256) && rec.files.some(f => f.path === v.mock && f.sha256 === v.mock_sha256)))) return `receipt for ${short} has a malformed approved-design verdict`;
   if (j.approved_redesign !== undefined && (!Array.isArray(j.approved_redesign) || !j.approved_redesign.length || !j.approved_redesign.every(v => v && v.verdict === 'pass' && [v.screen, v.size, v.theme].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256)))) return `receipt for ${short} has a malformed approved-redesign verdict`;
+  if (j.approved_requirements !== undefined && (!Array.isArray(j.approved_requirements) || !j.approved_requirements.length || typeof j.comparison_basis !== 'string' || !j.comparison_basis.trim() || !j.approved_requirements.every(v => v && v.verdict === 'pass' && [v.name, v.requirement, v.reason, v.basis].every(s => typeof s === 'string' && s.trim()) && rec.files.some(f => f.path === v.path && f.sha256 === v.sha256)))) return `receipt for ${short} has a malformed written-requirement verdict`;
   if (j.interaction_checklist !== undefined) {
     const rows = j.interaction_checklist;
     if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256))))) return `receipt for ${short} has a malformed interaction-checklist verdict`;
@@ -1387,7 +1410,7 @@ function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: numb
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
   const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }) };
   const path = writeReceipt(cfg, rec);
-  const result = { command: 'receipt', result: 'pass', head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 
@@ -2799,7 +2822,7 @@ async function cmdSignoff(argv: string[]): Promise<number> {
     return await awaitCard(run.signoff);
   }
 
-  let msg: Record<string, unknown>, file: string;
+  let msg: Record<string, unknown>, file: string, comparisonBasis: string | undefined;
   if (run.kind === 'verify' && run.status === 'awaiting_approval' && run.gate) {
     const { findings, spend, head } = run.gate;
     const more = findings.length > 1 ? ` (and ${findings.length - 1} more)` : '';
@@ -2831,6 +2854,7 @@ async function cmdSignoff(argv: string[]): Promise<number> {
     if (!names.length) refuse('the run recorded no captures, so it has no evidence to send', `Read it: done-done status --run ${id}`);
     const media = names.filter((f) => f.media).slice(0, 12).map((f) => f.name);
     const shown = names.slice(0, 12).map((f) => f.name).join(', ') + (names.length > 12 ? `, and ${names.length - 12} more in the run folder` : '');
+    if (run.receipt) comparisonBasis = (JSON.parse(readFileSync(resolve(repo, run.receipt), 'utf8')) as Receipt).judge.comparison_basis;
     const redo = 'Start a run whose --outcome fits: done-done verify --outcome "<what a user can now do>"';
     msg = {
       contract: 1, kind: 'evidence', schema: 1, key: `dd-evidence-${id}`, filer: 'done-done',
@@ -2839,7 +2863,7 @@ async function cmdSignoff(argv: string[]): Promise<number> {
       run: {
         ...runRef(rec.commit), outcome: text('outcome', run.claim!, 1000, redo),
         repro: text('repro', [`done-done verify`, run.journey ?? (run.feature && `--feature ${run.feature}`), `--outcome "${run.claim}" at ${rec.commit}`].filter(Boolean).join(' ') + (fixed?.branch ? ` on branch ${fixed.branch}` : ''), 1000, redo),
-        proof: text('proof', `${existsSync(join(repo, cfg.skill)) ? basename(cfg.skill) : 'no verify skill'}: done-done verify ${drove}, run ${id}: ${run.result}${run.reason ? ` (${run.reason})` : ''}`, 1000),
+        proof: text('proof', `${existsSync(join(repo, cfg.skill)) ? basename(cfg.skill) : 'no verify skill'}: done-done verify ${drove}, run ${id}: ${run.result}${run.reason ? ` (${run.reason})` : ''}${comparisonBasis ? `; ${comparisonBasis}` : ''}`, 1000),
         evidence: text('evidence', shown, 1000),
       },
     };
@@ -2848,7 +2872,7 @@ async function cmdSignoff(argv: string[]): Promise<number> {
   writeFileSync(file, `${JSON.stringify(msg, null, 2)}\n`);
   const at = citable(repo, file);
   if (!posts) {
-    emit({ command: 'signoff', run_id: id, kind: msg.kind, file: at, help: [`Post it to the sign-off board with sign-off-axi (done-done prepares the run; sign-off-axi posts): npx -y sign-off-axi post --kind ${msg.kind} --from ${arg(at)}`] });
+    emit({ command: 'signoff', run_id: id, kind: msg.kind, file: at, ...(comparisonBasis && { comparison_basis: comparisonBasis }), help: [`Post it to the sign-off board with sign-off-axi (done-done prepares the run; sign-off-axi posts): npx -y sign-off-axi post --kind ${msg.kind} --from ${arg(at)}`] });
     return PASS;
   }
   // Post it through the board's own CLI and record the card it made, so the claim traces to the run and its card.
@@ -2859,7 +2883,7 @@ async function cmdSignoff(argv: string[]): Promise<number> {
   logEvent(dir, { step: 'signoff', posted: card.key, kind: card.kind });
   if (values.wait) return await awaitCard(card);
   emit({
-    command: 'signoff', run_id: id, kind: card.kind, file: at, board: card.board,
+    command: 'signoff', run_id: id, kind: card.kind, file: at, board: card.board, ...(comparisonBasis && { comparison_basis: comparisonBasis }),
     card: { key: card.key, at: card.at },
     help: [`Wait for the answer: done-done signoff --wait --run ${id}`, `Read the card: sign-off-axi answers --key ${card.key}`],
   });

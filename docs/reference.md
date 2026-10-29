@@ -596,12 +596,17 @@ approved_requirements:
   - { kind: asset, name: logo, capture: logo.png, mock: design/logo.png }   # judged beside its approved image
   - { kind: color, name: brand-accent, capture: accent.png }                # must be cited live evidence
   - { kind: interaction, name: swipe-to-delete, capture: swipe.png }
+  - { kind: spec, name: create-machine, requirement: "The cloud-machine screen shows a Create machine button.", capture: cloud.png }
   - { kind: reference, name: design/spare.png, exclusion: owner dropped the spare illustration }
 ```
 
-`kind` is `asset`, `color`, `interaction` or `reference`. A row needs a unique `capture` filename (one cited, run-bound PNG/JPEG; optional `mock` sends it through the design judge) **or** `exclusion: <reason>`, the only way to skip it. An uncovered row fails the claim before any judge call, naming the item. Exclusions are reported under `approved_exclusions`. Receipts do not yet bind requirement captures; they are enforced by `check`, `receipt` and `verify` at run time.
+`kind` is `asset`, `color`, `interaction`, `reference` or `spec`. A row needs a unique `capture` filename (one cited, run-bound PNG/JPEG; optional `mock` sends it through the design judge) **or** `exclusion: <reason>`, the only way to skip a non-spec item. An uncovered row fails the claim before any judge call, naming the item. Exclusions are reported under `approved_exclusions`.
 
-**Behavior that tightens.** (1) Committed PNG/JPEG files under a top-level `design*/`, `mock*/`, `approved*/` or `prototype*/` folder that no `approved_design` `mock`, requirement `mock` or `kind: reference` row names fail every claim as "approved reference material is not in the approved_design manifest". (2) A claim whose outcome mentions design, mock, prototype or approved, with no `approved_design` manifest, no requirement `mock` and no `base_ref` baseline capture, fails with `not compared to approved result`; render, fit and dark-mode checks alone do not prove it. Manifests that list every reference and compare against it keep working unchanged.
+For a **brand-new screen without a reference image**, use `kind: spec` with non-empty `requirement` text from the approved ticket and its live `capture`. The spec rows must match the committed `.done-done.yaml` (or `--trusted-ref`); claim wording never supplies requirements. Spec rows cannot use `exclusion`. Every row gets one isolated AI question about whether its cited image demonstrates the entire written requirement, with `personReason` naming what is or is not shown. An abstention, missing reason or any answer short of a clear pass at `judge.floor` fails (exit 1); an unavailable judge remains an error, never a heuristic pass. A screenshot cannot establish behavior or timing merely by showing a control.
+
+`check` output, receipts and the signoff Evidence card explicitly say **judged against written requirements (no approved reference image)** for words-only proof. `approved_requirements` verdicts keep each spec's text, live image path/hash, reason and basis; receipts bind these under `judge.approved_requirements`, and `receipt --verify` and `gate` reject malformed/non-passing verdicts. Existing non-spec rows remain coverage checks at run time. An approved mock still runs its existing comparison and takes precedence; written requirements cannot excuse a mismatch. Mixed inventories report both bases and identify the basis of each spec row, never label a words-only row a mock match.
+
+**Behavior that tightens.** (1) Committed PNG/JPEG files under a top-level `design*/`, `mock*/`, `approved*/` or `prototype*/` folder that no `approved_design` `mock`, requirement `mock` or `kind: reference` row names fail every claim as "approved reference material is not in the approved_design manifest". (2) A claim whose outcome mentions design, mock, prototype or approved, with no `approved_design` manifest, no requirement `mock`, no committed `spec` requirement and no `base_ref` baseline capture, fails with `not compared to approved result`; render, fit and dark-mode checks alone do not prove it. Manifests that list every reference and compare against it keep working unchanged.
 
 #### Redesign claims
 
@@ -894,7 +899,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |
 | `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
 | `interaction_checklist` | none; opt-in six-item interaction evidence map; omitted/unproven items flagged, absent surfaces need reasons; see [Interaction checklist](#interaction-checklist-opt-in) |
-| `approved_requirements` | none; approved assets, colors and interactions with the live capture each needs, or an explicit `exclusion`, see [Assets, colors, interactions](#assets-colors-interactions-and-unlisted-references) |
+| `approved_requirements` | none; approved assets, colors, interactions or written `spec` requirements with their live captures (non-spec items may have an explicit `exclusion`), see [Assets, colors, interactions](#assets-colors-interactions-and-unlisted-references) |
 | `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates every claim except a redesign claim, see [Approved-design coverage](#approved-design-coverage) |
 | `approved_redesign` | none; screen × pixel size × theme manifest of live side-by-side source/redesign captures; gates only redesign claims, see [Redesign claims](#redesign-claims) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |

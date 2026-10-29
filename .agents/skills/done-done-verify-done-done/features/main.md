@@ -42,7 +42,8 @@ Source: `src/` (built to `dist/`), `skills/done-done/SKILL.md`, `integrations/fi
 
 ## Approved-design coverage
 
-Source: src/config.ts, src/cli.ts, src/design.ts and journeys/approved-design.mjs.
+Source: src/config.ts, src/cli.ts, src/design.ts, src/judge.ts and journeys/approved-design.mjs.
+Written requirements: a committed `approved_requirements` spec row names its requirement text and live image. Drive `run`, `check`, `receipt`, `receipt --verify`, `verify` and `signoff` in a disposable repo with a real screen and the configured AI judge. The present requirement passes with its visible-evidence reason; removing the manifest still fails `not compared to approved result`; an absent requirement fails even when the claim relevance passes. Check, receipt and card explicitly distinguish written requirements from an approved image. Run the `written requirements` integration test for malformed/uncommitted rows, missing captures, abstentions, required personReason, tampered receipt, mixed bases and mock precedence. Deterministic adapters prove wiring, not model accuracy.
 Drive `node dist/cli.js run approved-design`. Its isolated three-screen fixture drives the built CLI's run/check/receipt path: home and settings alone fail naming `today / 200x120 / light`; a new sealed run adding Today passes with three paired per-screen verdicts. A mismatch fails and receipt re-verification checks the approved mock hashes. Capture `approved-design.log` in the run's evidence folder. The deterministic fixture judge proves the CLI integration, not hosted visual-model accuracy. Every assertion must pass.
 
 ## Redesign coverage
