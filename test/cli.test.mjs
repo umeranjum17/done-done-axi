@@ -125,6 +125,68 @@ test('approved design coverage: real CLI names a missing screen, then passes the
   assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
+test('written requirements: committed specs need live captures and a clear judge pass; mocks still win', () => {
+  const t = setup();
+  const spec = { kind: 'spec', name: 'home-heading', requirement: 'The home heading is visible.', capture: 'home.png' };
+  const config = rows => JUDGED + (rows ? `approved_requirements: ${JSON.stringify(rows)}\n` : '');
+  const commit = rows => { writeFileSync(join(t.repo, '.done-done.yaml'), config(rows)); t.sh('add', '-A'); t.sh('commit', '-qm', 'requirements', '--allow-empty'); };
+  const basis = 'judged against written requirements (no approved reference image)';
+  writeFileSync(t.env.DD_STUB_JUDGE, `#!${process.execPath}
+const fs = require('node:fs'), input = fs.readFileSync(0, 'utf8');
+const spec = input.includes('Check this written requirement');
+const design = input.includes('blank-strip');
+const keys = spec ? ['requirement'] : design ? ['aspect','clipped-text','overlap','off-screen','blank-strip','squashed-text','layout'] : [...new Set([...input.matchAll(/capture_\\d+/g)].map(m => m[0]))];
+if (!keys.length) keys.push('relevance');
+if (spec) { if (!input.includes('The home heading is visible.')) throw Error('requirement not sent'); fs.appendFileSync(${JSON.stringify(join(t.dir, 'spec-calls'))}, 'spec\\n'); }
+const p = spec ? JSON.parse(process.env.DD_SPEC_REPLY || '{"shown":0.98,"missing":0.02}') : design ? (process.env.DD_MOCK_BAD ? {none:0.02,defect:0.98} : {none:0.98,defect:0.02}) : {correct:0.98,wrong:0.01,unclear:0.01};
+process.stdout.write(JSON.stringify({response: JSON.stringify(Object.fromEntries(keys.map(k => [k, {probabilities:p, rationale:'Read the home heading.', personReason:process.env.DD_NO_REASON ? '' : 'Home heading is visible.', parts:[], covers:[]}])))}));
+`, { mode: 0o755 });
+  commit([spec]);
+  let files = t.shots('design done').files.slice(0, 1);
+  const pass = t.dd('check', '--outcome', 'design done', ...files);
+  assert.equal(pass.code, 0, pass.out); assert.equal(toon(pass).comparison_basis, basis);
+  const receipt = toon(t.dd('receipt', '--outcome', 'design done', ...files));
+  assert.equal(receipt.comparison_basis, basis);
+  const verified = toon(t.dd('receipt', '--verify', 'HEAD'));
+  assert.equal(verified.judge.approved_requirements[0].requirement, spec.requirement);
+  assert.equal(verified.judge.approved_requirements[0].verdict, 'pass');
+  const recPath = join(t.repo, receipt.receipt), saved = readFileSync(recPath, 'utf8'), damaged = JSON.parse(saved);
+  damaged.judge.approved_requirements[0].verdict = 'fail'; writeFileSync(recPath, JSON.stringify(damaged));
+  assert.match(t.dd('receipt', '--verify', 'HEAD').out, /malformed written-requirement/); writeFileSync(recPath, saved);
+  const run = t.dd('verify', 'shots', '--outcome', 'design done'); assert.equal(run.code, 0, run.out);
+  const card = JSON.parse(readFileSync(join(t.repo, toon(t.dd('signoff', '--run', toon(run).run_id)).file), 'utf8'));
+  assert.ok(card.run.proof.includes(basis));
+  commit([{ ...spec, capture: 'absent.png' }]); files = t.shots('design done').files.slice(0, 1);
+  assert.match(t.dd('check', '--outcome', 'design done', ...files).out, /no live capture/);
+  commit(); files = t.shots('design done').files.slice(0, 1);
+  assert.match(t.dd('check', '--outcome', 'design done', ...files).out, /not compared to approved result/);
+  writeFileSync(join(t.repo, '.done-done.yaml'), config([spec]));
+  assert.match(t.dd('check', '--outcome', 'design done', ...files).out, /written requirements must match the committed/);
+  commit([spec]); files = t.shots('design done').files.slice(0, 1);
+  for (const [i, reply] of [{shown:0.02,missing:0.98}, {shown:0.5,missing:0.5}, {shown:0.98,missing:0.02}].entries()) {
+    t.env.DD_SPEC_REPLY = JSON.stringify(reply); t.env.DD_NO_REASON = i === 2 ? '1' : '';
+    writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), judgeYaml(t.env).replace('stub-judge', `spec-${i}`));
+    const r = t.dd('receipt', '--outcome', 'design done', ...files);
+    assert.equal(r.code, 1, r.out); assert.match(r.out, /written requirement/);
+  }
+  delete t.env.DD_SPEC_REPLY; delete t.env.DD_NO_REASON;
+  copyFileSync(join(t.dir, 'screen.png'), join(t.repo, 'mock.png'));
+  commit([{ ...spec, mock: 'mock.png' }]); files = t.shots('design done').files.slice(0, 1);
+  assert.equal(toon(t.dd('check', '--outcome', 'design done', ...files)).comparison_basis, 'judged against approved reference image');
+  t.env.DD_MOCK_BAD = '1'; writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), judgeYaml(t.env).replace('stub-judge', 'bad-mock'));
+  assert.equal(t.dd('receipt', '--outcome', 'design done', ...files).code, 1, 'a passing spec cannot override a mock mismatch');
+  delete t.env.DD_MOCK_BAD; writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), judgeYaml(t.env));
+  writeFileSync(join(t.repo, '.done-done.yaml'), config([spec]) + 'approved_design: [{screen: settings, size: 200x120, theme: light, mock: mock.png, capture: settings.png}]\n');
+  t.sh('add', '-A'); t.sh('commit', '-qm', 'mixed references');
+  const mixed = toon(t.dd('check', '--outcome', 'design done', ...t.shots('design done').files));
+  assert.match(mixed.comparison_basis, /rows without a reference image are not mock matches/);
+  assert.equal(mixed.approved_requirements[0].basis, basis);
+  for (const row of [{ ...spec, requirement: '' }, {kind:'spec', name:'x', exclusion:'no'}, {...spec, requirement:undefined}]) {
+    writeFileSync(join(t.repo, '.done-done.yaml'), config([row]));
+    assert.match(t.dd('run', '--open').out, /approved_requirements must be/);
+  }
+});
+
 test('redesign claims: the blind side-by-side judge proves a redesign, layout match stays for the approved mock', () => {
   const t = setup();
   const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys', 'redesign.mjs')], {

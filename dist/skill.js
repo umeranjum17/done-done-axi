@@ -83,6 +83,14 @@ journeys:
     command: done-done look http://127.0.0.1:3000/inbox --out "$DONE_DONE_EVIDENCE_ROOT/inbox.png"
 \`\`\`
 
+For a brand-new screen without an approved mock, commit an \`approved_requirements\` row in \`.done-done.yaml\`:
+\`{kind: spec, name: home-heading, requirement: "The home screen shows a Create machine button.", capture: home.png}\`.
+Cite that live, run-bound PNG/JPEG in \`check\` or \`receipt\`. Every spec row gets its own AI question; a missing capture,
+missing visible-evidence personReason, abstention or anything short of a clear pass fails. Spec rows cannot be excluded.
+An approved mock, when present, is still compared and wins; no reference and no committed requirements still refuses a design claim.
+Check output, receipts and signoff cards name the basis: \`judged against written requirements (no approved reference image)\`
+is not a mock match. Each spec verdict binds its requirement text, live image hash and visible-evidence reason in the receipt.
+
 Interaction coverage is opt-in via \`interaction_checklist\` in the repo config. Read the shipped \`skills/done-done/interaction-checklist.json\`:
 next/previous plus swipe in details, instant send/answer feedback, destructive undo, list scroll restoration, long-list search/filter,
 and empty-state next steps. Map every item to real-product frame filenames (\`captures\`, in action order) or \`not_applicable\`
