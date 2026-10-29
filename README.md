@@ -48,12 +48,12 @@ Commit `.done-done.yaml` and the verify skill so later runs and your teammates u
 Installing done-done from another installer (a fleet bootstrap, a Juggernaut-style one-command install) takes three calls and no prompts. Pin the version:
 
 ```sh
-npm install -g done-done-axi@0.6.20
+npm install -g done-done-axi@0.6.21
 done-done init --no-skill --agent <agent> --model <model> --judge <route> --judge-model <model>
 done-done doctor --setup --json
 ```
 
-- `done-done --version` prints the installed version (here `0.6.20`); check it before anything else.
+- `done-done --version` prints the installed version (here `0.6.21`); check it before anything else.
 - `init --no-skill` writes `.done-done.yaml` and the global `~/.done-done/config.yaml`, and starts no agent: it skips the verify skill, so it spends nothing and asks nothing. `<route>` is `answerer:<agent>` or a bare agent name. Exit `0` when the agent is set and the config is valid, `2` when it is not.
 - `doctor --setup --json` is install health: exit `0` when git, the config, the evidence root, the agent and the judge are ok, `2` when one of them is not. The verify skill and the journey rows are warnings, so a fresh install passes.
 - Exit codes: `0` pass, `2` usage or config error ([all codes](docs/reference.md#exit-codes)).
