@@ -223,3 +223,46 @@ export async function design(cfg: Config, choice: JudgeChoice, screens: Screen[]
   }
   return out;
 }
+
+// The redesign check: a redesign differs from its source on purpose, so it is judged blind, not against an approved mock.
+// One image per screen shows the unchanged source and the redesign side by side in an unknown order, and three questions
+// ask whether it is a pair, whether both halves are whole, and whether the redesign lost anything the source did. The seam
+// between the halves is not a defect, so no pixel measure runs on it.
+export type Redesigned = { path: string; verdict: 'pass' | 'fail' | 'unsure'; failed: Defect[]; reason?: string; cached?: boolean };
+const PAIR = 'The image "pair" shows two versions of one screen side by side, in an unknown order: one is the unchanged source and one is a redesign. Do not infer which half is which from position, or from any caption or label in the image. Describe what you see in each half first, then answer.';
+export const PAIR_KINDS: Record<string, { yes: string; no: string }> = {
+  'two-versions': { yes: 'The image shows two visually different versions of the same screen side by side.', no: 'The image does not show two versions of one screen.' },
+  complete: { yes: 'Both versions are complete, usable screens: no overlapping, clipped, squashed or unreadable UI and no blank band.', no: 'At least one version is broken: UI overlaps, is clipped, squashed or unreadable, or a blank band shows.' },
+  preserved: { yes: 'Both versions keep the same essential content, navigation entries and function, so a user can still do the same things.', no: 'Content, navigation or function is lost in one version.' },
+};
+const pairQuestions = (floor: number): Record<string, Question> =>
+  Object.fromEntries(Object.entries(PAIR_KINDS).map(([kind, k]) => [kind, { kind: 'choice', instructions: `Write the rationale first: describe each half of the image. ${PAIR} Question ${kind}.`, options: { yes: k.yes, no: k.no }, floor, personReason: true, images: ['pair'] }]));
+
+export async function redesign(cfg: Config, choice: JudgeChoice, screens: Capture[], records: string): Promise<Redesigned[]> {
+  const dir = join(home(), 'runs', cfg.app, 'redesign');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const out: Redesigned[] = [];
+  let be: Judge | undefined;
+  for (const [n, s] of screens.entries()) {
+    const shot = image(s);
+    if (typeof shot === 'string') throw new UsageError(`redesign: ${shot}, so it cannot be sent to the judge`, 'Capture the side-by-side pair again as a PNG or JPEG, then re-run the check');
+    const q = pairQuestions(cfg.judge.floor);
+    const key = createHash('sha256').update(JSON.stringify([VERSION, s.sha256, q, choice.route, choice.model])).digest('hex');
+    const hit = readCache(dir, key);
+    const cached = hit?.route === choice.route && hit?.model === choice.model && Array.isArray(hit.failed) && hit.failed.every((d: unknown) => !!d && typeof d === 'object' && Object.hasOwn(PAIR_KINDS, (d as Defect).kind) && typeof (d as Defect).where === 'string' && !!(d as Defect).where) && Array.isArray(hit.unsure) && hit.unsure.every((k: unknown) => typeof k === 'string' && Object.hasOwn(PAIR_KINDS, k));
+    let judge: { failed: Defect[]; unsure: string[] } = hit;
+    if (!cached) {
+      const call = `${records}/redesign-${stamp}-${n + 1}`;
+      be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, q, ASK_ATTEMPTS);
+      const answers = await askJudge(cfg, be, choice, { screen: 'a side-by-side pair of an unchanged source screen and its redesign' }, q, { pair: shot });
+      judge = {
+        failed: Object.entries(answers).filter(([, a]) => !a.abstained && a.answer === 'no').map(([kind, a]) => ({ kind, where: (a.personReason || a.rationale || 'not named').slice(0, 200) })),
+        unsure: Object.entries(answers).filter(([, a]) => a.abstained).map(([kind]) => kind),
+      };
+      writeCache(dir, key, { ...judge, route: choice.route, model: choice.model });
+    }
+    const reason = judge.unsure.length ? `not confident enough about ${judge.unsure.join(', ')}` : undefined;
+    out.push({ path: s.name, verdict: judge.failed.length ? 'fail' : reason ? 'unsure' : 'pass', failed: judge.failed, ...(reason && { reason }), ...(cached && { cached }) });
+  }
+  return out;
+}

@@ -603,6 +603,34 @@ approved_requirements:
 
 **Behavior that tightens.** (1) Committed PNG/JPEG files under a top-level `design*/`, `mock*/`, `approved*/` or `prototype*/` folder that no `approved_design` `mock`, requirement `mock` or `kind: reference` row names fail every claim as "approved reference material is not in the approved_design manifest". (2) A claim whose outcome mentions design, mock, prototype or approved, with no `approved_design` manifest, no requirement `mock` and no `base_ref` baseline capture, fails with `not compared to approved result`; render, fit and dark-mode checks alone do not prove it. Manifests that list every reference and compare against it keep working unchanged.
 
+#### Redesign claims
+
+A redesign differs from its source on purpose, so it can never match an approved mock. A claim whose outcome says *redesign*, *redesigned*, *redesigns* or *redesigning* is a redesign claim: it is proven by a blind side-by-side judge against the unchanged source, together with the usual checks (run provenance, freshness, step record, relevance judge). Claims that implement an approved mock, such as "the board matches the approved design", keep [layout match](#approved-design-coverage) exactly as before, and a redesign claim does not use layout match.
+
+List one row per screen × size × theme in `.done-done.yaml`:
+
+```yaml
+approved_redesign:
+  - { screen: board, size: 1280x800, theme: light, capture: board.light.pair.png }
+  - { screen: board, size: 1280x800, theme: dark, capture: board.dark.pair.png }
+```
+
+`capture` is the unique PNG/JPEG **filename** the redesign journey writes into its run folder: one image of the unchanged source and the redesign of that screen side by side, in either order. `size` is that image's width × height in pixels. Tuples and filenames must be unique, and a filename cannot contain a slash or `..`. The key only gates redesign claims.
+
+Before any judge call, each row needs exactly one cited, run-bound image with that filename and pixel size. A missing, ambiguous or wrong-sized capture fails the claim (exit 1), naming the screen / size / theme. A redesign claim with no `approved_redesign` rows fails with `not compared to approved result` and a help line to add the manifest.
+
+Each pair is then sent alone to the judge you set, as one tools-off request per screen. The judge is told the image shows two versions of one screen in an unknown order, one the unchanged source and one a redesign, not to infer either half from position or from a caption in the image, and to describe what it sees first. It answers three questions:
+
+| Kind | `yes` means | `no` means |
+|---|---|---|
+| `two-versions` | the image shows two visually different versions of the same screen side by side | it is not two versions of one screen |
+| `complete` | both versions are complete, usable screens: no overlapping, clipped, squashed or unreadable UI and no blank band | at least one version is broken |
+| `preserved` | both versions keep the same essential content, navigation entries and function | content, navigation or function is lost |
+
+All three `yes` is a pass. Any `no` fails the claim (exit 1), naming the kind and the judge's reason. An answer below `judge.floor` is unsure and makes the claim inconclusive (exit 3), naming the kinds; it is never a pass. Verdicts are cached per exact input (the image, the questions, the route, the model and the done-done version). No pixel measure runs on a pair, since the seam between the halves is not a defect.
+
+The result's `redesign` list carries every row's screen, size, theme, capture path and hash, verdict and reason. Receipts keep it under `judge.approved_redesign`, bound to the cited capture; `receipt --verify` and `gate` check that every recorded verdict is a pass for a capture the receipt cites, without a model call, and refuse a malformed one. This proves the redesign is whole and keeps what the source had; it does not prove the redesign looks better.
+
 #### Interaction checklist (opt-in)
 
 Visual comparisons do not prove interaction polish. The package ships six requirements in `skills/done-done/interaction-checklist.json`: `detail-navigation` (next/previous **and swipe**), `instant-state` (immediate feedback on every send/answer), `destructive-undo` (undo restores content), `scroll-restoration` (back keeps list position), `list-search` (search/filter on long lists), and `empty-next-step` (empty states explain what to do next).
@@ -867,7 +895,8 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
 | `interaction_checklist` | none; opt-in six-item interaction evidence map; omitted/unproven items flagged, absent surfaces need reasons; see [Interaction checklist](#interaction-checklist-opt-in) |
 | `approved_requirements` | none; approved assets, colors and interactions with the live capture each needs, or an explicit `exclusion`, see [Assets, colors, interactions](#assets-colors-interactions-and-unlisted-references) |
-| `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates all claims, see [Approved-design coverage](#approved-design-coverage) |
+| `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates every claim except a redesign claim, see [Approved-design coverage](#approved-design-coverage) |
+| `approved_redesign` | none; screen × pixel size × theme manifest of live side-by-side source/redesign captures; gates only redesign claims, see [Redesign claims](#redesign-claims) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |
 | `base_ref` | none; a ref `verify` also drives, pairing its captures with the head's, see [Base-ref before](#base-ref-before) |
 | `evidence.root` | `<local_root>/<app>`, outside the repo. A relative path is under the repo; an absolute path is used as-is |

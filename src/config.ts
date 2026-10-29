@@ -21,6 +21,7 @@ export type InteractionEvidence = Record<string, { captures?: string[]; not_appl
 export type ApprovedRequirement = { kind: string; name: string; capture?: string; mock?: string; exclusion?: string };
 export const REQUIREMENT_KINDS = ['asset', 'color', 'interaction', 'reference'];
 export type ApprovedScreen = { screen: string; size: string; theme: string; mock: string; capture: string };
+export type ApprovedRedesign = { screen: string; size: string; theme: string; capture: string };
 
 export type Config = {
   agent: string; // the agent done-done starts, set by the user; '' until they do
@@ -47,6 +48,7 @@ export type Config = {
   evals: Evals | null;
   approved_requirements: ApprovedRequirement[]; // approved assets, color tokens, interactions and reference images beyond the screens; [] when unset
   approved_design: ApprovedScreen[]; // committed screen x pixel size x theme manifest; [] when unset
+  approved_redesign: ApprovedRedesign[]; // screen x pixel size x theme manifest of live side-by-side source/redesign captures; [] when unset
   interaction_checklist: InteractionEvidence | null; // opt-in; omitted items are flagged
   // Primitive 4 (base-ref-before): verify drives this ref too and pairs its captures with the head's; '' (the default) is off.
   base_ref: string;
@@ -103,7 +105,7 @@ export const EFFORT_FLAGS: Record<string, (level: string) => string[]> = {
 const AGENT_TIMEOUT = '30m';
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   agent_config: { scope: 'global', type: 'agent_config' },
@@ -122,6 +124,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   look: { scope: 'repo', type: 'look' },
   evals: { scope: 'repo', type: 'evals' },
   approved_design: { scope: 'repo', type: 'approved_design' },
+  approved_redesign: { scope: 'repo', type: 'approved_redesign' },
   approved_requirements: { scope: 'repo', type: 'approved_requirements' },
   interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
   base_ref: { scope: 'repo', type: 'string' },
@@ -308,6 +311,23 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       target.from[key] = scope;
       continue;
     }
+    if (key === 'approved_redesign') {
+      const fail = () => { throw new UsageError(`${file}: approved_redesign must be a non-empty list of unique {screen, size: <width>x<height> in pixels, theme, capture: <unique PNG/JPEG filename>}`); };
+      const relativeImage = (p: unknown): p is string => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
+      if (!Array.isArray(value) || !value.length) fail();
+      const rows = value as ApprovedRedesign[];
+      const ids = new Set<string>(), names = new Set<string>();
+      for (const r of rows) {
+        if (!isMap(r) || Object.keys(r).length !== 4 || !(['screen', 'size', 'theme', 'capture'] as const).every(k => typeof r[k] === 'string' && r[k].trim())) fail();
+        if (!/^[1-9]\d*x[1-9]\d*$/.test(r.size) || !relativeImage(r.capture) || /[\\/]/.test(r.capture)) fail();
+        const id = JSON.stringify([r.screen, r.size, r.theme]);
+        if (ids.has(id) || names.has(r.capture)) fail();
+        ids.add(id); names.add(r.capture);
+      }
+      target.approved_redesign = rows;
+      target.from[key] = scope;
+      continue;
+    }
     if (key === 'dom') {
       const d = parseDom(value);
       if (typeof d === 'string') throw new UsageError(`${file}: dom ${d}`);
@@ -384,6 +404,7 @@ function defaultConfig(repo: string): Config {
     evals: null,
     approved_requirements: [],
     approved_design: [],
+    approved_redesign: [],
     interaction_checklist: null,
     base_ref: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
