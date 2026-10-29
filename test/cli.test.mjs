@@ -3244,3 +3244,30 @@ test('a passing check seals the evidence no run holds at HEAD: one record, no du
   assert.notEqual(dd('check', '--outcome', outcome, '.proof/hand.txt').code, 0);
   assert.equal(atHead().length, 1);
 });
+
+test('a claude result with no structured_output gives its result text as the answer, or names the CLI verdict', () => {
+  const { repo, env } = shapeRepo('proof', 'notes');
+  const s = stubAgents(env, scaffoldAnswer());
+  const reply = (result) => writeFileSync(join(s.env.PATH, 'claude'), `#!${process.execPath}
+require('node:fs').readFileSync(0);
+process.stdout.write(JSON.stringify(${JSON.stringify(result)}));
+`, { mode: 0o755 });
+  const base = { type: 'result', subtype: 'success', is_error: false, num_turns: 9, stop_reason: 'end_turn', terminal_reason: 'completed', permission_denials: [{}, {}] };
+  const records = () => { const dir = join(env.DONE_DONE_HOME, 'agents'); return readdirSync(dir).map((n) => JSON.parse(readFileSync(join(dir, n), 'utf8'))); };
+  // No structured_output, but the model's final text is the schema object: it is accepted as the answer.
+  reply({ ...base, result: scaffoldAnswer() });
+  const ok = doctorIn(repo, s.env, 'init');
+  assert.equal(ok.code, 0, ok.out);
+  assert.equal(toon(ok).verify_skill, 'written by claude');
+  // Neither: the error names the CLI's verdict, never "undefined", and the call record keeps the same fields.
+  rmSync(join(repo, '.agents', 'skills', 'done-done-verify-notes'), { recursive: true, force: true });
+  rmSync(join(env.DONE_DONE_HOME, 'agents'), { recursive: true, force: true });
+  reply({ ...base, result: 'I ran out of room before answering.', safety_stops: 1 });
+  const bad = doctorIn(repo, s.env, 'init');
+  const line = toon(bad).verify_skill;
+  assert.doesNotMatch(line, /undefined/);
+  assert.match(line, /subtype=success, stop_reason=end_turn, terminal_reason=completed, num_turns=9, permission_denials=2, safety_stops=1/);
+  const [rec] = records();
+  assert.deepEqual(rec.verdict, { subtype: 'success', stop_reason: 'end_turn', terminal_reason: 'completed', num_turns: 9, permission_denials: 2, safety_stops: 1, result_tail: 'I ran out of room before answering.' });
+  assert.doesNotMatch(JSON.stringify(rec), /Answer with only one JSON object/, 'the record holds no prompt');
+});

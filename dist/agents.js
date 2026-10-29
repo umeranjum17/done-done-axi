@@ -69,9 +69,11 @@ function stderrHead(stderr) {
 const PERMISSION_REJECT = /permission requested:\s*(\S+)\s*\(([^)]*)\);\s*auto-rejecting/;
 class ProviderError extends Error {
     detail;
-    constructor(text, prefix = '', suffix = '') {
+    verdict;
+    constructor(text, prefix = '', suffix = '', verdict) {
         super(`${prefix}${errorLine(text)}${suffix}`);
         this.detail = `${prefix}${text.slice(0, 500)}${suffix}`;
+        this.verdict = verdict;
     }
 }
 // The answer object in an agent's free text: the first top-level '{'..'}' span that parses to an object with every
@@ -151,6 +153,23 @@ const piProviderExtension = (model) => {
     const provider = model?.split('/')[0] ?? '';
     return Object.hasOwn(PI_PROVIDER_EXTENSIONS, provider) ? ['-e', PI_PROVIDER_EXTENSIONS[provider]] : [];
 };
+// What claude's own result says when it holds no answer: the fields that explain why, on one line (and in the call record).
+function claudeVerdictFields(r) {
+    const tail = typeof r.result === 'string' ? errorLine(r.result.slice(-300)) : '';
+    return {
+        subtype: r.subtype, stop_reason: r.stop_reason, terminal_reason: r.terminal_reason, num_turns: r.num_turns,
+        permission_denials: Array.isArray(r.permission_denials) ? r.permission_denials.length : 0,
+        ...(r.safety_stops !== undefined && { safety_stops: r.safety_stops }),
+        ...(r.api_error_status !== undefined && { api_error_status: r.api_error_status }),
+        ...(tail && { result_tail: tail }),
+    };
+}
+function claudeVerdict(r) {
+    const f = claudeVerdictFields(r);
+    const { result_tail: tail, ...rest } = f;
+    const facts = Object.entries(rest).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
+    return `claude returned no structured answer (${facts})${tail ? `; result ends: ${tail}` : ''}`;
+}
 const ADAPTERS = {
     // claude -p: --json-schema puts the validated object in structured_output; --tools '' turns every tool off.
     // An edit step accepts edits only in cwd and --add-dir folders, and may run commands (the drive launches the app).
@@ -171,7 +190,20 @@ const ADAPTERS = {
                 throw new ProviderError('claude printed no result');
             if (r.is_error)
                 throw new ProviderError(String(r.result || r.subtype));
-            return r.structured_output;
+            const plain = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+            if (plain(r.structured_output))
+                return r.structured_output;
+            // An exit-0 result can carry no structured_output after a long tool-driven step; its result text is the model's final answer.
+            const required = c.schema.required ?? [];
+            if (typeof r.result === 'string') {
+                try {
+                    const found = extractJsonObject(r.result, required);
+                    if (plain(found) && required.every((k) => k in found))
+                        return found;
+                }
+                catch { }
+            }
+            throw new ProviderError(claudeVerdict(r), '', '', claudeVerdictFields(r));
         },
     },
     // opencode run reads no stdin: the prompt and the schema go in an attached file,
@@ -706,6 +738,7 @@ export async function askAgent(c) {
     let attempts = 0;
     let out;
     let failure;
+    let verdict;
     try {
         dir = mkdtempSync(join(tmpdir(), 'done-done-agent-'));
         cwd = c.tools === 'none' ? dir : c.cwd;
@@ -816,6 +849,8 @@ export async function askAgent(c) {
         const note = (text) => (!provider && said && !text.includes(said.split(' | ')[0]) ? `${text}; ${call.agent} stderr: ${said}` : text);
         out = { ok: false, error: note(e.message), ...(!provider && said ? { stderr: said } : {}) };
         failure = note(e instanceof ProviderError ? e.detail : e.message);
+        if (e instanceof ProviderError)
+            verdict = e.verdict;
     }
     finally {
         if (dir)
@@ -824,7 +859,7 @@ export async function askAgent(c) {
     // The record holds what ran and what came back, never the prompt text or an image.
     const { prompt, images, pool, ...spec } = c;
     try {
-        const record = { ...spec, agent: call.agent, model: call.model, ...(picked && (picked.route ? { route: picked.id } : { account: picked.id })), ...(images && { images: images.map((i) => i.name) }), cwd, prompt_bytes: Buffer.byteLength(prompt), argv: argv('<tmp>'), ms: Date.now() - started, exit: res?.status ?? null, attempts, ...out, error: failure, stderr: String(res?.stderr ?? '').slice(-2000) };
+        const record = { ...spec, agent: call.agent, model: call.model, ...(picked && (picked.route ? { route: picked.id } : { account: picked.id })), ...(images && { images: images.map((i) => i.name) }), cwd, prompt_bytes: Buffer.byteLength(prompt), argv: argv('<tmp>'), ms: Date.now() - started, exit: res?.status ?? null, attempts, ...out, error: failure, ...(verdict && { verdict }), stderr: String(res?.stderr ?? '').slice(-2000) };
         mkdirSync(dirname(c.record), { recursive: true });
         writeFileSync(c.record, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
         out = { ...out, record: c.record };
