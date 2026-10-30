@@ -125,6 +125,14 @@ test('approved design coverage: real CLI names a missing screen, then passes the
   assert.equal(r.status, 0, r.stdout + r.stderr);
 });
 
+test('approved requirements scope: a row is judged only against the journeys a claim cites', () => {
+  const t = setup();
+  const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys', 'requirements-scope.mjs')], {
+    env: { ...t.env, DONE_DONE_EVIDENCE_ROOT: join(t.dir, 'evidence') }, encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
+
 test('written requirements: committed specs need live captures and a clear judge pass; mocks still win', () => {
   const t = setup();
   const spec = { kind: 'spec', name: 'home-heading', requirement: 'The home heading is visible.', capture: 'home.png' };

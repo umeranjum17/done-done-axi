@@ -15,6 +15,9 @@ export class UsageError extends Error {
 }
 export const INTERACTIONS = JSON.parse(readFileSync(new URL('../skills/done-done/interaction-checklist.json', import.meta.url), 'utf8'));
 export const REQUIREMENT_KINDS = ['asset', 'color', 'interaction', 'reference', 'spec'];
+// A row's scope: the journey or verify-skill feature (screen) it belongs to, as a plain name.
+export const SCOPE_NAME = /^[A-Za-z0-9][\w.:-]*$/;
+export const scopeKnown = (repo, skill, journeys, name) => Object.hasOwn(journeys, name) || existsSync(join(repo, skill, 'features', `${name}.md`));
 // The coding agents a user can set as agent.
 export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // The agents whose CLI can read an attached image with every tool off, so they judge through the answerer route;
@@ -244,7 +247,7 @@ function apply(target, text, file, scope) {
             continue;
         }
         if (key === 'approved_requirements') {
-            const fail = () => { throw new UsageError(`${file}: approved_requirements must be a non-empty list of unique {kind: ${REQUIREMENT_KINDS.join('|')}, name, capture: <live PNG/JPEG filename>, mock?: <repo-relative PNG/JPEG>} or {kind, name, exclusion: <reason>}; a reference row names a committed approved image and takes only an exclusion; a spec row requires requirement: <non-empty written requirement> and capture (optional mock), never an exclusion`); };
+            const fail = () => { throw new UsageError(`${file}: approved_requirements must be a non-empty list of unique {kind: ${REQUIREMENT_KINDS.join('|')}, name, capture: <live PNG/JPEG filename>, mock?: <repo-relative PNG/JPEG>, journey?: <journey or verify-skill feature>} or {kind, name, exclusion: <reason>}; a reference row names a committed approved image and takes only an exclusion; a spec row requires requirement: <non-empty written requirement> and capture (optional mock), never an exclusion`); };
             const image = (p) => typeof p === 'string' && !isAbsolute(p) && !p.split(/[\\/]/).includes('..') && /\.(png|jpe?g)$/i.test(p);
             if (!Array.isArray(value) || !value.length)
                 fail();
@@ -255,7 +258,9 @@ function apply(target, text, file, scope) {
                     fail();
                 if (r.kind === 'spec' && (typeof r.requirement !== 'string' || !r.requirement.trim() || r.exclusion !== undefined))
                     fail();
-                const keys = Object.keys(r).filter(k => k !== 'kind' && k !== 'name' && !(r.kind === 'spec' && k === 'requirement')).sort().join();
+                if (r.journey !== undefined && (typeof r.journey !== 'string' || !SCOPE_NAME.test(r.journey)))
+                    fail();
+                const keys = Object.keys(r).filter(k => k !== 'kind' && k !== 'name' && k !== 'journey' && !(r.kind === 'spec' && k === 'requirement')).sort().join();
                 if (typeof r.exclusion === 'string' ? !r.exclusion.trim() || keys !== 'exclusion' : r.kind === 'reference' || !['capture', 'capture,mock'].includes(keys) || !image(r.capture) || /[\\/]/.test(r.capture) || (r.mock !== undefined && !image(r.mock)))
                     fail();
                 const id = JSON.stringify([r.kind, r.name]);
@@ -437,6 +442,11 @@ export function loadConfig(repo, projectText) {
     cfg.skill ||= existsSync(join(repo, `.agents/skills/done-done-verify-${cfg.app}`)) || !existsSync(join(repo, `.agents/skills/verify-${cfg.app}`))
         ? `.agents/skills/done-done-verify-${cfg.app}` : `.agents/skills/verify-${cfg.app}`;
     const local = tilde(cfg.evidence.local_root);
+    // A row may name the journey (or verify-skill feature, the screen it drives) it belongs to. A name no journey or feature has
+    // would silently drop that row's check, so it is refused here instead.
+    for (const r of cfg.approved_requirements)
+        if (r.journey && !scopeKnown(repo, cfg.skill, cfg.journeys, r.journey))
+            throw new UsageError(`${projectFile}: approved_requirements ${r.kind} ${r.name}: journey "${r.journey}" is neither a configured journey nor a verify-skill feature`, `Name it in ${projectFile} as journeys.${r.journey}, or write ${cfg.skill}/features/${r.journey}.md, or drop journey from that row (a row with no journey is enforced on every claim)`);
     cfg.acpx_path = tilde(cfg.acpx_path);
     for (const a of Object.keys(cfg.agent_path_override))
         cfg.agent_path_override[a] = tilde(cfg.agent_path_override[a]);

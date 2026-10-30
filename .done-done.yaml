@@ -18,6 +18,8 @@ journeys:
     command: node journeys/approved-design.mjs
   redesign:
     command: node journeys/redesign.mjs
+  requirements-scope:
+    command: node journeys/requirements-scope.mjs
   init-first-release:
     command: node journeys/init-first-release.mjs
   agents-live:
