@@ -111,7 +111,7 @@ an approved mock keeps layout match. Receipts keep the pass under \`judge.approv
 
 To gate a worker's claim cheaply, \`done-done lint <PR URL | report file> <evidence folder>\` reads the newest \`## Checks\` block
 with no judge or model and prints \`PASS\` or \`FAIL: <reason>\` (exit 1 on a fail): missing lines, evidence that is absent,
-empty, stale, duplicated or already used by another PR, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
+empty, stale, duplicated or the same proof at the same commit another PR already cited, a n/a repro on a fix, or a PR of 1,000+ added lines all fail.
 \`evidence: not proven: <cause>\` passes. A PR URL whose diff changes \`src/\` and no \`journeys/\` file prints \`WARN: <reason>\` (exit 0):
 run the journey, commit it, then open the PR, in that order. Fix the cause it names and re-run; never edit the evidence to get past it.
 

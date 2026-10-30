@@ -107,6 +107,15 @@ function movedLines(run: Gh, nwo: string, body: string, paths: string[], isGener
 
 const sha256 = (p: string) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
+// The commit a cited proof comes from: the PR's head commit, or the checkout lint runs in for a report file. Reuse is
+// the same bytes at the same commit, so a deterministic re-render from a new sealed run at a new commit is fresh proof,
+// while the same proof cited for a second PR is refused. No commit at all falls back to the bytes alone.
+function proofCommit(prHead: string): string {
+  if (prHead !== '-') return prHead;
+  const r = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10_000 });
+  return r.status === 0 ? r.stdout.trim() || '-' : '-';
+}
+
 // src: a PR URL or a report file; ev: the folder the evidence names are relative to; dir: where the hash store and log live.
 export function lint(src: string, ev: string, dir: string, rules: Rules = {}, run: Gh = gh): Verdict {
   const byConfig = generatedBy(rules.generated_paths);
@@ -169,8 +178,17 @@ export function lint(src: string, ev: string, dir: string, rules: Rules = {}, ru
   const names = f.evidence.split(/[,\s]+/).map((n) => n.replace(/^[`"']+|[`"']+$/g, '')).filter((n) => /\.\w{1,10}$/.test(n));
   if (!names.length) return fail('evidence: names no files (or write "not proven: <cause>")');
   const store = join(dir, 'lint.hashes');
-  const seen = new Map<string, string>();
-  if (existsSync(store)) for (const l of readFileSync(store, 'utf8').split('\n')) { const p = l.split(' '); if (p.length === 2) seen.set(p[0], p[1]); }
+  // Each line is "<hash> v2 <commit> <task>"; a line without v2 was written before reuse keyed on the commit and owns
+  // its bytes alone, so an old store still refuses a byte-for-byte copy of an older proof.
+  const seen = new Map<string, { commit: string; task: string }[]>();
+  if (existsSync(store))
+    for (const l of readFileSync(store, 'utf8').split('\n')) {
+      const [h, ...rest] = l.split(' ');
+      if (!h || !rest.length) continue;
+      const owner = rest[0] === 'v2' && rest.length >= 2 ? { commit: rest[1], task: rest.slice(2).join(' ') } : { commit: '-', task: rest.join(' ') };
+      seen.set(h, [...(seen.get(h) ?? []), owner]);
+    }
+  const commit = proofCommit(head);
   // The evidence folder is born when the task starts, so a file older than it was captured for something else.
   const born = existsSync(ev) ? statSync(ev).birthtimeMs : 0;
   const mine: string[] = [];
@@ -181,12 +199,14 @@ export function lint(src: string, ev: string, dir: string, rules: Rules = {}, ru
     if (born && statSync(p).mtimeMs < born) return fail(`evidence file older than the task start: ${p}`);
     const h = sha256(p);
     mine.push(h);
-    const owner = seen.get(h); // the same task's earlier lint is not reuse
-    if (owner === undefined || owner === src || owner === task) fresh = true;
+    // Reuse needs this commit too, so the same screen re-rendered at a new commit is new proof. The same task's earlier
+    // lint is never reuse.
+    const reused = (seen.get(h) ?? []).some((o) => o.task !== src && o.task !== task && o.commit === commit);
+    if (!reused) fresh = true;
   }
-  if (!fresh) return fail('every evidence file was already used by another PR');
+  if (!fresh) return fail('every evidence file was already used by another PR at this commit (re-capture after your next commit, or capture the state this claim is about)');
   if (new Set(mine).size < mine.length) return fail('two evidence files are byte-identical: capture each claimed state separately, or write "not proven: <cause>"');
   mkdirSync(dir, { recursive: true });
-  for (const h of mine) if (!seen.has(h)) appendFileSync(store, `${h} ${task || src}\n`);
+  for (const h of mine) if (!(seen.get(h) ?? []).some((o) => o.commit === commit)) appendFileSync(store, `${h} v2 ${commit} ${task || src}\n`);
   return log({ ok: true, why: `${names.length} evidence files`, head });
 }
