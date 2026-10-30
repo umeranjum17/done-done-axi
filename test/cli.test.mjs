@@ -3115,6 +3115,69 @@ test('lint passes a real claim, fails an empty, copied or reused one, and logs e
   assert.equal(dd('lint', 'only-one-arg').code, 2);
 });
 
+test('check judges an approved requirement row on its own frame, never on the claim about another screen', () => {
+  const t = setup();
+  // A relevance judge reads a capture against the claim's own words, so a frame of a screen the outcome does not name is
+  // wrong screen. The written-requirement question is answered per DD_ROW_REPLY, so the row's own verdict can be checked.
+  writeFileSync(t.env.DD_STUB_JUDGE, `#!${process.execPath}
+const fs = require('node:fs');
+const input = fs.readFileSync(0, 'utf8');
+const data = JSON.parse(input.split('BEGIN DATA (JSON)\\n')[1].split('\\nEND DATA')[0]);
+const keys = Object.keys(data.questions);
+if (keys.some((k) => String(data.questions[k].instructions).includes('Check this written requirement'))) {
+  const p = JSON.parse(process.env.DD_ROW_REPLY || '{"shown":0.98,"missing":0.02}');
+  const shown = p.shown > p.missing;
+  process.stdout.write(JSON.stringify({ response: JSON.stringify(Object.fromEntries(keys.map((k) => [k, { probabilities: p, rationale: shown ? 'The settings screen shows the account toggle.' : 'No account toggle is visible.', personReason: shown ? 'The settings screen shows the account toggle.' : 'The settings screen shows no account toggle.', parts: [], covers: [] }]))) }));
+} else {
+  const outcome = String(data.state.outcome).toLowerCase();
+  const answer = Object.fromEntries(keys.map((k) => {
+    const name = String(data.state[k]?.name ?? data.state.name ?? '');
+    const shown = outcome.includes(name.replace(/\\.[^.]*$/, '').toLowerCase());
+    return [k, { probabilities: shown ? { correct: 0.97, wrong: 0.02, unclear: 0.01 } : { correct: 0.02, wrong: 0.97, unclear: 0.01 }, rationale: shown ? 'That is the screen the outcome describes.' : 'That is another screen.', personReason: shown ? 'That is the screen the outcome describes.' : 'Another screen, not this one.', parts: [], covers: [] }];
+  }));
+  process.stdout.write(JSON.stringify({ response: JSON.stringify(answer) }));
+}
+`, { mode: 0o755 });
+  // One row enforced on every claim (no journey), about the settings screen; the claim is about the home screen.
+  const row = { kind: 'spec', name: 'settings-toggle', requirement: 'The settings screen shows the account toggle.', capture: 'settings.png' };
+  writeFileSync(join(t.repo, '.done-done.yaml'), `${JUDGED}approved_requirements: ${JSON.stringify([row])}\n`);
+  t.sh('add', '-A');
+  t.sh('commit', '-qm', 'approved requirement row');
+  const files = t.shots('the home screen shows the notes').files;
+  const pass = t.dd('check', '--outcome', 'the home screen shows the notes', ...files);
+  assert.equal(pass.code, 0, pass.out);
+  const checked = toon(pass);
+  assert.deepEqual(checked.judge.judged.map((j) => basename(j.path)), ['home.png'], 'the claim judges only the capture cited for the claim itself');
+  assert.equal(checked.approved_requirements[0].verdict, 'pass');
+  // The row's own pass or fail still means something: a frame that does not show the requirement fails the row.
+  t.env.DD_ROW_REPLY = '{"shown":0.02,"missing":0.98}';
+  const fail = t.dd('check', '--outcome', 'the home screen shows the notes', ...files);
+  assert.equal(fail.code, 1, fail.out);
+  assert.match(fail.out, /written requirement: settings-toggle/);
+});
+
+test('lint accepts a byte-identical re-render from a new run at a new commit, and refuses the same proof for another PR', () => {
+  const t = setup();
+  const claim = (name, file) => {
+    const folder = join(t.dir, name);
+    mkdirSync(folder, { recursive: true });
+    copyFileSync(file, join(folder, 'home.png'));
+    const report = join(folder, 'report.md');
+    writeFileSync(report, 'done\n\n## Checks\noutcome: a user can see the home screen\nrepro: n/a: no bug\nproof: no verify skill - ran node dist/cli.js lint\nevidence: home.png\n');
+    return t.dd('lint', report, folder);
+  };
+  const first = t.shots('a user can see the home screen').files[0];
+  assert.deepEqual(claim('task-a', join(t.repo, first)), { code: 0, out: 'PASS\n' });
+  // A later commit, a new sealed run, and a deterministic re-render of the same screen: the same bytes are new proof.
+  t.sh('commit', '-q', '--allow-empty', '-m', 'a change after the first proof');
+  const second = t.shots('a user can see the home screen').files[0];
+  assert.notEqual(second, first);
+  assert.deepEqual(readFileSync(join(t.repo, second)), readFileSync(join(t.repo, first)), 'the two runs re-render the same screen byte for byte');
+  assert.deepEqual(claim('task-b', join(t.repo, second)), { code: 0, out: 'PASS\n' });
+  // The same proof at the same commit for another PR is still reuse.
+  assert.match(claim('task-c', join(t.repo, second)).out, /^FAIL: every evidence file was already used by another PR/);
+});
+
 test('lint warns on a PR that changes src/ and no journeys/ file, and only then', () => {
   const { dir, dd, env } = setup();
   const bin = join(dir, 'bin');

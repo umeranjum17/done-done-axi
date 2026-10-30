@@ -64,6 +64,8 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   for a new screen with no mock: commit {kind: spec, name, requirement: <written requirement>, capture: <live filename>}; each row needs a clear AI pass with a visible-evidence reason, never an exclusion
   journey (approved_requirements.<row>.journey): the journey or verify-skill feature the row belongs to; that row is enforced only on a claim
   that cites it, and a claim never demands another journey's row; a row with no journey keeps the old meaning and is enforced on every claim
+  owned capture: a capture an approved_design, approved_redesign or approved_requirements row requires is judged by that row (its mock, its
+  written requirement, or a plain row's coverage), never against the claim's own words, so another screen's mandatory frame cannot fail as wrong screen
   check, receipt and the signoff card name the comparison basis; an approved mock still wins over written requirements
   (reference images under design/, mocks/, approved/ or prototype/ must be listed or excluded; a design claim with no approved reference, written requirements or base_ref baseline fails as not compared to approved result)
   interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
@@ -309,8 +311,10 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
         more: [`lint: a deterministic gate that is on whenever you call it. The newest "## Checks" block of the PR body (gh pr view) or report file needs
   outcome:, repro:, proof: and evidence: lines. proof names a command or path, and the repo's done-done-verify-<app> skill, or says "no verify skill"
   when the repo (the current folder) has none; repro is not n/a on a fix PR. evidence names files in the evidence folder (or absolute):
-  each exists, is non-empty and is newer than the folder itself; no two are byte-identical; at least one has a hash no other PR used
-  (hash store lint.hashes in ~/.done-done, or $DONE_DONE_HOME). "evidence: not proven: <cause>" passes. A PR with 1,000 or more added
+  each exists, is non-empty and is newer than the folder itself; no two are byte-identical; at least one is not the same proof at the same
+  commit another PR already cited (hash store lint.hashes in ~/.done-done, or $DONE_DONE_HOME), where the commit is the PR's head, or
+  this checkout's HEAD for a report file: a deterministic re-render from a new run at a new commit is fresh proof, the same proof cited
+  for a second PR is refused. "evidence: not proven: <cause>" passes. A PR with 1,000 or more added
   non-generated lines fails; the whole PR is counted (every page of its file list, its compare diff), and a failed page or diff fails instead of counting part of it (lockfiles, vendor/, dist/, LICENSE-type files, deletions and moved lines do not count); a bot PR passes.
   A PR URL whose diff changes a src/ file and no journeys/ file prints WARN instead of PASS (still exit 0): run the journey and commit it before the PR opens.
   In .done-done.yaml, checks.upstream_catch_up: true also drops a fork's upstream catch-up lines, and checks.moved_from: true drops lines
@@ -1089,12 +1093,18 @@ async function runCheck(argv, run) {
     let judgeLevel;
     if (!captures.some(judgeable))
         throw new UsageError(`check: the judge was not asked, so there is no verdict: ${[...findings.map((f) => f.why), 'no cited capture is one the judge reads (a PNG or JPEG screen, or a text capture, from a done-done run)'].join('; ')}`, 'Cite a screen or a text capture of the outcome from a done-done run, then re-run this check');
+    // Ownership of a capture: an approved row's own frame is judged by that row (its written requirement, its approved
+    // mock, or, for a plain row, its coverage), never by the claim's words. The relevance judge reads a capture as proof
+    // of the outcome, so another screen's mandatory frame could only ever fail it as wrong screen. A claim whose every
+    // capture belongs to a row is judged as before, so it never passes with no verdict.
+    const rowOwned = new Set([...requirements.map(({ r }) => r.capture), ...approved.map(({ entry }) => entry.capture), ...redesigns.map(({ entry }) => entry.capture)]);
+    const claimCaptures = captures.filter((c) => !rowOwned.has(basename(cite(c.name))));
     const evals = evalPass(cfg, now.commit);
     // No result without the judge: once the plain checks pass, with none set it asks the user, or stops with the command that saves one.
     await withChoice('judge', cfg);
     run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
     const author = () => (run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg));
-    const j = await judge(cfg, () => selectJudge(cfg, author()), claim.outcome, captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author()));
+    const j = await judge(cfg, () => selectJudge(cfg, author()), claim.outcome, claimCaptures.length ? claimCaptures : captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author()));
     // The judge's next step leads the help when its verdict decides the result.
     if (j.judged.some((r) => r.verdict === 'fail'))
         judgeLevel = 'fail';
