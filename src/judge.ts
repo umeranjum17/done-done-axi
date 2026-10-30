@@ -17,7 +17,6 @@ export type Capture = { name: string; bytes: Buffer; sha256: string; media: Verd
 export type Judged = { path: string; sha256: string; verdict: 'pass' | 'fail' | 'unsure'; reason: string; seen?: string; cached: boolean; before?: string; parts?: string[]; covers?: number[] };
 
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
-const MAX_CALLS = 10; // independent capture calls per check; oversized isolated sets are refused
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
@@ -338,7 +337,7 @@ async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, cap
   const answers: Record<string, ReturnType<Judge['resolve']>> = {};
   if (isolated) {
     // Images from different citations must never share a model context. A before/after pair stays together.
-    if (rows.length > MAX_CALLS) throw new UsageError(`judge: one check sends at most ${MAX_CALLS} captures to the model, so cite fewer`, 'Split the claim into smaller checks');
+    if (rows.length > cfg.judge.max_captures) throw new UsageError(`judge: one check sends at most ${cfg.judge.max_captures} captures to the model, so cite fewer or raise judge.max_captures`, 'Raise judge.max_captures in the global config or the repo .done-done.yaml');
     let parts: string[] | undefined;
     for (const [id, question] of Object.entries(questions)) {
       const shape = parts ? { ...question, answerFields: ['covers'], instructions: `${question.instructions} The shared parts list is fixed in state.shared_parts. Return covers positions in that exact list; do not redefine it.` } : question;
@@ -410,8 +409,8 @@ async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, 
     // A capture the judge cannot be sent is an error with its cause, never a verdict.
     if (typeof input === 'string' || typeof before === 'string')
       throw new UsageError(`judge: ${c.name} cannot be sent to the judge: ${typeof input === 'string' ? input : `its base capture ${pair!.name}: ${before}`}`, 'Capture it again as the error says, then re-run this command');
-    if (calls++ >= MAX_CALLS) {
-      judged.push({ ...row, verdict: 'unsure', reason: `not judged: one check sends at most ${MAX_CALLS} captures to the model, so cite fewer`, cached: false });
+    if (calls++ >= cfg.judge.max_captures) {
+      judged.push({ ...row, verdict: 'unsure', reason: `not judged: one check sends at most ${cfg.judge.max_captures} captures to the model, so cite fewer or raise judge.max_captures`, cached: false });
       continue;
     }
     call = join(records, `judge-${stamp}-${calls}`);

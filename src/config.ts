@@ -65,7 +65,8 @@ export type Config = {
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
-  judge: { route: string; fallback_route: string; model: string; floor: number; env_file: string; account_command: string; pool_command: string; pool_config: string };
+  // max_captures: how many screen captures one check may send, one judge call each; a wider set is refused before any call.
+  judge: { route: string; fallback_route: string; model: string; floor: number; max_captures: number; env_file: string; account_command: string; pool_command: string; pool_config: string };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -107,9 +108,11 @@ export const EFFORT_FLAGS: Record<string, (level: string) => string[]> = {
   pi: (l) => ['--thinking', l],
 };
 const AGENT_TIMEOUT = '30m';
+// Screen captures one check may send to the judge, one call each; judge.max_captures raises it per machine or repo.
+const MAX_CAPTURES = 10;
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   agent_config: { scope: 'global', type: 'agent_config' },
@@ -146,6 +149,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
   'judge.floor': { scope: 'global', type: 'number' },
+  'judge.max_captures': { scope: 'any', type: 'count' },
   'judge.env_file': { scope: 'global', type: 'string' },
   'judge.account_command': { scope: 'global', type: 'string' },
   'judge.pool_command': { scope: 'global', type: 'string' },
@@ -229,6 +233,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
       : spec.type === 'bin' ? isBin(value)
       : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
+      : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
       : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && (n as number) >= 0)
       : spec.type === 'matrix' ? !checkMatrix(value)
       : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value as object).every(isRegex)
@@ -243,6 +248,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       paths: `a map of <agent>: <binary name or absolute path> for ${AGENTS.join(', ')}`,
       bin: 'a binary name on PATH or an absolute path',
       duration: 'a duration such as 90s, 30m or 1h',
+      count: 'a whole number of 1 or more',
       number: 'a number from 0 to 1',
       regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
       auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
@@ -417,7 +423,7 @@ function defaultConfig(repo: string): Config {
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
-    judge: { route: '', fallback_route: '', model: '', floor: 0.7, env_file: '', account_command: '', pool_command: '', pool_config: '' },
+    judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
     trusted: false,
     from: {},
   };
@@ -518,6 +524,9 @@ judge:
   model: ""
   # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.
   floor: 0.7
+  # How many screen captures one check may send to the judge, one call each: a check citing more is refused before any
+  # call, so raise it for a proof that needs a wider set (a repo's .done-done.yaml may set it too).
+  max_captures: ${MAX_CAPTURES}
   # A file of KEY=value lines (a provider API key) handed to the judge's agent, or to openai:key, for names your shell has not
   # exported, so the judge works in any shell. The key stays in that file: done-done never copies or prints it.
   # env_file: ~/.config/done-done/judge.env

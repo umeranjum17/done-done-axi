@@ -1475,14 +1475,17 @@ const state = JSON.parse(prompt.slice(prompt.indexOf(begin) + begin.length, prom
 appendFileSync(dir + '/calls.jsonl', JSON.stringify({ home: process.env.HOME, configDir: process.env.CLAUDE_CONFIG_DIR ?? null, shed: Object.hasOwn(process.env, 'DD_POOL_SHED'), apiKey: Object.hasOwn(process.env, 'ANTHROPIC_API_KEY'), argv: process.argv.slice(2), model: process.argv[process.argv.indexOf('--model') + 1], images: images.length, width: img?.readUInt32BE(16), scratch: readdirSync('.'), prompt, state }) + '\\n');
 if ((stub.limitDirs ?? []).includes(process.env.CLAUDE_CONFIG_DIR ?? '')) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'usage limit reached' })) && 1);
 if (!stub.loggedIn) process.exit(process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })) && 1);
+const pickOf = (probs) => Object.keys(probs).sort((a, b) => probs[b] - probs[a])[0];
 const p = 'before' in state && state.before === state.capture ? { correct: 0.04, wrong: 0.93, unclear: 0.03 } : stub.answer;
-const pick = Object.keys(p).sort((a, b) => p[b] - p[a])[0];
+const pick = pickOf(p);
 // The coverage lists: every capture names the outcome's parts, and shows the positions whose needle its text holds.
 const capKeys = Object.keys(state).filter((k) => /^capture_\\d+$/.test(k));
 const judged = Object.fromEntries(capKeys.map((k) => {
   const text = String(state[k]?.capture ?? state[k]?.name ?? '');
   const shown = Object.entries(stub.shows ?? {}).filter(([needle]) => text.includes(needle)).map(([, s]) => s);
-  return [k, { probabilities: p, pick, personReason: stub.reason, rationale: stub.rationale, ...(stub.noLists ? {} : { parts: shown.at(-1)?.parts ?? stub.parts ?? [], covers: shown.flatMap((s) => s.covers) }) }];
+  // answers: a per-capture answer when the cited name holds its needle, so a test can make one capture of a set wrong.
+  const probs = Object.entries(stub.answers ?? {}).find(([needle]) => text.includes(needle))?.[1] ?? p;
+  return [k, { probabilities: probs, pick: pickOf(probs), personReason: stub.reason, rationale: stub.rationale, ...(stub.noLists ? {} : { parts: shown.at(-1)?.parts ?? stub.parts ?? [], covers: shown.flatMap((s) => s.covers) }) }];
 }));
 const shown = Object.entries(stub.shows ?? {}).filter(([needle]) => String(state.capture ?? '').includes(needle)).map(([, s]) => s);
 const covers = shown.flatMap((s) => s.covers);
@@ -1680,6 +1683,32 @@ test('three captures that each show one named part pass in one judge call, but a
   assert.equal(missing.code, 3, missing.out);
   assert.match(missing.out, /1440 wide/);
   assert.equal(j.calls().length, 2, 'the full-set cache is invalidated by the third capture bytes');
+});
+
+test('one check judges more screen captures than the default ceiling once judge.max_captures raises it', () => {
+  const j = judgeSetup(CORRECT, { projectYaml: `${JUDGED}judge:\n  max_captures: 12\n` });
+  const outcome = 'every frame of the frame matrix renders';
+  const opened = toon(j.dd('run', '--open')).run_id;
+  const folder = `.proof/${opened}`;
+  const names = Array.from({ length: 12 }, (_, i) => `frame-${i}.png`);
+  for (const [i, name] of names.entries()) writeFileSync(join(j.repo, folder, name), screen(40 + i));
+  writeFileSync(join(j.repo, folder, 'steps.json'), stepsOf(outcome));
+  assert.equal(j.dd('run', '--close', opened).code, 0);
+  const files = names.map((n) => `${folder}/${n}`);
+  const all = j.dd('check', '--full', '--outcome', outcome, ...files);
+  assert.equal(all.code, 0, all.out);
+  const d = toon(all);
+  assert.equal(d.judge.judged.length, 12, 'every cited capture is judged, none dropped');
+  assert.deepEqual(d.judge.judged.map((r) => r.verdict), Array(12).fill('pass'));
+  assert.equal(j.calls().length, 12, 'each screen is still its own isolated judge call');
+
+  // The verdict cache is keyed by the cited set and claim, so the same twelve captures ask the judge again only once cleared.
+  rmSync(join(j.env.DONE_DONE_HOME, 'runs', 'notes', 'judge'), { recursive: true, force: true });
+  j.stub(CORRECT, true, [], [], '', { answers: { 'frame-11.png': { correct: 0.05, wrong: 0.9, unclear: 0.05 } } });
+  const oneBad = j.dd('check', '--full', '--outcome', outcome, ...files);
+  assert.equal(oneBad.code, 1, oneBad.out);
+  assert.deepEqual(toon(oneBad).judge.judged.map((r) => r.verdict), [...Array(11).fill('pass'), 'fail'], 'a wrong capture in the later group still fails the check');
+  assert.equal(j.calls().length, 24, 'the raised ceiling judges every capture, never a partial set');
 });
 
 test('check judges text evidence too, and a failed plain check stops with its cause, unjudged', () => {
