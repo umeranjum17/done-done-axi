@@ -91,7 +91,10 @@ For a brand-new screen without an approved mock, commit an \`approved_requiremen
 \`{kind: spec, name: home-heading, requirement: "The home screen shows a Create machine button.", capture: home.png}\`.
 Cite that live, run-bound PNG/JPEG in \`check\` or \`receipt\`. Every spec row gets its own AI question; a missing capture,
 missing visible-evidence personReason, abstention or anything short of a clear pass fails. Spec rows cannot be excluded.
-An approved mock, when present, is still compared and wins; no reference and no committed requirements still refuses a design claim.
+Give a row \`journey: <name>\` to say which journey or verify-skill feature it belongs to: a claim is then judged only against
+the rows for the journeys and screens it cites, so another journey's rows never fail it. A row without \`journey\` is enforced
+on every claim, as before. An approved mock, when present, is still compared and wins; a claim with no row for its own journeys
+and no reference still refuses as not compared to an approved result.
 Check output, receipts and signoff cards name the basis: \`judged against written requirements (no approved reference image)\`
 is not a mock match. Each spec verdict binds its requirement text, live image hash and visible-evidence reason in the receipt.
 

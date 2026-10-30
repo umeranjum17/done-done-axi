@@ -595,12 +595,14 @@ Screens are not the whole approval. Name every other approved item in `approved_
 approved_requirements:
   - { kind: asset, name: logo, capture: logo.png, mock: design/logo.png }   # judged beside its approved image
   - { kind: color, name: brand-accent, capture: accent.png }                # must be cited live evidence
-  - { kind: interaction, name: swipe-to-delete, capture: swipe.png }
-  - { kind: spec, name: create-machine, requirement: "The cloud-machine screen shows a Create machine button.", capture: cloud.png }
+  - { kind: interaction, name: swipe-to-delete, capture: swipe.png, journey: inbox }
+  - { kind: spec, name: create-machine, requirement: "The cloud-machine screen shows a Create machine button.", capture: cloud.png, journey: machines }
   - { kind: reference, name: design/spare.png, exclusion: owner dropped the spare illustration }
 ```
 
 `kind` is `asset`, `color`, `interaction`, `reference` or `spec`. A row needs a unique `capture` filename (one cited, run-bound PNG/JPEG; optional `mock` sends it through the design judge) **or** `exclusion: <reason>`, the only way to skip a non-spec item. An uncovered row fails the claim before any judge call, naming the item. Exclusions are reported under `approved_exclusions`.
+
+**Scope: which claims a row is judged against.** `journey: <name>` names the journey — or the verify-skill feature (screen), `journeys.<name>` or `<skill>/features/<name>.md` — the row belongs to. A claim is judged only against the rows for the journeys and screens **it cites**: the runs behind its evidence files. A new screen's rows therefore never fail an unrelated claim, and rewording a claim cannot bring another journey's requirement into it. A row whose journey the claim does cite stays enforced: its capture must be present and pass, and `exclusion` remains the only skip. A row with no `journey` keeps the pre-scope meaning and is enforced on **every** claim, so an existing config keeps every check it had; a `journey` that names no configured journey or feature file is refused rather than silently unchecked. A claim that cites no row's journey has no approved basis, so the `not compared to approved result` refusal below still applies.
 
 For a **brand-new screen without a reference image**, use `kind: spec` with non-empty `requirement` text from the approved ticket and its live `capture`. The spec rows must match the committed `.done-done.yaml` (or `--trusted-ref`); claim wording never supplies requirements. Spec rows cannot use `exclusion`. Every row gets one isolated AI question about whether its cited image demonstrates the entire written requirement, with `personReason` naming what is or is not shown. An abstention, missing reason or any answer short of a clear pass at `judge.floor` fails (exit 1); an unavailable judge remains an error, never a heuristic pass. A screenshot cannot establish behavior or timing merely by showing a control.
 
@@ -899,7 +901,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |
 | `look` | none; the look step's approved design reference (`tokens`, `max_control`), see [Look check](#look-check) |
 | `interaction_checklist` | none; opt-in six-item interaction evidence map; omitted/unproven items flagged, absent surfaces need reasons; see [Interaction checklist](#interaction-checklist-opt-in) |
-| `approved_requirements` | none; approved assets, colors, interactions or written `spec` requirements with their live captures (non-spec items may have an explicit `exclusion`), see [Assets, colors, interactions](#assets-colors-interactions-and-unlisted-references) |
+| `approved_requirements` | none; approved assets, colors, interactions or written `spec` requirements with their live captures (non-spec items may have an explicit `exclusion`); `journey: <name>` scopes a row to the journey or verify-skill feature it belongs to, and an unscoped row is enforced on every claim, see [Assets, colors, interactions](#assets-colors-interactions-and-unlisted-references) |
 | `approved_design` | none; committed screen × pixel size × theme manifest of mocks and required live filenames; gates every claim except a redesign claim, see [Approved-design coverage](#approved-design-coverage) |
 | `approved_redesign` | none; screen × pixel size × theme manifest of live side-by-side source/redesign captures; gates only redesign claims, see [Redesign claims](#redesign-claims) |
 | `inputs` | `[]`; repo-relative paths or globs the drive must leave alone, see [Input guard](#input-guard) |

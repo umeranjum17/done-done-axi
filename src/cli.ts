@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
-import { AGENTS, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
+import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
@@ -65,6 +65,8 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   each capture is one live image of the unchanged source and the redesign side by side, judged blind; a redesign claim with no manifest fails as not compared to approved result
   approved_requirements (.done-done.yaml): approved assets, color tokens and interactions as {kind: asset|color|interaction, name, capture, mock?}; skip one only with {kind, name, exclusion: <reason>}
   for a new screen with no mock: commit {kind: spec, name, requirement: <written requirement>, capture: <live filename>}; each row needs a clear AI pass with a visible-evidence reason, never an exclusion
+  journey (approved_requirements.<row>.journey): the journey or verify-skill feature the row belongs to; that row is enforced only on a claim
+  that cites it, and a claim never demands another journey's row; a row with no journey keeps the old meaning and is enforced on every claim
   check, receipt and the signoff card name the comparison basis; an approved mock still wins over written requirements
   (reference images under design/, mocks/, approved/ or prototype/ must be listed or excluded; a design claim with no approved reference, written requirements or base_ref baseline fails as not compared to approved result)
   interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
@@ -881,6 +883,9 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const captures: Capture[] = [];
   // The run behind each cited capture, for the real-product rule and the receipt.
   const runs = new Map<string, CaptureRun>();
+  // The journeys and screens this claim cites: a run's journey, or the verify-skill feature an agent drove. A requirement
+  // row scoped to one of them is enforced here; a row for another journey is not this claim's business.
+  const drives = new Set<string>();
   const warnings: string[] = [];
   // base_ref: a capture in <run id>/before/ of a run that drove its base ref pairs with <run id>/<the same name>.
   const pairOf = (inRoot: string | null) => {
@@ -952,6 +957,8 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     const rec = (atNow.length ? atNow : claims).reduce((a, b) => (b.started_at > a.started_at ? b : a));
     if (!byHash.some((r) => r.commit === now.commit && r.exit === 0)) unsealed.push({ path, source: rec });
     runs.set(rec.run_id, { run_id: rec.run_id, commit: rec.commit, journey: rec.journey, command: rec.command, ...(rec.feature && { feature: rec.feature }), ...(rec.tool && { tool: rec.tool }), ...(rec.steps && { steps: rec.steps }), ...(rec.steps_error && { steps_error: rec.steps_error }) });
+    if (rec.journey) drives.add(rec.journey);
+    if (rec.feature) drives.add(rec.feature);
     // Only a capture tied to a run record can reach the judge, so a stray cited file is never sent.
     const c: Capture = { name, bytes, sha256: hash, media: v };
     if (v.status === 'ok' && !record && pair) befores.set(pair, c);
@@ -985,13 +992,16 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     else if (`${live[0].media.w}x${live[0].media.h}` !== e.size) redesignFaults.push(`${label}: live capture is ${live[0].media.w}x${live[0].media.h}, not the approved size`);
   }
   // Approved assets, color tokens and interactions: each needs its own live capture, or an explicit exclusion with a reason.
-  const requirements = cfg.approved_requirements.filter(r => r.capture).map(r => ({ r, live: captures.filter(c => screen(c) && basename(cite(c.name)) === r.capture) }));
+  // A scoped row belongs to one journey or screen and is enforced only on a claim that cites it; a row with no scope is the
+  // legacy form and stays enforced everywhere, so an existing config keeps every check it had.
+  const scoped = (r: ApprovedRequirement) => !r.journey || drives.has(r.journey);
+  const requirements = cfg.approved_requirements.filter(r => r.capture && scoped(r)).map(r => ({ r, live: captures.filter(c => screen(c) && basename(cite(c.name)) === r.capture) }));
   for (const { r, live } of requirements)
     if (live.length !== 1) coverageFaults.push(`${r.kind} ${r.name}: ${live.length ? 'ambiguous live captures' : 'no live capture'} (${r.capture})`);
   const specs = requirements.filter(({ r }) => r.kind === 'spec');
   if (specs.length) {
     let committed: unknown;
-    try { committed = loadConfig(repo, git(repo, 'show', `${values['trusted-ref'] ?? now.commit}:.done-done.yaml`)).approved_requirements.filter(r => r.kind === 'spec'); } catch { }
+    try { committed = loadConfig(repo, git(repo, 'show', `${values['trusted-ref'] ?? now.commit}:.done-done.yaml`)).approved_requirements.filter(r => r.kind === 'spec' && scoped(r)); } catch { }
     if (JSON.stringify(committed) !== JSON.stringify(specs.map(({ r }) => r))) coverageFaults.push('written requirements must match the committed .done-done.yaml; commit the spec rows before capturing');
   }
   // Committed approved reference images (design/, mocks/ ...) that no manifest row or exclusion accounts for.
