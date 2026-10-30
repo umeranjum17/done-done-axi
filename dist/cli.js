@@ -69,7 +69,9 @@ const CHECKS_TEXT = `Checks block (--from): the newest "## Checks" heading, then
   interaction_checklist (.done-done.yaml, opt-in): map the six ids in skills/done-done/interaction-checklist.json to {captures: [<live PNG/JPEG filename>, ...]}
   or {not_applicable: <reason>}; detail-navigation, instant-state, destructive-undo, scroll-restoration, list-search, empty-next-step.
   check/receipt/verify report every item: pass only with judged real-product frames, not_applicable with a reason, otherwise flagged (exit 1).
-  Omitted checklist: unchanged behavior; interaction_checklist: {} flags all six. Frames must be cited from sealed runs; static controls alone do not prove an interaction`;
+  Omitted checklist: unchanged behavior; interaction_checklist: {} flags all six. Frames must be cited from sealed runs; static controls alone do not prove an interaction
+  judge capacity: each screen capture is judged on its own, one judge call each, up to judge.max_captures (default 10; a repo's
+  .done-done.yaml may set it too); a check citing more is refused before any call, so raise the key rather than splitting the claim`;
 const RUNS_TEXT = `runs: each verify or maintain run lives in $DONE_DONE_HOME/runs/<app>/<run-id> (run.json, events.jsonl, logs/<step>.log,
   agents/<n>-<name>.json for each agent call) and goes on when the command that started it ends;
   verify steps: resolve, drive, check, judge (always; skipped only after a failed check), triage and fix (only with auto_fix.verify above 0), gate, receipt, report;
@@ -138,8 +140,8 @@ const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME mo
   judge.pool_command with judge.pool_config (optional shared model pool: the Claude account, a move on a rate/usage limit, and a fall-over route),
   judge.fallback_route (optional second judge, same values as judge.route; Claude usage/rate/sign-in limits or an empty pool trigger it;
   e.g. answerer:pi with agent_config.pi.model: openai-codex/gpt-6.1-sol; unset keeps Claude failures as errors; no fallback chains),
-  evidence.local_root, judge.{route,model,floor} (the judge and shared confidence floor, set by the user with
-  init --judge; never picked). done-done doctor shows where each agent setting came from.`;
+  evidence.local_root, judge.{route,model,floor,max_captures} (the judge, the shared confidence floor, and how many screen captures one
+  check may send, set by the user with init --judge; never picked). done-done doctor shows where each agent setting came from.`;
 // One table drives `--help` and every `<command> --help`: each command's usage lines and the flags it takes.
 const FLAGS = {
     '-- <command...>': 'run this command instead of a journey; ${RUN_ID} in it becomes the run id',

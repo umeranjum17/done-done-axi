@@ -55,6 +55,8 @@ export const EFFORT_FLAGS = {
     pi: (l) => ['--thinking', l],
 };
 const AGENT_TIMEOUT = '30m';
+// Screen captures one check may send to the judge, one call each; judge.max_captures raises it per machine or repo.
+const MAX_CAPTURES = 10;
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
 const KEYS = {
     agent: { scope: 'any', type: 'agent' },
@@ -93,6 +95,7 @@ const KEYS = {
     'judge.model': { scope: 'global', type: 'string' },
     'judge.route': { scope: 'global', type: 'route' },
     'judge.floor': { scope: 'global', type: 'number' },
+    'judge.max_captures': { scope: 'any', type: 'count' },
     'judge.env_file': { scope: 'global', type: 'string' },
     'judge.account_command': { scope: 'global', type: 'string' },
     'judge.pool_command': { scope: 'global', type: 'string' },
@@ -185,10 +188,11 @@ function apply(target, text, file, scope) {
                                             : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
                                                 : spec.type === 'bin' ? isBin(value)
                                                     : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
-                                                        : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
-                                                            : spec.type === 'matrix' ? !checkMatrix(value)
-                                                                : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                    : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean'));
+                                                        : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
+                                                            : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
+                                                                : spec.type === 'matrix' ? !checkMatrix(value)
+                                                                    : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
+                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean'));
         const want = {
             journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -199,6 +203,7 @@ function apply(target, text, file, scope) {
             paths: `a map of <agent>: <binary name or absolute path> for ${AGENTS.join(', ')}`,
             bin: 'a binary name on PATH or an absolute path',
             duration: 'a duration such as 90s, 30m or 1h',
+            count: 'a whole number of 1 or more',
             number: 'a number from 0 to 1',
             regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
             auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
@@ -413,7 +418,7 @@ function defaultConfig(repo) {
         secrets: { patterns: {}, allow: [] },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
-        judge: { route: '', fallback_route: '', model: '', floor: 0.7, env_file: '', account_command: '', pool_command: '', pool_config: '' },
+        judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
         trusted: false,
         from: {},
     };
@@ -516,6 +521,9 @@ judge:
   model: ""
   # Every judge's pick must reach this probability to count: below it the verdict is unsure (inconclusive), never a pass.
   floor: 0.7
+  # How many screen captures one check may send to the judge, one call each: a check citing more is refused before any
+  # call, so raise it for a proof that needs a wider set (a repo's .done-done.yaml may set it too).
+  max_captures: ${MAX_CAPTURES}
   # A file of KEY=value lines (a provider API key) handed to the judge's agent, or to openai:key, for names your shell has not
   # exported, so the judge works in any shell. The key stays in that file: done-done never copies or prints it.
   # env_file: ~/.config/done-done/judge.env
