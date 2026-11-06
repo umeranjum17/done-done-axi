@@ -1619,6 +1619,16 @@ test('Claude unavailable falls back to configured pi, including an empty account
   const failed = run('check', [files[1]]);
   assert.equal(failed.code, 2, failed.out);
   assert.match(toon(failed).error, /pi exited 1.*after claude-code failed:.*usage limit reached/);
+  // pi's stdout is cut wherever the pipe cuts it. One long event line, split mid-line with base64 that holds a 429 and a retry by
+  // chance, is not a limit; pi's own error event is, and stops the call without waiting for pi to end.
+  stubPiStream(s.env, verdict, 'split');
+  const split = run('check', t.shots('home and settings render').files);
+  assert.equal(split.code, 0, split.out);
+  assert.equal(toon(split).judge.route, 'answerer:pi');
+  stubPiStream(s.env, verdict, 'limit');
+  const stopped = run('check', [files[1]]);
+  assert.equal(stopped.code, 2, stopped.out);
+  assert.match(toon(stopped).error, /pi hit a rate limit and stopped: 429 rate limit exceeded, retry in 5m/);
 });
 
 test('judge wrong screen fails with exit 1, unsure and low confidence are inconclusive with exit 3', () => {
@@ -2051,6 +2061,33 @@ test('signoff --post puts the run on the sign-off board and feeds the answer bac
   assert.equal(ended.signoff.answer.value, 'fix');
   assert.equal(ended.signoff.key, `dd-gate-${id}`, 'the card the answer came from is on the run');
 });
+
+// A pi that writes its event stream in pieces: 'split' cuts one long event line mid-way inside base64 that matches the rate-limit
+// words (synthetic data), 'limit' prints pi's own error event and then hangs until the caller stops it.
+function stubPiStream(env, answer, mode) {
+  writeFileSync(join(env.PATH, 'pi'), `#!${process.execPath}
+const { readFileSync } = require('node:fs');
+const argv = process.argv.slice(2);
+const stdin = readFileSync(0, 'utf8');
+const raw = JSON.parse(${JSON.stringify(answer)});
+const keys = [...new Set([...stdin.matchAll(/capture_\\d+/g)].map((m) => m[0]))];
+const value = keys.length && raw.relevance ? Object.fromEntries(keys.map((k) => [k, raw.relevance])) : raw;
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  if (${JSON.stringify(mode)} === 'limit') {
+    console.log(JSON.stringify({ type: 'error', error: { message: '429 rate limit exceeded, retry in 5m' } }));
+    await pause(30000);
+    return;
+  }
+  const line = JSON.stringify({ type: 'agent_start', image: 'QUJDREVG/429/reset+retry/R0hJSktM'.repeat(4) });
+  const cut = line.indexOf('+retry') + 8;
+  process.stdout.write(line.slice(0, cut));
+  await pause(100);
+  process.stdout.write(line.slice(cut) + '\\n');
+  console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }] } }));
+})();
+`, { mode: 0o755 });
+}
 
 // A pi that lists claude-bridge models only when its bridge extension is loaded, as pi does under --no-extensions:
 // the judge's own call must load that one extension, or pi says the model is not found.
