@@ -476,14 +476,20 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     let pendingStdout = '';
     const limited = (chunk: string, stdoutLine: boolean) => {
       let line: string | undefined;
-      if (c.agent === 'claude' && c.images?.length) {
-        if (!stdoutLine) return;
+      // A chunk ends wherever the pipe did, often inside a long JSON line (a pi event that carries an image is megabytes of
+      // base64, and base64 holds "429" and "reset" by chance), so stdout is judged one complete line at a time.
+      let lines = chunk;
+      if (stdoutLine) {
         const text = pendingStdout + chunk;
         const end = text.lastIndexOf('\n') + 1;
         pendingStdout = text.slice(end);
-        line = text.slice(0, end).split('\n').find(isRejectedRateLimit);
+        lines = text.slice(0, end);
+      }
+      if (c.agent === 'claude' && c.images?.length) {
+        if (!stdoutLine) return;
+        line = lines.split('\n').find(isRejectedRateLimit);
       } else {
-        line = stripVTControlCharacters(chunk).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))
+        line = stripVTControlCharacters(lines).split(/\r?\n/).find((l) => RATE_LIMIT.test(l) && (!stdoutLine || /reset|retry/i.test(l))
           && (!stdoutLine || c.agent !== 'pi' || !piQuiet(l)));
         if (line) line = limitText(line);
       }
