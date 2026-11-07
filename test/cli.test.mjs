@@ -3475,6 +3475,8 @@ process.stdout.write(JSON.stringify(${JSON.stringify(result)}));
 
 test('the project test suite is one proof step: a pass is sealed in the receipt and the sign-off line, a failure or timeout fails the proof, no suite says so', () => {
   const { repo, env, sh, dd, head, shots } = setup();
+  // done-done's own suite runs this test, so DONE_DONE_SUITE is set here; the fixture is a separate project, not a nested run.
+  delete env.DONE_DONE_SUITE;
   const OUTCOME = 'home and settings render';
   const suiteYaml = (command, timeout) => `${JUDGED}suite:\n  command: ${JSON.stringify(command)}\n${timeout ? `  timeout: ${timeout}\n` : ''}`;
   const configure = (yaml) => { writeFileSync(join(repo, '.done-done.yaml'), yaml); sh('commit', '-qam', 'suite config'); };
