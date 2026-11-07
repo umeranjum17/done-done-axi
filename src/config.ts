@@ -62,6 +62,7 @@ export type Config = {
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
   signoff: { post: boolean; board: string };
+  suite: { command: string; timeout: string }; // the project's own test suite, run as one proof step; command '' detects it from the repo
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
@@ -146,6 +147,8 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'checks.generated_paths': { scope: 'repo', type: 'string[]' },
   'signoff.post': { scope: 'repo', type: 'boolean' },
   'signoff.board': { scope: 'repo', type: 'string' },
+  'suite.command': { scope: 'repo', type: 'string' },
+  'suite.timeout': { scope: 'any', type: 'duration' },
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
   'judge.floor': { scope: 'global', type: 'number' },
@@ -156,7 +159,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.pool_config': { scope: 'global', type: 'string' },
   'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff']);
+const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
@@ -423,6 +426,7 @@ function defaultConfig(repo: string): Config {
     secrets: { patterns: {}, allow: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
+    suite: { command: '', timeout: '30m' },
     judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
     trusted: false,
     from: {},

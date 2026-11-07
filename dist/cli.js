@@ -23,6 +23,7 @@ import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
 import { mapChange } from './affected.js';
+import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape } from './suite.js';
 import { codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, stepRecordFault, stepsFault } from './proof.js';
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -1079,6 +1080,18 @@ async function runCheck(argv, run) {
     const others = (h) => [...(used.get(h) ?? [])].filter((k) => k !== claimId);
     if (hashes.length && hashes.every((h) => others(h).length))
         findings.push({ level: 'fail', why: `every evidence file was already used as proof of a different claim (claim id ${[...new Set(hashes.flatMap(others))].join(', ')}), not this one (claim id ${claimId}, from ${idFrom}); if it is the same claim, pass --claim-id with its id` });
+    // The project's own test suite, once the claim and the plain checks stand: a failing or timed-out suite fails the proof. It is a
+    // gate beside the product evidence, never cited as it. A suite started inside a suite run stops instead of recursing.
+    let suite;
+    if (claim && !findings.some((f) => f.level === 'fail')) {
+        const command = suiteCommand(repo, cfg.suite.command);
+        if (command && process.env[SUITE_ENV])
+            throw new UsageError(`check: it is running inside the test suite \`${command}\` (${SUITE_ENV} is set), and it would start that suite again`, 'Run check outside the test suite; the suite step runs once, at the commit being proved');
+        suite = command ? await runSuite(repo, cfg.evidence.root, now.commit, command, cfg.suite.timeout) : { command: null };
+        const why = suiteFault(suite, cfg.suite.timeout);
+        if (why)
+            findings.push({ level: 'fail', why: `${why}; log ${suite.log}` });
+    }
     // A failed plain check is no verdict: the judge is not asked, so the check stops with every cause and no result.
     const failed = findings.filter((f) => f.level === 'fail');
     if (coverageFaults.length) {
@@ -1211,6 +1224,8 @@ async function runCheck(argv, run) {
     if (judgeBlock && touches.length)
         judgeBlock.interaction_checklist = touches;
     const rep = report(findings, files, { cfg, repo, claim: claim.outcome, source: values.from, citationBase: values['citation-base'], judge: judged, judgeLevel, warnings });
+    if (suite)
+        rep.result.suite = suite;
     if (touches.length)
         rep.result.interaction_checklist = touches;
     if (evals)
@@ -1236,7 +1251,7 @@ async function runCheck(argv, run) {
                 rep.result.sealed = sealEvidence(repo, cfg, unsealed);
         }
     }
-    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings, warnings, ...(evals && { evals }) };
+    return { code: rep.code, result: rep.result, judge: judged, judgeBlock, claim: claim?.outcome, skill: claim?.skill, files, cited, runs: [...runs.values()], head: now, findings, warnings, ...(evals && { evals }), ...(suite && { suite }) };
 }
 // evals.enabled: the newest full eval run on a clean tree at this commit must have passed. Missing or failing refuses with the next command.
 function evalPass(cfg, commit) {
@@ -1396,6 +1411,8 @@ function receiptFault(rec, short) {
         if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256)))))
             return `receipt for ${short} has a malformed interaction-checklist verdict`;
     }
+    if (rec.suite !== undefined && !suiteShape(rec.suite))
+        return `receipt for ${short} has a malformed test-suite record`;
     if (rec.evals !== undefined && !/^pass \S+$/.test(String(rec.evals)))
         return `receipt for ${short} has a malformed evals line`;
     const code = runsFault(rec.runs);
@@ -1405,7 +1422,7 @@ function receiptFault(rec, short) {
     return steps.fault ? `receipt for ${short} has no well-formed step record: ${steps.fault}` : null;
 }
 // The warning a well-formed receipt still carries: its runs were recorded before step records.
-const receiptWarning = (rec) => stepsFault(rec.runs).warning;
+const receiptWarning = (rec) => [stepsFault(rec.runs).warning, rec.suite ? null : 'it was written before the test-suite step and records no suite result; re-run done-done receipt so it does'].filter(Boolean).join('; ') || null;
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
 function verifyReceipt(repo, cfg, headArg) {
@@ -1461,7 +1478,7 @@ function verifyReceipt(repo, cfg, headArg) {
     }
     if (bad.length)
         return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 async function cmdReceipt(argv) {
     const vi = argv.indexOf('--verify');
@@ -1497,9 +1514,9 @@ function recordReceipt(repo, cfg, r) {
     // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
     if (!r.cited.length)
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }) };
+    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }) };
     const path = writeReceipt(cfg, rec);
-    const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+    const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
@@ -3090,8 +3107,13 @@ async function cmdSignoff(argv) {
             refuse('the run recorded no captures, so it has no evidence to send', `Read it: done-done status --run ${id}`);
         const media = names.filter((f) => f.media).slice(0, 12).map((f) => f.name);
         const shown = names.slice(0, 12).map((f) => f.name).join(', ') + (names.length > 12 ? `, and ${names.length - 12} more in the run folder` : '');
-        if (run.receipt)
-            comparisonBasis = JSON.parse(readFileSync(resolve(repo, run.receipt), 'utf8')).judge.comparison_basis;
+        let suite = '';
+        if (run.receipt) {
+            const sealed = JSON.parse(readFileSync(resolve(repo, run.receipt), 'utf8'));
+            comparisonBasis = sealed.judge.comparison_basis;
+            if (sealed.suite)
+                suite = suiteLine(sealed.suite);
+        }
         const redo = 'Start a run whose --outcome fits: done-done verify --outcome "<what a user can now do>"';
         msg = {
             contract: 1, kind: 'evidence', schema: 1, key: `dd-evidence-${id}`, filer: 'done-done',
@@ -3100,7 +3122,7 @@ async function cmdSignoff(argv) {
             run: {
                 ...runRef(rec.commit), outcome: text('outcome', run.claim, 1000, redo),
                 repro: text('repro', [`done-done verify`, run.journey ?? (run.feature && `--feature ${run.feature}`), `--outcome "${run.claim}" at ${rec.commit}`].filter(Boolean).join(' ') + (fixed?.branch ? ` on branch ${fixed.branch}` : ''), 1000, redo),
-                proof: text('proof', `${existsSync(join(repo, cfg.skill)) ? basename(cfg.skill) : 'no verify skill'}: done-done verify ${drove}, run ${id}: ${run.result}${run.reason ? ` (${run.reason})` : ''}${comparisonBasis ? `; ${comparisonBasis}` : ''}`, 1000),
+                proof: text('proof', `${existsSync(join(repo, cfg.skill)) ? basename(cfg.skill) : 'no verify skill'}: done-done verify ${drove}, run ${id}: ${run.result}${run.reason ? ` (${run.reason})` : ''}${comparisonBasis ? `; ${comparisonBasis}` : ''}${suite ? `; ${suite}` : ''}`, 1000),
                 evidence: text('evidence', shown, 1000),
             },
         };

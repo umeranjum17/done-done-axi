@@ -368,6 +368,16 @@ A command is **code-only** when every step in it (split on `&&`, `||`, `;`, `|` 
 - A receipt records the run behind each cited capture (`runs`), so `receipt --verify` and `gate` apply the same rule with no config (and the [step record](#step-record) rule after it): a receipt whose runs are all code-only, or one with no `runs` (written before this rule), fails.
 - `doctor`'s `real_product` row is `missing` (and doctor exits 2) when every journey is code-only, and a `warning` naming the code-only journeys beside real ones.
 
+### Project test suite
+
+The proof is a real-product drive plus a judge; when the project has its own test suite, that suite is an additional gate beside it, never a replacement. The code-only rule above is unchanged: a suite result is never cited as product evidence.
+
+- **Which suite.** `suite.command` in `.done-done.yaml` names it. Unset, done-done finds the project's own: a `package.json` `test` script run through its package manager (`pnpm test`, `yarn test`, `bun run test`, else `npm test`; npm's "no test specified" placeholder is not a suite), else a runner the repo has: `tox`, `pytest` (pytest.ini or a pytest section in pyproject.toml or setup.cfg), `cargo test`, `go test ./...`, `make test`, `./gradlew test` or `gradle test`, `dotnet test`. A project with none has no suite; that is not an error.
+- **When it runs.** `check` runs it once at the commit being proved, after the claim and the plain checks stand and before the judge, so `receipt`, `verify`'s check step and the merge gate inherit it. A non-zero exit, or running past `suite.timeout`, fails the proof (exit 2, the judge is not asked) with a cause that names the suite command and its log.
+- **What is recorded.** Its output goes to `<evidence root>/.done-done/suite/<commit>.log`. `receipt` seals `suite` in the receipt (`command`, `exit`, `duration_ms`, `log`, or `command: null` for a project with no suite), `receipt --verify` shows it, and `signoff` adds one line to the evidence message's `proof`: ``test suite `<command>`: passed in <n>s`` or `no test suite in this project`.
+- **History.** A receipt written before this step has no `suite`; it still passes `receipt --verify` and `gate`, with a warning to re-run `receipt`.
+- **No recursion.** The suite runs with `DONE_DONE_SUITE` set; a `check` started inside it that would start the suite again stops with a cause naming the suite command (exit 2).
+
 ### Step record
 
 A capture shows a screen; the **step record** says what a user did to reach it. Every journey (and every agent drive) writes `steps.json` into its run folder, `$DONE_DONE_EVIDENCE_ROOT`, beside the captures:
@@ -916,6 +926,8 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `checks.moved_from` | `false`; `true` lets `lint` subtract lines a PR moves from another repo of the same owner, see [Lint check](#lint-check) |
 | `signoff.post` | `false`; `true` lets every `signoff` post its message to the sign-off board, see [Send a run to sign-off](#send-a-run-to-sign-off) |
 | `signoff.board` | none; the board file to post to, else the nearest `.sign-off/` board sign-off-axi finds |
+| `suite.command` | none; the project's own test suite command, run as one proof step, see [Project test suite](#project-test-suite); unset, done-done detects it |
+| `suite.timeout` | `30m`; how long the suite may run before it fails the proof (also valid in the global file) |
 | `agent` | as in the global file; set here, it wins |
 | `auto_fix.maintain` | as in the global file (`0`, report only); set here, it wins |
 | `auto_fix.verify` | as in the global file (`0`, report only); set here, it wins |
