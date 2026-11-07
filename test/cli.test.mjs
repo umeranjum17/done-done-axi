@@ -1783,7 +1783,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   assert.equal(toon(sent).help[0], `Post it to the sign-off board with sign-off-axi (done-done prepares the run; sign-off-axi posts): npx -y sign-off-axi post --kind evidence --from ${toon(sent).file}`);
   assert.deepEqual(JSON.parse(readFileSync(evFile, 'utf8')), {
     contract: 1, kind: 'evidence', schema: 1, key: `dd-evidence-${o.run_id}`, filer: 'done-done', title: 'notes shots: verify pass', about: 'home and settings render', media: ['home.png', 'settings.png'],
-    run: { run_id: o.run_id, commit: t.head(), outcome: 'home and settings render', repro: `done-done verify shots --outcome "home and settings render" at ${t.head()}`, proof: `no verify skill: done-done verify shots, run ${o.run_id}: pass`, evidence: 'home.png, settings.png' },
+    run: { run_id: o.run_id, commit: t.head(), outcome: 'home and settings render', repro: `done-done verify shots --outcome "home and settings render" at ${t.head()}`, proof: `no verify skill: done-done verify shots, run ${o.run_id}: pass; no test suite in this project`, evidence: 'home.png, settings.png' },
   });
   assert.equal(dirname(evFile), join(t.repo, '.proof', o.run_id), 'the message sits in the run folder its media resolve from');
   const v = t.dd('receipt', '--verify', t.head());
@@ -3471,4 +3471,75 @@ process.stdout.write(JSON.stringify(${JSON.stringify(result)}));
   const [rec] = records();
   assert.deepEqual(rec.verdict, { subtype: 'success', stop_reason: 'end_turn', terminal_reason: 'completed', num_turns: 9, permission_denials: 2, safety_stops: 1, result_tail: 'I ran out of room before answering.' });
   assert.doesNotMatch(JSON.stringify(rec), /Answer with only one JSON object/, 'the record holds no prompt');
+});
+
+test('the project test suite is one proof step: a pass is sealed in the receipt and the sign-off line, a failure or timeout fails the proof, no suite says so', () => {
+  const { repo, env, sh, dd, head, shots } = setup();
+  // done-done's own suite runs this test, so DONE_DONE_SUITE is set here; the fixture is a separate project, not a nested run.
+  delete env.DONE_DONE_SUITE;
+  const OUTCOME = 'home and settings render';
+  const suiteYaml = (command, timeout) => `${JUDGED}suite:\n  command: ${JSON.stringify(command)}\n${timeout ? `  timeout: ${timeout}\n` : ''}`;
+  const configure = (yaml) => { writeFileSync(join(repo, '.done-done.yaml'), yaml); sh('commit', '-qam', 'suite config'); };
+  const proof = (id) => JSON.parse(readFileSync(join(repo, toon(dd('signoff', '--run', id)).file), 'utf8')).run.proof;
+
+  // No suite (this fixture has no test script): the step says so, and the exit is the one it always was.
+  let { files } = shots(OUTCOME);
+  const none = dd('receipt', '--outcome', OUTCOME, ...files);
+  assert.equal(none.code, 0, none.out);
+  assert.deepEqual(JSON.parse(readFileSync(join(repo, toon(none).receipt), 'utf8')).suite, { command: null });
+  const noneRun = toon(dd('verify', 'shots', '--outcome', OUTCOME));
+  assert.match(proof(noneRun.run_id), /; no test suite in this project$/);
+
+  // A suite that passes: command, exit, duration and the log under the evidence root go in the receipt and the sign-off line.
+  configure(suiteYaml('echo suite-ran-fine'));
+  ({ files } = shots(OUTCOME));
+  const ok = dd('receipt', '--outcome', OUTCOME, ...files);
+  assert.equal(ok.code, 0, ok.out);
+  const recPath = join(repo, toon(ok).receipt);
+  const rec = JSON.parse(readFileSync(recPath, 'utf8'));
+  assert.deepEqual([rec.suite.command, rec.suite.exit, typeof rec.suite.duration_ms], ['echo suite-ran-fine', 0, 'number']);
+  assert.match(readFileSync(rec.suite.log, 'utf8'), /suite-ran-fine/);
+  assert.ok(rec.suite.log.startsWith(join(repo, '.proof', '.done-done', 'suite')), 'the log is under the evidence root');
+  assert.ok(!rec.files.some((f) => f.path.includes('suite')), 'the suite log is never cited as product evidence');
+  assert.equal(toon(dd('receipt', '--verify', head())).suite.command, 'echo suite-ran-fine');
+  assert.match(proof(toon(dd('verify', 'shots', '--outcome', OUTCOME)).run_id), /; test suite `echo suite-ran-fine`: passed in [\d.]+s$/);
+
+  // A receipt written before the suite step still verifies and gates, with a warning to re-run.
+  delete rec.suite;
+  writeFileSync(recPath, JSON.stringify(rec));
+  const old = dd('receipt', '--verify', head());
+  assert.equal(old.code, 0, old.out);
+  assert.match(toon(old).warnings[0], /before the test-suite step.*re-run done-done receipt/);
+
+  // A suite that fails, or runs past suite.timeout, fails the proof and names the suite command; no receipt is written.
+  configure(suiteYaml('echo broken; exit 3'));
+  ({ files } = shots(OUTCOME));
+  const bad = dd('receipt', '--outcome', OUTCOME, ...files);
+  assert.equal(bad.code, 2, bad.out);
+  assert.match(bad.out, /test suite `echo broken; exit 3` failed with exit 3; log /);
+  assert.equal(dd('check', '--outcome', OUTCOME, ...files).code, 2);
+  configure(suiteYaml('sleep 30', '1s'));
+  ({ files } = shots(OUTCOME));
+  const slow = dd('check', '--outcome', OUTCOME, ...files);
+  assert.equal(slow.code, 2, slow.out);
+  assert.match(slow.out, /test suite `sleep 30` timed out after 1s \(suite\.timeout\)/);
+
+  // A check started inside a suite run stops with its cause instead of starting the suite again.
+  configure(suiteYaml('echo again'));
+  ({ files } = shots(OUTCOME));
+  env.DONE_DONE_SUITE = 'abc';
+  const nested = dd('check', '--outcome', OUTCOME, ...files);
+  delete env.DONE_DONE_SUITE;
+  assert.equal(nested.code, 2, nested.out);
+  assert.match(nested.out, /running inside the test suite `echo again` \(DONE_DONE_SUITE is set\)/);
+
+  // With no suite.command, a package.json test script is the suite, run through npm.
+  configure(JUDGED);
+  writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'echo detected-suite' } }));
+  sh('add', '-A');
+  sh('commit', '-qm', 'test script');
+  ({ files } = shots(OUTCOME));
+  const detected = toon(dd('check', '--outcome', OUTCOME, ...files));
+  assert.equal(detected.suite.command, 'npm test');
+  assert.equal(detected.suite.exit, 0);
 });

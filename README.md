@@ -75,6 +75,7 @@ The verify skill is not part of an install: the first plain `done-done init` wri
 ## What it checks
 
 - 🧪 **The real product, not code checks.** A journey that only runs tests, typecheck, lint or a build is refused, and so is proof whose captures all come from such a run ([rule](docs/reference.md#real-product-evidence)).
+- 🧪 **The project's own test suite.** When the repo has one (`suite.command`, a `package.json` test script, pytest, cargo, go, make, gradle, dotnet), `check` runs it at the proved commit; a failing or timed-out suite fails the proof and the result is sealed in the receipt ([how](docs/reference.md#project-test-suite)).
 - 🔗 **Tied to a commit, fresh, not reused.** Every run records the commit and whether the tree was dirty; older-commit proof fails, and a file used for another claim is reuse ([how](docs/reference.md#where-proof-lives)).
 - 👀 **A judge always answers.** A fresh, tools-off judge on your plan looks at every `check`, `receipt` and `verify`. It cannot be turned off, and a judge that fails to answer stops the command instead of passing ([how](docs/reference.md#judge-relevance)).
 - 🧾 **Honest claims, no model.** `done-done lint <PR URL | file> <evidence folder>` gates a worker's `## Checks` block: four filled lines, and evidence that exists, differs, is newer than the folder and was never used by another PR ([how](docs/reference.md#lint-check)).
