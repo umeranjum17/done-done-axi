@@ -35,7 +35,7 @@ fs.appendFileSync(${JSON.stringify(calls)}, 'call\\n');
 if (process.env.PARTS_REFUSE) { console.error('fixture context limit: cannot fit the whole request'); process.exit(1); }
 const variants = ${JSON.stringify(variants)};
 const keys = [...new Set([...prompt.matchAll(/capture_\\d+/g)].map(m => m[0]))];
-const answer = Object.fromEntries(keys.map((k, i) => [k, { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'The capture shows part ' + i, personReason: 'The capture shows its part.', parts: variants[i], covers: process.env.PARTS_MISSING && i === 4 ? [] : [i] }]));
+const answer = Object.fromEntries(keys.map((k, i) => [k, { probabilities: { correct: 0.95, wrong: 0.03, unclear: 0.02 }, rationale: 'The capture shows part ' + i, personReason: 'The capture shows its part.', parts: process.env.PARTS_LATE ? (i < 2 ? [] : ['Evidence capture', 'Designs capture']) : variants[i], covers: process.env.PARTS_LATE ? (i < 2 || (process.env.PARTS_MISSING && i > 2) ? [] : [i === 2 ? 0 : 1]) : process.env.PARTS_MISSING && i === 4 ? [] : [i] }]));
 process.stdout.write(JSON.stringify(process.argv.includes('--output-format') ? { type: 'result', subtype: 'success', is_error: false, structured_output: answer } : { response: JSON.stringify(answer) }));
 `, { mode: 0o755 });
   const config = (route) => writeFileSync(join(home, 'config.yaml'), `agent: claude\njudge:\n  route: ${route}\n  model: fixture-parts\nagent_path_override: { gemini: ${JSON.stringify(adapter)}, claude: ${JSON.stringify(adapter)} }\n`);
@@ -70,6 +70,14 @@ writeFileSync(out + '/steps.json', JSON.stringify({ target: { version: '1.0.0' }
   assert.ok(cached.value.judge.judged.every(r => r.cached));
   assert.equal(count(), 1, 'full-set cache is reused');
   if (!old) expect(0, 'receipt', '--outcome', outcome, ...files);
+  env.PARTS_LATE = '1';
+  const late = expect(0, 'receipt', '--outcome', outcome + ' late parts', ...files);
+  assert.deepEqual(late.judge.judged[2].parts, ['Evidence capture', 'Designs capture']);
+  assert.deepEqual(late.judge.judged[2].covers, [0]);
+  env.PARTS_MISSING = '1';
+  expect(3, 'receipt', '--outcome', outcome + ' late missing', ...files);
+  delete env.PARTS_MISSING;
+  delete env.PARTS_LATE;
   const batchOutcome = outcome + ' old batch';
   const batchKey = sha(JSON.stringify([9, files.map(f => [sha(readFileSync(f)), null]), batchOutcome, 'answerer:gemini', 'fixture-parts', 0.7]));
   writeFileSync(join(cache, batchKey + '.json'), JSON.stringify({ judged: first.value.judge.judged, missing: ['phone landscape fitted'] }));
