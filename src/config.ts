@@ -462,7 +462,9 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   cfg.acpx_path = tilde(cfg.acpx_path);
   for (const a of Object.keys(cfg.agent_path_override)) cfg.agent_path_override[a] = tilde(cfg.agent_path_override[a]);
   // A relative root is under the repo (and dies with the checkout); an absolute one is used as-is.
-  cfg.evidence.root = cfg.evidence.root ? resolve(repo, cfg.evidence.root) : join(local, cfg.app);
+  cfg.evidence.root = cfg.evidence.root ? resolve(repo, cfg.evidence.root)
+    : !cfg.from['evidence.local_root'] && process.env.DONE_DONE_EVIDENCE_ROOT ? resolve(process.env.DONE_DONE_EVIDENCE_ROOT)
+    : join(local, cfg.app);
   return cfg;
 }
 

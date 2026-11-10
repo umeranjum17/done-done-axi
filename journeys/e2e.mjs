@@ -30,6 +30,7 @@ mkdirSync(join(repo, 'src'), { recursive: true });
 const env = {
   ...process.env,
   DONE_DONE_HOME: home,
+  DONE_DONE_EVIDENCE_ROOT: "",
   DONE_DONE_TEST_CLI: CLI,
   DONE_DONE_LOOK_FIXTURES: join(REPO, 'test', 'fixtures', 'look'),
   GIT_AUTHOR_NAME: 'e2e', GIT_AUTHOR_EMAIL: 'e2e@example.com',

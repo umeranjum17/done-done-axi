@@ -118,6 +118,23 @@ function setup(projectYaml = JUDGED) {
   return { dir, repo, env, sh, dd, ddin, head, shots };
 }
 
+test('sealed runs use the caller capture folder unless evidence.root overrides it', () => {
+  const t = setup('app: notes\n');
+  const caller = join(t.dir, 'caller');
+  mkdirSync(caller);
+  t.env.DONE_DONE_EVIDENCE_ROOT = caller;
+  const command = `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/result.txt', 'captured')"`;
+  const run = t.dd('run', '--', command);
+  assert.equal(run.code, 0, run.out);
+  const id = toon(run).run_id;
+  assert.equal(readFileSync(join(caller, id, 'result.txt'), 'utf8'), 'captured');
+  assert.equal(t.dd('status', '--run', id).code, 0, 'the caller can find the sealed run');
+  writeFileSync(join(t.repo, '.done-done.yaml'), 'app: notes\nevidence:\n  root: .proof\n');
+  const overridden = t.dd('run', '--', command);
+  assert.equal(overridden.code, 0, overridden.out);
+  assert.equal(readFileSync(join(t.repo, '.proof', toon(overridden).run_id, 'result.txt'), 'utf8'), 'captured');
+});
+
 test('approved design coverage: real CLI names a missing screen, then passes the complete contract', () => {
   const t = setup();
   const r = spawnSync(process.execPath, [join(dirname(CLI), '..', 'journeys', 'approved-design.mjs')], {
@@ -599,7 +616,7 @@ function bareRepo(dirName = 'repo') {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-init-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, dirName);
-  const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const env = { ...process.env, DONE_DONE_EVIDENCE_ROOT: '', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');
