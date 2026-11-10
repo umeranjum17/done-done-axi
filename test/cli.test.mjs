@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
 import { parse, parseDocument } from 'yaml';
+import { scanSecrets } from '../dist/secrets.js';
 import { decode } from '@toon-format/toon';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
@@ -1393,6 +1394,10 @@ test('a verify run fails when its log or text evidence holds a secret, naming wh
   assert.match(toon(t.dd('verify', 'saved', '--outcome', 'home and settings render')).reason, /^secrets: \.proof\/.*\/session\.log:1: holds a secret \(api-key\)/);
   writeFileSync(leak, 'saved 3 notes\n');
   assert.equal(t.dd('verify', 'logged', '--outcome', 'home and settings render').code, 0, 'clean evidence passes');
+  // The CLI's own --help is saved as release evidence: its prose must not read as a secret (a "key: value" in a sentence did).
+  const help = join(t.dir, 'cli-help.txt');
+  writeFileSync(help, spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' }).stdout);
+  assert.deepEqual(scanSecrets([help], { patterns: {}, allow: [] }), [], 'the --help text holds no secret-looking line');
   writeFileSync(join(t.repo, '.done-done.yaml'), 'app: notes\nsecrets:\n  allow: ["("]\n');
   assert.match(t.dd('status').out, /secrets\.allow must be a list of valid regexes/);
 });

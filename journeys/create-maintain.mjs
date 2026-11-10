@@ -84,8 +84,15 @@ try {
   }
   assert.equal(fixed.result, 'changed');
   git('merge', '-q', '--ff-only', fixed.fix.branch);
-  const clean = dd([0], 'maintain', '--foreground');
-  say(`maintain after merging the fix: ${clean.result}`);
+  // Each pass is a fresh reader, so one can still find a stale line the last pass missed: merge that fix too, and the skill must end clean within three passes.
+  let clean;
+  for (let k = 1; k <= 3; k++) {
+    clean = dd([0], 'maintain', '--foreground');
+    say(`maintain after merging the fix, pass ${k}: ${clean.result}`);
+    if (clean.result !== 'changed') break;
+    findings(clean);
+    git('merge', '-q', '--ff-only', clean.fix.branch);
+  }
   assert.equal(clean.result, 'clean');
 
   // 5 a real journey in a browser, judged

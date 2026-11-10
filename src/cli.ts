@@ -406,7 +406,7 @@ ${GLOBAL_TEXT}
 judge: done-done's own agent, a fresh one on your own plan through BYOKit, says whether each PNG/JPEG capture shows
   the outcome; a wrong screen fails, an unsure answer is inconclusive. check, receipt, verify, rerun and design always start
   it, and there is no way to turn it off: a pass needs a judge pass on at least one capture. The judge is the one the user set
-  (judge.route: claude-code; answerer:<agent> through the CLI of opencode, pi or gemini with every tool off; or a key route on your own API key: openai:key with
+  (judge.route: claude-code; answerer:<agent> through the CLI of opencode, pi or gemini with every tool off; or a key route that uses your own API key, openai:key with
   judge.model, or minimax:key, which falls back to claude-code when its call fails), whichever agent and model the user picks; with none set, done-done asks in a
   terminal or stops (exit 2) with the command that saves it. A judge that fails or does not answer stops the command with its
   cause (exit 2), never a result.
