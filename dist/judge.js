@@ -9,7 +9,7 @@ const MAX_SIDE = 1280; // long edge sent to the model, in pixels
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
 // The reading rules: the model names the element the outcome claims and quotes it before it decides, and a text capture
 // is read entry by entry. The floor is not here: the user sets it (judge.floor), and judge() applies it.
-export const VERSION = 15; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
+export const VERSION = 16; // bump when QUESTION, the options, the cache key or the stored verdict change, so older cached verdicts are not reused
 const OPTIONS = {
     correct: 'The screenshot shows the screen and state the outcome describes.',
     wrong: 'The screenshot shows a different screen, an error, a crash, a dialog or overlay (such as a keyboard) hiding the content, or a state that contradicts the outcome. Choose it only when the quote you give shows that.',
@@ -32,7 +32,7 @@ const TEXT_OPTIONS = {
     unclear: 'The text cannot settle it: it is unreadable, or the outcome names nothing this output could show.',
 };
 // The coverage reading: an outcome that names several parts (widths, themes, frames) needs each one shown by a passing
-// capture. In a batch, capture_0 defines one shared list; every covers position refers to that list, not another label.
+// capture. In a batch, the first nonempty list defines the shared list; every covers position refers to that list, not another label.
 const PARTS = 'Inspect only this question\'s listed image IDs or text, never substitute another question\'s image even if it better matches the cited name. Use the cited capture name in the state to match this capture to the outcome\'s own named part, not another capture\'s part. A capture showing one part is not wrong for lacking the other parts; a visible contradiction of its own part is still wrong. If the outcome names several parts that each need their own capture (for example several widths, themes or frames, such as "at 390 and 1440 wide"), list each one in parts, in the order the outcome names them, as a short label naming just that part, such as "390 wide" or "dark theme"; list none when it names one part or none. In covers, list the position in parts (0 for the first, 1 for the next) of each part this capture itself shows.';
 const TEXT_READ = 'Read every entry before judging: every width, every frame, every record, not only the first. Judge the capture on what it shows: a capture that shows the outcome for some of the widths or frames the outcome names is not wrong for lacking the others, since other captures in the check cover them. Write the rationale first: say how many entries you read, and quote the fields and values you relied on.';
 const TEXT_QUESTION = {
@@ -205,9 +205,11 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
     const resolved = (r) => {
         const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => [k, be.resolve(q, r[k])]));
         // One answer defines the identities before coverage is validated or blank/repeated labels are collapsed.
-        if (sharedParts)
+        if (sharedParts) {
+            const parts = Array.isArray(sharedParts) ? sharedParts : Object.values(answers).map((answer) => labels(lists(answer).parts)).find((parts) => parts?.length) ?? lists(answers[sharedParts]).parts;
             for (const answer of Object.values(answers))
-                Object.assign(answer, { parts: Array.isArray(sharedParts) ? sharedParts : lists(answers[sharedParts]).parts });
+                Object.assign(answer, { parts });
+        }
         return answers;
     };
     const malformed = (a) => Object.keys(questions).filter((k) => /^(malformed|no answer)/.test(a[k].reason ?? ''));
@@ -328,12 +330,17 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
             throw new UsageError(`judge: one check sends at most ${cfg.judge.max_captures} captures to the model, so cite fewer or raise judge.max_captures`, 'Raise judge.max_captures in the global config or the repo .done-done.yaml');
         let parts;
         for (const [id, question] of Object.entries(questions)) {
-            const shape = parts ? { ...question, answerFields: ['covers'], instructions: `${question.instructions} The shared parts list is fixed in state.shared_parts. Return covers positions in that exact list; do not redefine it.` } : question;
+            const shape = parts?.length ? { ...question, answerFields: ['covers'], instructions: `${question.instructions} The shared parts list is fixed in state.shared_parts. Return covers positions in that exact list; do not redefine it.` } : question;
             const one = { [id]: shape };
             const call = join(records, `judge-${stamp}-${Object.keys(answers).length + 1}`);
             const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, one);
-            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts ?? ''));
-            parts ??= lists(answers[id]).parts;
+            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : ''));
+            if (!parts?.length)
+                parts = lists(answers[id]).parts;
+        }
+        if (parts?.length) {
+            for (const answer of Object.values(answers))
+                Object.assign(answer, { parts });
         }
     }
     else {

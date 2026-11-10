@@ -593,7 +593,7 @@ async function fix<S>(run: MaintainRun, dir: string, cfg: Config, h: Harness<S>,
         return { result: 'blocked', reason: `fix: ${reason}` };
       };
       const prompt = `You fix the verification skill of the ${cfg.app} app at ${skill}/ in this checkout, your working directory. The skill tells a coding agent how to launch, drive and prove the real app; done-done maintain checked it against the product's source and found the findings below.
-Change only files inside ${skill}/ so that each finding is gone: make the skill match the source. Never change product code or any file outside ${skill}/, do not commit, and do not run done-done. Put scratch files in ${scratch} (also in $TMPDIR).
+Change only files inside ${skill}/ so that each finding is gone: make the skill match the source. In each file you edit, also check its other statements against the source and fix any the source contradicts, so the next maintain pass finds nothing in it. Never change product code or any file outside ${skill}/, do not commit, and do not run done-done. Put scratch files in ${scratch} (also in $TMPDIR).
 
 Findings (JSON): ${JSON.stringify(open.map(({ id, kind, file, line, what }) => ({ id, kind, file, line, what })))}
 
