@@ -40,6 +40,8 @@ journeys:
     command: node journeys/flaky-quarantine.mjs
   inventory-ownership:
     command: node journeys/inventory-ownership.mjs
+  qa-plan:
+    command: node journeys/qa-plan.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

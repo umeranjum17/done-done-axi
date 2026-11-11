@@ -24,6 +24,7 @@ import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange } from './affected.js';
+import { planQa } from './qa.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
@@ -359,6 +360,15 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   the core journey is needed too (every journey when none is core), never less, and the file is flagged for the feature map.
   Result: fresh (exit 0) when the receipt for HEAD has a run of every needed journey and feature and nothing is uncommitted;
   stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1`],
+  },
+  qa: {
+    usage: [['done-done qa "<feature>" [<base>]', 'plan QA from the feature and the diff: a journey when a user can reach new or changed behaviour, no-test for fixtures, tests and internals; records stage planned and the reason']],
+    flags: [],
+    more: [`qa: model-free. The change is the diff from <base>, else from the newest receipt before HEAD, else from the merge base with the default branch, plus uncommitted changes to tracked files.
+  A journey is planned when an added line adds a command, flag or route, or a screen file (.tsx .vue .html .css ...) changed; the journeys it lists
+  are the ones the feature map maps (done-done affected). Tests and fixtures only, docs, build output or proof files only, and source with no new
+  command, flag, route or screen are no-test, each with its reason. The plan is written to <evidence root>/.done-done/qa/<feature>.json
+  as {stage: planned, plan, reason}. It runs no agent or journey and exits 0 for either plan`],
   },
   status: {
     usage: [['done-done status [--run <run-id>]', "show a run's steps, result, findings and next step"]],
@@ -4557,6 +4567,40 @@ function cmdAffected(argv: string[]): number {
   return fresh ? PASS : FAIL;
 }
 
+// `done-done qa "<feature>" [<base>]`: decide from the diff whether the feature needs a journey, and record the plan.
+function cmdQa(argv: string[]): number {
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  if (positionals.length < 1 || positionals.length > 2) throw new UsageError('qa takes the feature and at most one base', 'Re-run as: done-done qa "<feature>" [<base>]');
+  const [feature, baseArg] = positionals;
+  const repo = repoRoot();
+  const cfg = loadConfig(repo);
+  const a = affectedOf(repo, cfg, baseArg);
+  // The added lines of each changed file, from the base (or HEAD when there is none) to the working tree; a new untracked file has none until added.
+  const against = a.base?.commit ?? 'HEAD';
+  const added = (f: string) => git(repo, 'diff', '--no-renames', '-U0', against, '--', f).split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
+  const planned = planQa(a.changed.map((path) => ({ path, added: added(path) })));
+  const record = { stage: 'planned', feature, head: a.now.commit, base: a.base?.commit ?? null, ...planned, journeys: planned.plan === 'journey' ? a.m.journeys.map((j) => j.name) : [] };
+  const file = join(cfg.evidence.root, '.done-done', 'qa', `${slug(feature)}.json`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  const changed = cap(a.changed);
+  emit({
+    command: 'qa',
+    stage: 'planned',
+    feature,
+    plan: planned.plan,
+    reason: planned.reason,
+    changed: changed.items,
+    ...(changed.omitted && { changed_omitted: changed.omitted }),
+    ...(record.journeys.length && { journeys: record.journeys }),
+    record: citable(repo, file),
+    help: planned.plan === 'journey'
+      ? [record.journeys.length ? `Capture proof: ${record.journeys.map((j) => `done-done run ${j}`).join(' && ')}` : `No journey covers this yet: done-done init --journey <name> -- <command>, or done-done verify --feature "${feature}" --outcome "<what a user can now do>"`]
+      : ['No new journey needed: keep the existing proof; done-done affected still says what the change touches'],
+  });
+  return PASS;
+}
+
 // Claude's opt-in Bash lifecycle hook compares HEAD before/after the exact tool call, not shell command text.
 async function cmdAfterCommit(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { before: { type: 'boolean' } } });
@@ -4684,6 +4728,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'lint') return cmdLint(rest);
     if (cmd === 'gate') return cmdGate(rest);
     if (cmd === 'affected') return cmdAffected(rest);
+    if (cmd === 'qa') return cmdQa(rest);
     if (cmd === 'after-commit') return await cmdAfterCommit(rest);
     if (cmd === 'status') return cmdStatus(rest);
     if (cmd === 'attach') return await cmdAttach(rest);

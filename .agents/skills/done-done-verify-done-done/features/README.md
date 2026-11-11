@@ -9,3 +9,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [Tier filtering](tier-filtering.md): journey tier selection and CI mode filtering with --tier flag
 - [Flaky quarantine](flaky-quarantine.md): a journey that passes on its second run is named flaky with one warning line while the run passes
 - [Test inventory ownership](inventory-ownership.md): `done-done run inventory-ownership`; a stray test file and a hand edit to an owned script fail lint by name, the same edit made by a journey command passes
+- [QA planning](qa-planning.md): `done-done qa "<feature>"` plans a journey for new user-visible behaviour and marks fixtures, tests and internals no-test, recording stage planned and the reason
