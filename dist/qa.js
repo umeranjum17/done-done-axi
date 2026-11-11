@@ -59,3 +59,12 @@ export function planWrite(plan, mapped) {
     const target = mapped.find((j) => j.extendable);
     return target ? { action: 'extend', journey: target.name, reason: `journey ${target.name} runs this code but never drives ${bare.join(', ')}` } : { action: 'add', reason: `no journey drives ${bare.join(', ')} and none can be extended` };
 }
+export function sealStage(p) {
+    const base = { journey: p.journey, max: p.max, fixes: p.fixes, ...(p.run_id && { run_id: p.run_id }) };
+    if (p.result === 'pass' && p.receipt)
+        return { ...base, stage: 'sealed', reason: p.fixes ? `passed after ${p.fixes} of ${p.max} fixes` : 'passed on the first run', receipt: p.receipt, help: [`Sealed: the receipt is bound to this commit; check it with done-done receipt --verify HEAD`] };
+    if (p.result === 'changed' && p.fix_branch)
+        return { ...base, stage: 'fixed', reason: `fixed in ${p.fixes} of ${p.max} fixes on ${p.fix_branch}; HEAD itself is not sealed`, fix_branch: p.fix_branch, help: [`Take the fix: git merge ${p.fix_branch}, then re-run this command to seal the new HEAD`] };
+    const why = p.reason ?? `the run ended ${p.result}`;
+    return { ...base, stage: 'fail', reason: p.fixes >= p.max && p.max > 0 ? `stopped at ${p.max} of ${p.max} fixes: ${why}` : why, help: [`Read what each attempt did: done-done status --run ${p.run_id ?? '<run-id>'}`, 'Fix the product by hand, commit, then re-run this command'] };
+}

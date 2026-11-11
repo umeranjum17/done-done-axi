@@ -48,6 +48,8 @@ journeys:
     command: node journeys/affected-select.mjs
   qa-write:
     command: node journeys/qa-write.mjs
+  qa-prove:
+    command: node journeys/qa-prove.mjs
   test-value:
     command: node journeys/test-value.mjs
   affected-audit:
