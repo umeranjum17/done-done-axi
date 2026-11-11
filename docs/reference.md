@@ -365,7 +365,13 @@ Journeys with a `spends` (and a large one without `--night`) are listed under `s
 - `move`: a real test sized for a bigger tier than it needs; `to` names the smaller size, chosen so the test takes at most a third of that size's bound.
 - `fix`: fails on the clean copy.
 
-`gaps` lists the planted faults that no test caught, as `file`, `line` and the `change`: source nothing protects. No file is written and the work copy stays clean. Exit 0, or 2 on a usage error (`--plan-only` is required: no other improve mode exists yet).
+`gaps` lists the planted faults that no test caught, as `file`, `line` and the `change`: source nothing protects. No file is written and the work copy stays clean. Every planted fault is also listed under `faults` so a plan can be applied later. Exit 0, or 2 on a usage error.
+
+### Applying a test plan
+
+Save the proposal (`done-done tests improve --plan-only --json > plan.json`), review it, then apply one verdict class at a time: `done-done tests improve --apply drop --plan plan.json`, then `--apply move` from a fresh plan. Each class is its own change set, kept to 300 changed lines, so commit each on its own ticket branch.
+
+Before it writes anything, apply reruns the kept tests (at their new sizes) against the faults the plan recorded. It is refused (`stage: refused`, exit 1, nothing written) when a fault the plan said was caught is caught by no kept test, a kept test now fails, a source line or journey changed since the plan, or the change set is over 300 lines. Otherwise (`stage: applied`) `drop` removes the journeys from `.done-done.yaml`, deletes their scripts that no kept journey runs and forgets their inventory entries; `move` sets the smaller size. The answer carries `seconds.before` and `seconds.after`, the summed clean-run times of the plan's tests and of the kept ones. Gaps are not filled here: write the journey with `done-done qa "<feature>" --write`.
 
 ### Lint check
 

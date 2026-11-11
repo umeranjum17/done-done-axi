@@ -4,7 +4,8 @@
 //   drop  catches no fault (slop) or exactly what a faster test catches (duplicate)
 //   move  real, but sized for a bigger tier than its measured time needs: `to` names the smaller tier
 //   fix   fails on the clean copy, so nothing is known about it
-// gaps are the planted faults that no test caught: source lines nothing protects.
+// gaps are the planted faults that no test caught: source lines nothing protects. faults records every planted fault, so
+// `tests improve --apply` can rerun the kept tests against the same ones.
 import { SIZES, isSize } from './size.js';
 // A move needs headroom: the test must take at most a third of the smaller tier's bound.
 const HEADROOM = 3;
@@ -23,9 +24,10 @@ function rowFor(v, size) {
         return { ...base, action: 'move', to: fit, why: `takes ${v.seconds}s, which fits the ${fit} tier, not ${size}` };
     return { ...base, action: 'keep', why: `catches ${v.caught} fault${v.caught === 1 ? '' : 's'} that no faster test catches` };
 }
-export function planImprove(tests, sizes, uncaught) {
+export function planImprove(tests, sizes, faults, uncaught) {
     return {
         stage: 'proposed',
+        faults,
         rows: tests.map((v) => rowFor(v, sizes[v.test])),
         gaps: uncaught.map((f) => ({ file: f.file, line: f.line, change: `${f.was.trim()} => ${f.now.trim()}` })),
     };

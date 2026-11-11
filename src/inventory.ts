@@ -75,3 +75,11 @@ export function record(repo: string, paths: string[], owner?: string): string[] 
   save(repo, inv);
   return paths;
 }
+
+// Forget retired files: their entries go with them, so a deleted test leaves no stale owner behind.
+export function forget(repo: string, paths: string[]): void {
+  const inv = loadInventory(repo);
+  if (!inv || !paths.some((p) => p in inv)) return;
+  for (const p of paths) delete inv[p];
+  save(repo, inv);
+}

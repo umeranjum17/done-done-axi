@@ -4,14 +4,15 @@
 //   drop  catches no fault (slop) or exactly what a faster test catches (duplicate)
 //   move  real, but sized for a bigger tier than its measured time needs: `to` names the smaller tier
 //   fix   fails on the clean copy, so nothing is known about it
-// gaps are the planted faults that no test caught: source lines nothing protects.
+// gaps are the planted faults that no test caught: source lines nothing protects. faults records every planted fault, so
+// `tests improve --apply` can rerun the kept tests against the same ones.
 import { SIZES, isSize, type Size } from './size.js';
 import type { Fault, TestValue } from './value.js';
 
 export type Action = 'keep' | 'drop' | 'move' | 'fix';
 export type Row = { test: string; size?: string; seconds: number; caught: number; action: Action; to?: Size; why: string };
 export type Gap = { file: string; line: number; change: string };
-export type Plan = { stage: 'proposed'; rows: Row[]; gaps: Gap[] };
+export type Plan = { stage: 'proposed'; rows: Row[]; gaps: Gap[]; faults: Fault[] };
 
 // A move needs headroom: the test must take at most a third of the smaller tier's bound.
 const HEADROOM = 3;
@@ -28,9 +29,10 @@ function rowFor(v: TestValue, size: string | undefined): Row {
   return { ...base, action: 'keep', why: `catches ${v.caught} fault${v.caught === 1 ? '' : 's'} that no faster test catches` };
 }
 
-export function planImprove(tests: TestValue[], sizes: Record<string, string | undefined>, uncaught: Fault[]): Plan {
+export function planImprove(tests: TestValue[], sizes: Record<string, string | undefined>, faults: Fault[], uncaught: Fault[]): Plan {
   return {
     stage: 'proposed',
+    faults,
     rows: tests.map((v) => rowFor(v, sizes[v.test])),
     gaps: uncaught.map((f) => ({ file: f.file, line: f.line, change: `${f.was.trim()} => ${f.now.trim()}` })),
   };

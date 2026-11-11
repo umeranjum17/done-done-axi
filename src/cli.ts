@@ -22,6 +22,7 @@ import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, ev
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { planImprove } from './improve.js';
+import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
 import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, type Size } from './size.js';
 import { look } from './look.js';
@@ -177,6 +178,8 @@ const FLAGS: Record<string, string> = {
   '--wait': 'wait until the run ends (the default)',
   '--no-wait': 'start the run and return at once (exit 4); read it later with done-done status',
   '--plan-only': 'with tests improve: propose the plan (stage proposed) and change nothing',
+  '--apply': 'with tests improve: apply one class (drop or move) of a saved plan after rerunning the kept tests against its recorded faults',
+  '--plan': 'with tests improve --apply: the saved plan file (tests improve --plan-only --json output)',
   '--write': 'with qa: write the journey the plan needs (stage writing), through journey add or enhance, only when no journey covers the behaviour',
   '--fix-tries <n>': 'with verify: the fix attempts this run may make instead of auto_fix.verify (0 reports only)',
   '--prove': 'with qa: run the journey that covers the feature through verify, judge it, fix up to --max times and seal a receipt for the commit (stage sealed, or fail)',
@@ -359,9 +362,10 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     usage: [
       ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
       ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
+      ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
       ['done-done tests value [<journey>] [--night] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
     ],
-    flags: ['--night', '--faults <n>', '--source <file>', '--plan-only'],
+    flags: ['--night', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
     more: [`test sizes: set journeys.<name>.size to ci (15s), local (300s) or large (900s). \`run\` stops a journey past its bound and fails it as slow.
   A large journey needs journeys.<name>.reason and is night-only: \`run\` and \`tests measure\` refuse it without --night. Once any journey has a size,
   \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed.
@@ -370,7 +374,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   test catches the same set), slop (catches none), duplicate (a faster test, or an earlier-named one at equal speed, catches exactly the same faults; duplicate_of names it), failing (fails on
   the clean copy). The work copy is only read and nothing is recorded as proof. Exit 1 when any test is slop, duplicate or failing.
   \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: one row per test (action keep, drop for slop or a duplicate, move with \`to\` when a real
-  test's measured time fits a smaller size with 3x headroom, fix for a failing one, each with its reason) and gaps, the planted faults that no test caught, as file:line. It writes no file and exits 0`],
+  test's measured time fits a smaller size with 3x headroom, fix for a failing one, each with its reason), gaps, the planted faults that no test caught, as file:line, and faults, every planted fault. It writes no file and exits 0.
+  \`tests improve --apply drop|move --plan <file>\` applies one class of a saved plan (stage applied). It first reruns the kept tests, at their new sizes, against the plan's recorded faults: if a fault the plan
+  said was caught is caught by no kept test, or a kept test now fails, or the plan is stale (a source line or journey changed), or the change set is over 300 lines, it is refused (stage refused, exit 1) and writes nothing.
+  Otherwise drop removes the journeys from .done-done.yaml, deletes their scripts that no kept journey runs and forgets their inventory entries; move sets the smaller size. It reports the tests' summed clean-run seconds
+  before and after. Commit each class alone on its own ticket branch; fill gaps with \`done-done qa "<feature>" --write\``],
   },
   'after-commit': {
     usage: [['done-done after-commit [--before]', 'Claude Bash lifecycle hook; reads its event on stdin and reruns affected journey commands after a commit']],
@@ -4439,11 +4447,13 @@ function cmdInventory(argv: string[]): number {
 
 // `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
 async function cmdTests(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' } }, allowPositionals: true });
+  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
   const action = positionals[0];
   if ((action !== 'measure' && action !== 'value' && action !== 'improve') || positionals.length > 2) throw new UsageError('tests needs the action measure, value or improve and at most one journey', 'Re-run as: done-done tests measure|value|improve [<journey>] [--night]');
-  if (action === 'improve' && !values['plan-only']) throw new UsageError('tests improve only proposes a plan so far', 'Re-run as: done-done tests improve --plan-only');
-  if (action !== 'improve' && values['plan-only']) throw new UsageError('--plan-only belongs to tests improve', 'Drop it, or run: done-done tests improve --plan-only');
+  if (action === 'improve' && !values['plan-only'] === !values.apply) throw new UsageError('tests improve needs exactly one of --plan-only or --apply <drop|move> --plan <file>', 'Re-run as: done-done tests improve --plan-only, or done-done tests improve --apply drop --plan plan.json');
+  if (action !== 'improve' && (values['plan-only'] || values.apply || values.plan)) throw new UsageError('--plan-only, --apply and --plan belong to tests improve', 'Drop them, or run: done-done tests improve --plan-only');
+  if (action === 'improve' && values.apply && (!(APPLIES as readonly string[]).includes(values.apply) || !values.plan)) throw new UsageError('--apply takes drop or move, one class at a time, with --plan <file>', 'Re-run as: done-done tests improve --apply drop --plan plan.json');
+  if (action === 'improve' && values.plan && !values.apply) throw new UsageError('--plan belongs to --apply', 'Drop it, or run: done-done tests improve --apply drop --plan plan.json');
   if (action === 'measure' && (values.faults !== undefined || values.source)) throw new UsageError('--faults and --source belong to tests value', 'Drop them, or run: done-done tests value');
   const repo = repoRoot();
   const cfg = loadConfig(repo);
@@ -4458,6 +4468,7 @@ async function cmdTests(argv: string[]): Promise<number> {
   }
   if (named && !picked.length) throw new UsageError(`journey ${named} was not ${action === 'measure' ? 'measured' : 'valued'}: ${skipped[0]}`, `${action === 'measure' ? `Set journeys.${named}.size in .done-done.yaml` : 'Pick a journey that spends nothing'}${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
   if (action === 'value') return await cmdTestsValue(repo, picked, skipped, values);
+  if (action === 'improve' && values.apply) return await cmdTestsApply(repo, cfg.journeys, values.apply as Apply, values.plan!);
   if (action === 'improve') return await cmdTestsImprove(repo, picked, skipped, values);
   const measured = [];
   for (const [name, j] of picked) measured.push(await measureJourney(name, j.command, j.size as Size, repo, process.env));
@@ -4487,9 +4498,9 @@ async function cmdTestsValue(repo: string, picked: [string, { command: string; s
 // `tests improve --plan-only`: stage proposed. Inventory (the journeys), measure and value (one valued run), then keep/drop/move rows and the gaps. Changes no file.
 async function cmdTestsImprove(repo: string, picked: [string, { command: string; size?: string }][], skipped: string[], values: { faults?: string; source?: string[] }): Promise<number> {
   const report = await valueOf(repo, picked, skipped, values);
-  const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.uncaught);
+  const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.faults, report.uncaught);
   const act = (a: string) => plan.rows.filter((r) => r.action === a).map((r) => r.test);
-  emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, skipped,
+  emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, faults: plan.faults, skipped,
     help: [
       ...(act('drop').length ? [`Drop: ${act('drop').join(', ')}`] : []),
       ...plan.rows.filter((r) => r.action === 'move').map((r) => `Move ${r.test} to size ${r.to}`),
@@ -4498,6 +4509,21 @@ async function cmdTestsImprove(repo: string, picked: [string, { command: string;
       'Nothing was changed; this is a proposal',
     ] });
   return PASS;
+}
+
+// `tests improve --apply <class> --plan <file>`: stage applied. Rerun the kept tests against the plan's recorded faults and write the change set only if no fault lost its catcher.
+async function cmdTestsApply(repo: string, journeys: Record<string, { command: string; size?: string }>, klass: Apply, file: string): Promise<number> {
+  let text: string;
+  try { text = readFileSync(resolve(file), 'utf8'); } catch (e) { throw new UsageError(`cannot read the plan file ${file}: ${(e as Error).message}`); }
+  const r = await applyPlan(repo, parsePlan(text), klass, journeys, process.env);
+  const { refused, ...applied } = r;
+  emit({ command: 'tests improve', stage: refused ? 'refused' : 'applied', ...applied, ...(refused && { refused }),
+    help: refused ? [refused, 'Nothing was changed'] : [
+      `${klass === 'drop' ? 'Removed' : 'Moved'}: ${r.tests.join(', ')} (${r.lines} lines changed, ${r.kept} tests kept, ${r.seconds.before}s to ${r.seconds.after}s)`,
+      'Commit this class alone on its own ticket branch, then apply the next class from a fresh plan',
+      'Fill any gap through normal QA writing: done-done qa "<feature>" --write',
+    ] });
+  return refused ? FAIL : PASS;
 }
 
 function cmdLint(argv: string[]): number {
