@@ -30,6 +30,7 @@ import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange } from './affected.js';
 import { addPairs, auditSelection, featureFor, type JourneyFailure } from './audit.js';
 import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
+import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
@@ -182,6 +183,8 @@ const FLAGS: Record<string, string> = {
   '--plan': 'with tests improve --apply: the saved plan file (tests improve --plan-only --json output)',
   '--write': 'with qa: write the journey the plan needs (stage writing), through journey add or enhance, only when no journey covers the behaviour',
   '--fix-tries <n>': 'with verify: the fix attempts this run may make instead of auto_fix.verify (0 reports only)',
+  '--journeys <list>': 'with verify: the closed list of journeys this run drives (one in this version), so the receipt records minimum scope, the journeys not run, and the affected ones it omits',
+  '--named-by <who>': 'with --journeys: who named the list (default caller); the receipt records it',
   '--prove': 'with qa: run the journey that covers the feature through verify, judge it, fix up to --max times and seal a receipt for the commit (stage sealed, or fail)',
   '--max <n>': 'with qa --prove: the most fix attempts (default 2)',
   '--foreground': 'run every step in this process instead of a detached runner (for scripts)',
@@ -275,10 +278,11 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   verify: {
     usage: [
       ['done-done verify [<journey>] --outcome "<what a user can now do>" [--claim-id <id>]', 'drive the journey in a run that outlives this command, check its evidence, judge each capture and record a receipt'],
+      ['done-done verify --journeys <journey> [--named-by <who>] --outcome "<claim>"', 'minimum journey scope: drive only the journey the caller names; the receipt records the list, who named it, and the journeys it did not run (those `affected` selected too)'],
       ['done-done verify --outcome "<claim>" [--feature <name>]', 'with no journey, the author agent drives a verify skill feature and the judge the user set judges its captures'],
       ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process'],
     ],
-    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
+    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
     more: [RUNS_TEXT],
   },
   journey: {
@@ -943,6 +947,7 @@ type CheckOutcome = {
   warnings: string[];
   evals?: string; // `pass <run id>` of the eval run the check needed (evals.enabled)
   suite?: SuiteRecord; // the project's own test suite at this head
+  scope?: Scope; // a verify run's caller-named minimum journey list
 };
 
 // Run a check and return its result without printing it, so `check` and `receipt` share one path.
@@ -1425,6 +1430,7 @@ type Receipt = {
   judge: JudgeBlock;
   evals?: string; // `pass <run id>`: the full eval run at this head (only when evals.enabled)
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
+  scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
 };
 
 const receiptsDir = (cfg: Config) => join(cfg.evidence.root, '.done-done', 'receipts');
@@ -1464,6 +1470,7 @@ function receiptFault(rec: Receipt, short: string): string | null {
     const rows = j.interaction_checklist;
     if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256))))) return `receipt for ${short} has a malformed interaction-checklist verdict`;
   }
+  if (rec.scope !== undefined && !scopeShape(rec.scope)) return `receipt for ${short} has a malformed journey scope`;
   if (rec.suite !== undefined && !suiteShape(rec.suite)) return `receipt for ${short} has a malformed test-suite record`;
   if (rec.evals !== undefined && !/^pass \S+$/.test(String(rec.evals))) return `receipt for ${short} has a malformed evals line`;
   const code = runsFault(rec.runs);
@@ -1521,7 +1528,7 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
     }
   }
   if (bad.length) return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.scope && { scope: rec.scope }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 
 async function cmdReceipt(argv: string[]): Promise<number> {
@@ -1554,7 +1561,7 @@ function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: numb
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-  const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }) };
+  const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }) };
   const path = writeReceipt(cfg, rec);
   const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
@@ -1662,6 +1669,7 @@ type Run = {
   fix_tries?: number; // verify --fix-tries: the fix attempts this run may make, in place of auto_fix.verify (qa --run caps its loop here)
   fix?: { branch?: string; commit: string; files?: string[]; attempts?: number; record?: string }; // a maintain or verify fix (auto_fix)
   inputs?: { head: string; journey: string; skill: string };
+  scope?: Scope; // verify --journeys: the minimum journey list the caller named
   // Primitive 17 (input guard): the watched inputs hashed before and after the drive.
   guarded?: { patterns: string[]; before: GuardFile[]; after: GuardFile[] };
   // What respond needs to write the receipt once the caller answers the gate, and the answer.
@@ -2238,7 +2246,7 @@ async function runSteps(dir: string): Promise<void> {
     if (p.end) return finish(p.end.result, p.end.reason);
 
     begin('receipt');
-    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }) });
+    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) });
     log('receipt', receipt.result);
     run.receipt = receipt.result.receipt as string | undefined;
     set(step!, receipt.code === PASS ? 'completed' : 'failed', { exit: receipt.code });
@@ -2449,6 +2457,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
   if (reason) result.reason = reason;
   Object.assign(result, {
     ...(run.kind === 'verify' && { claim: run.claim, journey: run.journey }),
+    ...(run.scope && { scope: run.scope }),
     ...(run.kind === 'verify' && run.journey === null && { feature: run.feature ?? 'picked by the agent', author: run.author && `${run.author.agent} (model ${run.author.model || 'its own default'})` }),
     repo: run.repo, ...(rec && { head: rec.commit }),
     steps: run.steps.map((s) => {
@@ -2555,25 +2564,45 @@ async function preflightVerify(cfg: Config, agentDrives: boolean, tries = cfg.au
 async function cmdVerify(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { outcome: { type: 'string' }, feature: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
+    options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
     allowPositionals: true,
   });
   if (!values.outcome?.trim()) throw new UsageError('verify needs --outcome "<what a user can now do>"');
   const fixTries = values['fix-tries'] === undefined ? undefined : Number(values['fix-tries']);
   if (fixTries !== undefined && !(Number.isInteger(fixTries) && fixTries >= 0)) throw new UsageError('--fix-tries needs a whole number, 0 or more', 'Run: done-done verify <journey> --outcome "<claim>" --fix-tries 2');
   if (positionals.length > 1) throw new UsageError('verify takes at most one journey name');
+  if (values.journeys !== undefined && (positionals.length || values.feature !== undefined)) throw new UsageError('pass --journeys <list> or a journey or --feature, not several: the list is the journeys this run drives');
+  if (values['named-by'] !== undefined && values.journeys === undefined) throw new UsageError('--named-by says who named the --journeys list, so it needs --journeys <list>');
   if (positionals.length && values.feature !== undefined) throw new UsageError('pass a journey or --feature, not both: a journey drives by its command, --feature by the author agent');
   if ([values.wait, values['no-wait'], values.foreground].filter(Boolean).length > 1) throw new UsageError('pass only one of --wait, --no-wait and --foreground');
   const repo = repoRoot();
   const cfg = loadConfig(repo);
   const names = Object.keys(cfg.journeys);
   // A named journey, or the only one, drives by its command; with --feature or no journey at all, the author agent drives.
-  const journey = positionals[0] ?? (names.length === 1 && values.feature === undefined ? names[0] : null);
+  let list: string[] = [];
+  if (values.journeys !== undefined) {
+    try {
+      list = parseList(values.journeys);
+    } catch (e) {
+      throw new UsageError((e as Error).message, 'Run: done-done verify --journeys <journey> --outcome "<what a user can now do>"');
+    }
+    if (list.length > 1) throw new UsageError(`a verify run drives one journey, and --journeys names ${list.length}: ${list.join(', ')}`, `Run each in its own verify: done-done verify --journeys ${list[0]} --outcome "<what a user can now do>"`);
+  }
+  const journey = list[0] ?? positionals[0] ?? (names.length === 1 && values.feature === undefined ? names[0] : null);
   if (journey === null && names.length > 1 && values.feature === undefined) throw new UsageError(`verify needs a journey name or --feature; .done-done.yaml defines: ${names.join(', ')}`, `Run: done-done verify <${names.join('|')}> --outcome "<what a user can now do>"`);
   if (journey !== null && !cfg.journeys[journey]) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${names.join(', ') || 'none'}`);
   if (values['claim-id']?.trim() === '') throw new UsageError('--claim-id needs a non-empty id');
   const branch = git(repo, 'branch', '--show-current');
   if (!values['claim-id'] && !branch) throw new UsageError('HEAD is detached, so no branch names this claim; pass --claim-id <id>');
+  // The scope is settled here: the affected journeys the list leaves out are read at the commit the run starts on.
+  let scope: Scope | undefined;
+  if (list.length) {
+    try {
+      scope = minimumScope({ list, defined: names, affected: affectedOf(repo, cfg).m.journeys.map((j) => j.name), by: values['named-by']?.trim() || 'caller' });
+    } catch (e) {
+      throw e instanceof UsageError ? e : new UsageError((e as Error).message);
+    }
+  }
   refuseParked(cfg, repo, values['claim-id'] ?? branch);
   const drive = journey === null ? await agentDrive(repo, cfg, values.feature) : undefined;
   // verify always runs the judge the user set, the author's own agent and model included; the judge is settled here, so a
@@ -2586,7 +2615,7 @@ async function cmdVerify(argv: string[]): Promise<number> {
   const run: Run = {
     schema: 2, run_id: id, kind: 'verify', app: cfg.app, repo, journey, ...drive, claim: values.outcome, claim_id: values['claim-id'] ?? null, branch, status: 'pending',
     steps: verifySteps(fixTries ?? cfg.auto_fix.verify ?? 0).map((name) => ({ name, status: 'pending' })), created, updated: created, ...(fixTries !== undefined && { fix_tries: fixTries }),
-    inputs: inputsOf(repo, cfg, journey, drive?.author),
+    inputs: inputsOf(repo, cfg, journey, drive?.author), ...(scope && { scope }),
   };
   saveRun(dir, run);
   logEvent(dir, { status: 'pending' });
