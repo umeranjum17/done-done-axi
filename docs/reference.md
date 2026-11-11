@@ -356,6 +356,17 @@ Set `journeys.<name>.size` to `ci` (15s), `local` (300s) or `large` (900s). `don
 
 Journeys with a `spends` (and a large one without `--night`) are listed under `skipped`. Exit 0 when every test is real, 1 when any is slop, duplicate or failing, 2 on a usage error.
 
+### Test improvement plan
+
+`done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]` proposes what to do with the tests and changes nothing. It values the journeys as `tests value` does (one clean-copy run gives each test's `seconds`) and answers with `stage: proposed`, the `inventory` (the journeys considered), one row per test and the `gaps`. A row has `action`, `why`, `size`, `seconds` and `caught`:
+
+- `keep`: catches faults and no faster test catches the same set.
+- `drop`: slop (catches nothing) or a duplicate of a faster test.
+- `move`: a real test sized for a bigger tier than it needs; `to` names the smaller size, chosen so the test takes at most a third of that size's bound.
+- `fix`: fails on the clean copy.
+
+`gaps` lists the planted faults that no test caught, as `file`, `line` and the `change`: source nothing protects. No file is written and the work copy stays clean. Exit 0, or 2 on a usage error (`--plan-only` is required: no other improve mode exists yet).
+
 ### Lint check
 
 `done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS`, `WARN: <reason>` or `FAIL: <reason>` and exits 0 (PASS or WARN), 1, or 2 on a usage error. A PR URL is read with `gh pr view` and `gh api`; a file is read as the report.

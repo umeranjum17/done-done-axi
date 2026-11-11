@@ -52,6 +52,8 @@ journeys:
     command: node journeys/test-value.mjs
   affected-audit:
     command: node journeys/affected-audit.mjs
+  test-improve:
+    command: node journeys/test-improve.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

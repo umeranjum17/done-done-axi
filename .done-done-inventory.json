@@ -71,6 +71,10 @@
     "owner": "size-bounds",
     "sha256": "a1123b829a3f27fc3fae97d3d100dad256d380e1a18eb113906830c2b4d6b407"
   },
+  "journeys/test-improve.mjs": {
+    "owner": "test-improve",
+    "sha256": "73135e23b8ced8ff0ddc3ef51d252eac5cfbb95eb6737ea7b7b22245605d599c"
+  },
   "journeys/test-value.mjs": {
     "owner": "test-value",
     "sha256": "dc3751214f912b45375b59cc33ac73caa07f7140087c2cb75b15582bc7d258b3"

@@ -80,7 +80,7 @@ export function classify(tests: { name: string; ran: Bounded; caught: number[] }
   });
 }
 
-export type ValueReport = { faults: Fault[]; tests: TestValue[] };
+export type ValueReport = { faults: Fault[]; tests: TestValue[]; uncaught: Fault[] };
 
 // Plant each fault in its own scratch copy and run every test there. The work copy is only read.
 export async function measureValue(repo: string, tests: TestRun[], faults: Fault[], env: NodeJS.ProcessEnv): Promise<ValueReport> {
@@ -91,7 +91,7 @@ export async function measureValue(repo: string, tests: TestRun[], faults: Fault
   };
   try {
     const clean = scratchCopy(repo, root, 'clean');
-    const results = [];
+    const results: { name: string; ran: Bounded; caught: number[] }[] = [];
     for (const t of tests) results.push({ name: t.name, ran: await run(t, clean, 'clean'), caught: [] as number[] });
     for (const [i, f] of faults.entries()) {
       const dir = scratchCopy(repo, root, `fault-${i}`);
@@ -103,7 +103,7 @@ export async function measureValue(repo: string, tests: TestRun[], faults: Fault
       }
       rmSync(dir, { recursive: true, force: true });
     }
-    return { faults, tests: classify(results) };
+    return { faults, tests: classify(results), uncaught: faults.filter((_, i) => !results.some((r) => r.caught.includes(i))) };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

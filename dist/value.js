@@ -104,7 +104,7 @@ export async function measureValue(repo, tests, faults, env) {
             }
             rmSync(dir, { recursive: true, force: true });
         }
-        return { faults, tests: classify(results) };
+        return { faults, tests: classify(results), uncaught: faults.filter((_, i) => !results.some((r) => r.caught.includes(i))) };
     }
     finally {
         rmSync(root, { recursive: true, force: true });
