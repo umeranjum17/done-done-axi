@@ -1886,7 +1886,12 @@ const loadRun = (dir) => JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'))
 const logEvent = (dir, e) => appendFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ at: now(), ...e })}\n`);
 const setStep = (dir, run, s, status, extra = {}) => {
     Object.assign(s, { status, [status === 'running' ? 'started' : 'ended']: now() }, extra);
-    logEvent(dir, { step: s.name, status });
+    const event = { step: s.name, status };
+    if (s.attempt !== undefined && s.max_attempts !== undefined) {
+        event.attempt = s.attempt;
+        event.max_attempts = s.max_attempts;
+    }
+    logEvent(dir, event);
     saveRun(dir, run);
 };
 // End a run: steps it never reached are skipped, and the report step records the result.
@@ -2280,11 +2285,15 @@ const VERIFY_TRIAGE = {
 // The judge the user set sorts the judge's failures before each fix: [] sends them all to the fixer;
 // with any ask (or unsure answer), or `park`, every judge failure goes to the gate with its class. A judge that does not
 // answer throws, so the run fails with the cause.
-async function sortJudged(run, cfg, open, record, h, park = false) {
+async function sortJudged(run, cfg, open, record, h, park = false, attempt) {
     const judged = open.filter((f) => f.kind === 'judge');
     if (!judged.length)
         return [];
     const step = h.begin('triage');
+    if (attempt) {
+        step.attempt = attempt.current;
+        step.max_attempts = attempt.max;
+    }
     const choice = selectJudge(cfg, selectAgent(cfg));
     const asks = await triage(cfg, choice, judged, VERIFY_TRIAGE, { app: cfg.app, outcome: run.claim, findings: judged }, record);
     h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, ask_user: asks });
@@ -2332,6 +2341,8 @@ async function fixVerify(run, cfg, dir, first, tries, h, again) {
             return (h.set(fixStep, 'failed'), run.findings = open, { blocked: copied });
         for (let k = 1; k <= tries; k++) {
             const step = h.begin('fix');
+            step.attempt = k;
+            step.max_attempts = tries;
             const round = { attempt: k, failures: open };
             rounds.push(round);
             const close = (status) => (h.log('fix', { agent: agent.agent, model: agent.model, worktree: wt, rounds }), h.set(step, status));
@@ -2375,7 +2386,7 @@ Answer with summary (what you changed, in one line) and blocker ("" when you fix
             round.rerun = { result: next.end?.result ?? (next.asks.length ? 'gate' : 'pass'), reason: next.end?.reason, ...next.logs };
             if (next.end && !next.fixable.length)
                 return blocked(`the re-run after attempt ${k} did not pass: ${next.end.reason}`, []);
-            const sorted = next.end ? await sortJudged(run, cfg, failures(next.fixable), join(dir, 'agents', `triage-fix${k}.json`), h).catch((e) => { close('failed'); throw e; }) : [];
+            const sorted = next.end ? await sortJudged(run, cfg, failures(next.fixable), join(dir, 'agents', `triage-fix${k}.json`), h, false, { current: k, max: tries }).catch((e) => { close('failed'); throw e; }) : [];
             if (!next.end || sorted.length) {
                 run.fix.branch = `done-done/verify-${run.run_id}`;
                 git(repo, 'branch', run.fix.branch, made.commit);
@@ -2454,7 +2465,14 @@ function showRun(dir, cfg, command, gone = false) {
         ...(run.kind === 'verify' && { claim: run.claim, journey: run.journey }),
         ...(run.kind === 'verify' && run.journey === null && { feature: run.feature ?? 'picked by the agent', author: run.author && `${run.author.agent} (model ${run.author.model || 'its own default'})` }),
         repo: run.repo, ...(rec && { head: rec.commit }),
-        steps: run.steps.map((s) => ({ name: s.name, status: s === at && (status === 'failed' || (status === 'cancelled' && (s.status === 'running' || s.status === 'awaiting_approval'))) ? status : s.status })),
+        steps: run.steps.map((s) => {
+            const stepStatus = s === at && (status === 'failed' || (status === 'cancelled' && (s.status === 'running' || s.status === 'awaiting_approval'))) ? status : s.status;
+            const stepInfo = { name: s.name, status: stepStatus };
+            if (s.attempt !== undefined && s.max_attempts !== undefined) {
+                stepInfo.stage = `${s.name} ${s.attempt} of ${s.max_attempts}`;
+            }
+            return stepInfo;
+        }),
     });
     if (status === 'awaiting_approval' && run.gate)
         result.findings = run.gate.findings;

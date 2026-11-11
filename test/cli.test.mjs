@@ -3565,3 +3565,64 @@ test('the project test suite is one proof step: a pass is sealed in the receipt 
   assert.equal(detected.suite.command, 'npm test');
   assert.equal(detected.suite.exit, 0);
 });
+
+test('status shows fix attempt stage (n of N) in steps output and events', () => {
+  const t = setup('app: notes\nauto_fix:\n  verify: 2\njourneys:\n  smoke:\n    command: node journey.mjs\n');
+  const e = pathEnv(t.env, []);
+  
+  // Journey that fails initially
+  writeFileSync(join(t.repo, 'journey.mjs'), `
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+const broken = readFileSync('state.txt', 'utf8').includes('broken');
+mkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });
+writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/screen.png', 'fake-png');
+if (broken) process.exit(1);
+  `);
+  writeFileSync(join(t.repo, 'state.txt'), 'broken\n');
+  writeFileSync(join(t.repo, 'steps.mjs'), '');
+  t.sh('add', '-A');
+  t.sh('commit', '-qm', 'initial');
+  
+  // Stub agent that fixes on first attempt
+  writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}
+const { writeFileSync } = require('node:fs');
+writeFileSync('state.txt', 'fixed\\n');
+console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed state', blocker: '' }) } }));
+  `, { mode: 0o755 });
+  
+  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
+  
+  // Run verify with auto_fix
+  const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'journey passes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'smoke', '--outcome', 'journey passes', '--foreground');
+  
+  const result = toon(r);
+  
+  // Find the run directory
+  const runId = result.run_id;
+  const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', runId);
+  
+  // Check events.jsonl for attempt info
+  const events = readFileSync(join(runDir, 'events.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line))
+    .filter(e => e.step === 'fix' || e.step === 'triage');
+  
+  // Verify that fix events include attempt and max_attempts
+  const fixEvents = events.filter(e => e.step === 'fix');
+  assert.ok(fixEvents.length > 0, 'should have fix events');
+  assert.ok(fixEvents.some(e => e.attempt === 1 && e.max_attempts === 2), `fix events should include attempt info: ${JSON.stringify(fixEvents)}`);
+  
+  // Check the run.json for step attempt info
+  const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'));
+  const fixSteps = run.steps.filter(s => s.name === 'fix');
+  assert.ok(fixSteps.length > 0, 'should have fix steps');
+  assert.ok(fixSteps.some(s => s.attempt === 1 && s.max_attempts === 2), `fix steps should include attempt info: ${JSON.stringify(fixSteps)}`);
+  
+  // Check status output for stage field
+  const statusResult = toon(t.dd('status', '--run', runId));
+  const stepsWithStage = statusResult.steps.filter(s => s.stage);
+  assert.ok(stepsWithStage.length > 0, `status output should include stage field for fix/triage steps: ${JSON.stringify(statusResult.steps)}`);
+  assert.ok(stepsWithStage.some(s => s.stage.includes('1 of 2')), `stage should show "n of N" format: ${JSON.stringify(stepsWithStage)}`);
+});

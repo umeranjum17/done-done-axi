@@ -1541,7 +1541,7 @@ function report(findings: Finding[], files: string[], ctx: ReportContext): { cod
 type StepState = 'pending' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'skipped';
 // A gate finding asks the caller (ask-user): the judge did not pass a capture.
 type GateFinding = { id: string; severity: 'error' | 'warning'; what: string; action: 'ask-user' };
-type Step = { name: string; status: StepState; started?: string; ended?: string; exit?: number; outputs?: string[]; findings?: unknown };
+type Step = { name: string; status: StepState; started?: string; ended?: string; exit?: number; outputs?: string[]; findings?: unknown; attempt?: number; max_attempts?: number };
 type Run = {
   // journey null: the author agent drives `feature` (features/<name>.md of the verify skill; unset until the agent picks one); a maintain run has no journey or claim.
   schema: 2; run_id: string; kind: 'verify' | 'maintain'; app: string; repo: string; journey?: string | null; feature?: string; author?: { agent: string; model: string };
@@ -1814,7 +1814,12 @@ const logEvent = (dir: string, e: Record<string, unknown>) => appendFileSync(joi
 
 const setStep = (dir: string, run: Run, s: Step, status: StepState, extra: Partial<Step> = {}) => {
   Object.assign(s, { status, [status === 'running' ? 'started' : 'ended']: now() }, extra);
-  logEvent(dir, { step: s.name, status });
+  const event: Record<string, unknown> = { step: s.name, status };
+  if (s.attempt !== undefined && s.max_attempts !== undefined) {
+    event.attempt = s.attempt;
+    event.max_attempts = s.max_attempts;
+  }
+  logEvent(dir, event);
   saveRun(dir, run);
 };
 
@@ -2169,10 +2174,14 @@ const VERIFY_TRIAGE: Triage = {
 // The judge the user set sorts the judge's failures before each fix: [] sends them all to the fixer;
 // with any ask (or unsure answer), or `park`, every judge failure goes to the gate with its class. A judge that does not
 // answer throws, so the run fails with the cause.
-async function sortJudged(run: Run, cfg: Config, open: MaintainFinding[], record: string, h: Harness, park = false): Promise<Finding[]> {
+async function sortJudged(run: Run, cfg: Config, open: MaintainFinding[], record: string, h: Harness, park = false, attempt?: { current: number; max: number }): Promise<Finding[]> {
   const judged = open.filter((f) => f.kind === 'judge');
   if (!judged.length) return [];
   const step = h.begin('triage');
+  if (attempt) {
+    step.attempt = attempt.current;
+    step.max_attempts = attempt.max;
+  }
   const choice = selectJudge(cfg, selectAgent(cfg));
   const asks = await triage(cfg, choice, judged, VERIFY_TRIAGE, { app: cfg.app, outcome: run.claim, findings: judged }, record);
   h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, ask_user: asks });
@@ -2218,6 +2227,8 @@ async function fixVerify(run: Run, cfg: Config, dir: string, first: VerifyPass, 
     if (copied) return (h.set(fixStep, 'failed'), run.findings = open, { blocked: copied });
     for (let k = 1; k <= tries; k++) {
       const step = h.begin('fix');
+      step.attempt = k;
+      step.max_attempts = tries;
       const round: Record<string, unknown> = { attempt: k, failures: open };
       rounds.push(round);
       const close = (status: StepState) => (h.log('fix', { agent: agent.agent, model: agent.model, worktree: wt, rounds }), h.set(step, status));
@@ -2255,7 +2266,7 @@ Answer with summary (what you changed, in one line) and blocker ("" when you fix
       const next = await again(wt, `fix${k}`);
       round.rerun = { result: next.end?.result ?? (next.asks.length ? 'gate' : 'pass'), reason: next.end?.reason, ...next.logs };
       if (next.end && !next.fixable.length) return blocked(`the re-run after attempt ${k} did not pass: ${next.end.reason}`, []);
-      const sorted = next.end ? await sortJudged(run, cfg, failures(next.fixable), join(dir, 'agents', `triage-fix${k}.json`), h).catch((e) => { close('failed'); throw e; }) : [];
+      const sorted = next.end ? await sortJudged(run, cfg, failures(next.fixable), join(dir, 'agents', `triage-fix${k}.json`), h, false, { current: k, max: tries }).catch((e) => { close('failed'); throw e; }) : [];
       if (!next.end || sorted.length) {
         run.fix.branch = `done-done/verify-${run.run_id}`;
         git(repo, 'branch', run.fix.branch, made.commit);
@@ -2331,7 +2342,14 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
     ...(run.kind === 'verify' && { claim: run.claim, journey: run.journey }),
     ...(run.kind === 'verify' && run.journey === null && { feature: run.feature ?? 'picked by the agent', author: run.author && `${run.author.agent} (model ${run.author.model || 'its own default'})` }),
     repo: run.repo, ...(rec && { head: rec.commit }),
-    steps: run.steps.map((s) => ({ name: s.name, status: s === at && (status === 'failed' || (status === 'cancelled' && (s.status === 'running' || s.status === 'awaiting_approval'))) ? status : s.status })),
+    steps: run.steps.map((s) => {
+      const stepStatus = s === at && (status === 'failed' || (status === 'cancelled' && (s.status === 'running' || s.status === 'awaiting_approval'))) ? status : s.status;
+      const stepInfo: Record<string, unknown> = { name: s.name, status: stepStatus };
+      if (s.attempt !== undefined && s.max_attempts !== undefined) {
+        stepInfo.stage = `${s.name} ${s.attempt} of ${s.max_attempts}`;
+      }
+      return stepInfo;
+    }),
   });
   if (status === 'awaiting_approval' && run.gate) result.findings = run.gate.findings;
   if (run.response) result.response = run.response;

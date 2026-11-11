@@ -571,6 +571,8 @@ async function fix(run, dir, cfg, h, tries, sources) {
     return inWorktree(repo, wt, async (base) => {
         for (let k = 1; k <= tries; k++) {
             let step = h.begin('triage');
+            step.attempt = k;
+            step.max_attempts = tries;
             const asks = await triageDrift(cfg, choice, wt, open, sources, join(dir, 'agents', `triage-${k}.json`));
             judged.push({ attempt: k, ask_user: asks });
             h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, rounds: judged });
@@ -580,6 +582,8 @@ async function fix(run, dir, cfg, h, tries, sources) {
                 return { result: 'blocked', reason: `ask-user: the judge did not call ${asks.length} ${asks.length === 1 ? 'finding' : 'findings'} (${asks.map((a) => a.id).join(', ')}) a skill that is out of date, so the user decides` };
             }
             step = h.begin('fix');
+            step.attempt = k;
+            step.max_attempts = tries;
             const round = { attempt: k, findings: open.map((f) => f.id) };
             rounds.push(round);
             const blocked = (reason) => {
