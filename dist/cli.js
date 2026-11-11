@@ -617,6 +617,10 @@ function closeRun(repo, cfg, rec, log) {
     };
     if (reason)
         result.reason = reason;
+    if (rec.flaky) {
+        result.flaky = rec.flaky;
+        result.warning = rec.warning;
+    }
     result.evidence = rows.items;
     if (rows.omitted)
         result.evidence_omitted = rows.omitted;
@@ -738,24 +742,35 @@ async function cmdRun(argv) {
     // The run's log lives with its run store, never in the evidence folder the judge reads: a failure names its first failing line.
     const logFile = join(runsRoot(cfg.app), rec.run_id, 'logs', 'run.log');
     mkdirSync(dirname(logFile), { recursive: true });
-    for (const cell of matrix?.required ?? [{}]) {
+    const drive = (cell) => new Promise((done) => {
         // The journey's own stdout goes to our stderr, never our stdout: stdout carries only done-done's
         // result document (TOON or --json), so a noisy journey cannot break `run --json | JSON.parse`.
-        const r = await new Promise((done) => {
-            const child = spawn(expanded, {
-                cwd: repo, shell: true, stdio: ['inherit', 'pipe', 'pipe'],
-                env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
-            });
-            for (const out of [child.stdout, child.stderr])
-                out?.on('data', (b) => { process.stderr.write(b); appendFileSync(logFile, b); });
-            child.on('error', () => done(null)).on('close', done);
+        const child = spawn(expanded, {
+            cwd: repo, shell: true, stdio: ['inherit', 'pipe', 'pipe'],
+            env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
         });
-        const code = r ?? 1;
+        for (const out of [child.stdout, child.stderr])
+            out?.on('data', (b) => { process.stderr.write(b); appendFileSync(logFile, b); });
+        child.on('error', () => done(null)).on('close', done);
+    });
+    // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed.
+    const flaky = [];
+    for (const cell of matrix?.required ?? [{}]) {
+        let code = (await drive(cell)) ?? 1;
+        if (code !== 0 && (await drive(cell)) === 0) {
+            flaky.push(matrix ? cellName(cell) : journey ?? expanded);
+            code = 0;
+        }
         if (code !== 0) {
             if (!failed.length)
                 rec.exit = code;
             failed.push(`${cellName(cell)} (exit ${code})`);
         }
+    }
+    if (flaky.length) {
+        rec.flaky = flaky;
+        rec.warning = `flaky: ${flaky.join(', ')} passed on the second run and is quarantined; fix it`;
+        process.stderr.write(`warning: ${rec.warning}\n`);
     }
     reap();
     const sealed = closeRun(repo, cfg, rec, logFile);
