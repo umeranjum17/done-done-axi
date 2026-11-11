@@ -20,7 +20,7 @@ import { design, interactions, type InteractionResult, KINDS, redesign, writtenR
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
-import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
+import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
@@ -3377,10 +3377,13 @@ async function cmdJourney(argv: string[]): Promise<number> {
   const name = named ? positionals[1] : '';
   if (named && !Object.hasOwn(cfg.journeys, name)) throw new UsageError(`unknown journey ${name}; nothing written`);
   if (named && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(name)) throw new UsageError(`${action} needs a lowercase kebab-case journey name`);
-  const priorScript = join(repo, 'journeys', `${name}.mjs`), priorFeature = join(dirname(index), `${name}.md`);
+  // A journey whose command runs a registered test script is rewritten in place and keeps its command; any other journey gets journeys/<name>.mjs.
+  const entry = named ? entryScript(cfg.journeys[name].command) : null, scriptRel = entry ?? `journeys/${name}.mjs`;
+  const priorScript = join(repo, scriptRel), priorFeature = join(dirname(index), `${name}.md`);
   if (named) {
     for (const p of [priorScript, priorFeature]) safePath(p);
-    if (existsSync(priorScript) && (cfg.journeys[name].command !== `node journeys/${name}.mjs` || Object.entries(cfg.journeys).some(([n, j]) => n !== name && j.command.includes(`journeys/${name}.mjs`)))) throw new UsageError(`${shown(repo, priorScript)} is not exclusive to this journey; nothing written`);
+    if (entry && loadInventory(repo) && !loadInventory(repo)![entry]) throw new UsageError(`${entry} is not registered in ${INVENTORY_FILE}; nothing written`, `Register it first: done-done inventory record ${entry} --owner ${name}`);
+    if (existsSync(priorScript) && (!entry || Object.entries(cfg.journeys).some(([n, j]) => n !== name && j.command.includes(scriptRel)))) throw new UsageError(`${shown(repo, priorScript)} is not exclusive to this journey; nothing written`);
     if (existsSync(priorFeature) && !readFileSync(priorFeature, 'utf8').includes(`done-done run ${name}`)) throw new UsageError(`${shown(repo, priorFeature)} does not name this journey; nothing written`);
   }
   const agent = selectAgent(cfg), toolless = agent.agent !== 'claude';
@@ -3418,7 +3421,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   } catch (e) {
     throw new UsageError(`the agent returned invalid JavaScript; nothing written: ${String((e as { stderr?: string }).stderr || (e as Error).message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
   }
-  const script = join(repo, 'journeys', `${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
+  const script = join(repo, named ? scriptRel : `journeys/${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
   for (const p of [script, feature]) {
     safePath(p);
     if (!named && existsSync(p)) throw new UsageError(`${shown(repo, p)} already exists; nothing written`);
@@ -3427,7 +3430,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   const doc = parseDocument(originalConfig);
   if (doc.get('journeys') == null) doc.set('journeys', doc.createNode({}));
   if (!named) doc.setIn(['journeys', s.name], doc.createNode({}));
-  doc.setIn(['journeys', s.name, 'command'], `node journeys/${s.name}.mjs`);
+  if (!entry) doc.setIn(['journeys', s.name, 'command'], `node journeys/${s.name}.mjs`);
   if (s.spends.trim()) doc.setIn(['journeys', s.name, 'spends'], [cfg.journeys[s.name]?.spends, s.spends.trim()].filter(Boolean).join('; '));
   if (named) {
     const command = doc.getIn(['journeys', s.name, 'command'], true) as { commentBefore?: string };
@@ -3457,7 +3460,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
     throw e;
   }
   if (loadInventory(repo)) recordInventory(repo, [relative(repo, script)], s.name); // the script is owned by its journey, so lint accepts what this command wrote
-  process.stderr.write(`${named ? label : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
+  process.stderr.write(`Stage writing: ${relative(repo, script)}\n${named ? label : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
   return cmdRun([s.name]);
 }
 

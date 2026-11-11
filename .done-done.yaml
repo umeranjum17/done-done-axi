@@ -51,17 +51,19 @@ journeys:
   qa-prove:
     command: node journeys/qa-prove.mjs
   test-value:
-    command: node journeys/test-value.mjs
+    command: node journeys/value-marks.mjs
   affected-audit:
     command: node journeys/affected-audit.mjs
   test-improve:
-    command: node journeys/test-improve.mjs
+    command: node journeys/improve-plan.mjs
   test-apply:
-    command: node journeys/test-apply.mjs
+    command: node journeys/apply-plan.mjs
   minimum-scope:
     command: node journeys/minimum-scope.mjs
   review:
     command: node journeys/review.mjs
+  registered-script:
+    command: node journeys/registered-script.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

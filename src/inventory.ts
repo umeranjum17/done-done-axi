@@ -17,6 +17,15 @@ const CODE = /\.(c|m)?(j|t)sx?$/;
 export const isTestFile = (p: string): boolean =>
   CODE.test(p) && !/(^|\/)fixtures\//.test(p) && (/(^|\/)(test|tests|__tests__|journeys)\//.test(p) || /\.(test|spec)\.[^/]+$/.test(p));
 
+// The test script a journey command runs: `node [flags] <path>.mjs` where the path is a test file (`node journeys/x.mjs`,
+// `node --test test/x.test.mjs`); null for any other command. `journey enhance|improve` rewrite this file in place.
+export function entryScript(command: string): string | null {
+  const [exe, ...rest] = command.trim().split(/\s+/);
+  if (exe !== 'node') return null;
+  const path = rest.find((t) => !t.startsWith('-'));
+  return path && /\.mjs$/.test(path) && !path.includes('..') && !path.startsWith('/') && isTestFile(path.replace(/^\.\//, '')) ? path.replace(/^\.\//, '') : null;
+}
+
 const hash = (repo: string, p: string) => createHash('sha256').update(readFileSync(join(repo, p))).digest('hex');
 
 export function loadInventory(repo: string): Inventory | null {

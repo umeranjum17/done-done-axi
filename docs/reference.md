@@ -172,6 +172,8 @@ Like `enhance`, it supplies the current journey, script and verify feature to th
 
 It prints a diff summary and runs that saved journey once. A failed assertion returns nonzero and leaves the edits for review; an existing or newly declared spend restriction prevents the trial from running. The first run is dirty-tree evidence, not clean proof. Review the generated executable code: preservation and deterministic behavior are instructions to the generator, not semantic guarantees. Commit and replay with `done-done run <name>` for clean evidence; the saved recipe needs no agent or model in CI. This command targets one named journey, not a project-wide rewrite.
 
+`enhance` and `improve` also take a journey whose command runs a registered test script (`node test/x.test.mjs`, `node --test test/x.test.mjs`): that script is rewritten in place, the command is kept, no `journeys/<name>.mjs` is added, and its hash in `.done-done-inventory.json` is updated so lint passes. A script not in the inventory is refused. The output begins `Stage writing: <file>`.
+
 ### Run a journey
 
 Describe your journeys in `.done-done.yaml` at the repo root:

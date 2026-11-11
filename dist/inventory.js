@@ -10,6 +10,15 @@ export const INVENTORY_FILE = '.done-done-inventory.json';
 // A test file is code in a test/tests/__tests__/journeys folder or named *.test.* / *.spec.*; test fixtures are data, not tests.
 const CODE = /\.(c|m)?(j|t)sx?$/;
 export const isTestFile = (p) => CODE.test(p) && !/(^|\/)fixtures\//.test(p) && (/(^|\/)(test|tests|__tests__|journeys)\//.test(p) || /\.(test|spec)\.[^/]+$/.test(p));
+// The test script a journey command runs: `node [flags] <path>.mjs` where the path is a test file (`node journeys/x.mjs`,
+// `node --test test/x.test.mjs`); null for any other command. `journey enhance|improve` rewrite this file in place.
+export function entryScript(command) {
+    const [exe, ...rest] = command.trim().split(/\s+/);
+    if (exe !== 'node')
+        return null;
+    const path = rest.find((t) => !t.startsWith('-'));
+    return path && /\.mjs$/.test(path) && !path.includes('..') && !path.startsWith('/') && isTestFile(path.replace(/^\.\//, '')) ? path.replace(/^\.\//, '') : null;
+}
 const hash = (repo, p) => createHash('sha256').update(readFileSync(join(repo, p))).digest('hex');
 export function loadInventory(repo) {
     const file = join(repo, INVENTORY_FILE);

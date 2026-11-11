@@ -22,13 +22,17 @@ try {
   writeFileSync(join(repo, skill, 'SKILL.md'), '# Demo verification\n');
   writeFileSync(join(repo, skill, 'features/README.md'), '- [Greeting](greeting.md)\n');
   writeFileSync(join(repo, skill, 'features/greeting.md'), '# Greeting\nSource: app.mjs\nDrive: done-done run greeting\n');
-  writeFileSync(join(repo, '.done-done.yaml'), `app: demo\nevidence:\n  root: ${JSON.stringify(evidence)}\njourneys:\n  core:\n    command: node drive.mjs core\n    core: true\n  greeting:\n    command: node drive.mjs greeting\n  unrelated:\n    command: node other.mjs\n`);
+  writeFileSync(join(repo, '.done-done.yaml'), `app: demo\nevidence:\n  root: ${JSON.stringify(evidence)}\njourneys:\n  core:\n    command: node core.mjs\n    core: true\n  greeting:\n    command: node drive.mjs greeting\n  unrelated:\n    command: node other.mjs\n`);
   writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello Umer");\n');
   writeFileSync(join(repo, 'other.mjs'), 'throw new Error("unrelated journey must not run");\n');
   writeFileSync(join(repo, 'drive.mjs'), `import { execFileSync } from 'node:child_process'; import { writeFileSync } from 'node:fs'; import { join } from 'node:path';
 const output = execFileSync(process.execPath, ['app.mjs'], { encoding: 'utf8' });
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), output);
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: { version: 'fixture' }, start: 'Umer opens the greeting CLI', steps: ['node app.mjs'], result: output }));\n`);
+  // The core journey stands alone: drive.mjs reaches app.mjs, so a core journey that ran it would be reached by every app.mjs commit.
+  writeFileSync(join(repo, 'core.mjs'), `import { writeFileSync } from 'node:fs'; import { join } from 'node:path';
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), 'Hello Umer, again\\n');
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: { version: 'fixture' }, start: 'Umer opens the demo', steps: ['open the core screen'], result: 'Hello Umer, again' }));\n`);
   assert.equal(dd('init', '--hook', 'claude').status, 2, 'no agent is chosen');
   const settings = () => JSON.parse(readFileSync(join(repo, '.claude/settings.json'), 'utf8'));
   const session = settings().hooks.SessionStart;

@@ -9,11 +9,15 @@
   },
   "journeys/after-commit.mjs": {
     "owner": "after-commit",
-    "sha256": "7cb75cc675e6b0d53a36ee0363a0ceb51057a77d34cabf094d751861b899463b"
+    "sha256": "6fbdfdccf40892b1b13b6496722f2cabbbf217be31222fb6a5ef36e256856a85"
   },
   "journeys/agents-live.mjs": {
     "owner": "agents-live",
     "sha256": "dbf6cb92dcb6b5ab04e21cef9c6045c90c129b8471bc3a1c84afa93bec8d41ec"
+  },
+  "journeys/apply-plan.mjs": {
+    "owner": "test-apply",
+    "sha256": "c894922eb04a30654dbc45e5fc2138b41ec2ca9b27fc12769264e08616c9929d"
   },
   "journeys/approved-design.mjs": {
     "owner": "approved-design",
@@ -30,6 +34,10 @@
   "journeys/flaky-quarantine.mjs": {
     "owner": "flaky-quarantine",
     "sha256": "04841d01c18a1b4371e1a330e338fa869fe123ae37495a53df22b67126fc7b67"
+  },
+  "journeys/improve-plan.mjs": {
+    "owner": "test-improve",
+    "sha256": "73135e23b8ced8ff0ddc3ef51d252eac5cfbb95eb6737ea7b7b22245605d599c"
   },
   "journeys/init-first-release.mjs": {
     "owner": "init-first-release",
@@ -59,6 +67,10 @@
     "owner": "redesign",
     "sha256": "f378f70a6449c3cbc3a8e9f9adbb3ece8298cc0294c18783c55f1313344b3260"
   },
+  "journeys/registered-script.mjs": {
+    "owner": "registered-script",
+    "sha256": "d225f87d1ba2defba3ba1da42359fe4f2d2eaf7e2775f329f4a6975186a3bf8d"
+  },
   "journeys/requirements-scope.mjs": {
     "owner": "requirements-scope",
     "sha256": "d3f3c16e5e4c7e7ec311332a7aec64d5c2756ca05120c3188cdab83415ba3d94"
@@ -71,18 +83,6 @@
     "owner": "size-bounds",
     "sha256": "a1123b829a3f27fc3fae97d3d100dad256d380e1a18eb113906830c2b4d6b407"
   },
-  "journeys/test-apply.mjs": {
-    "owner": "test-apply",
-    "sha256": "c894922eb04a30654dbc45e5fc2138b41ec2ca9b27fc12769264e08616c9929d"
-  },
-  "journeys/test-improve.mjs": {
-    "owner": "test-improve",
-    "sha256": "73135e23b8ced8ff0ddc3ef51d252eac5cfbb95eb6737ea7b7b22245605d599c"
-  },
-  "journeys/test-value.mjs": {
-    "owner": "test-value",
-    "sha256": "dc3751214f912b45375b59cc33ac73caa07f7140087c2cb75b15582bc7d258b3"
-  },
   "journeys/tier-ci.mjs": {
     "owner": "tier-ci",
     "sha256": "62a7e59a5b2f305e7949b6d38d4caa76a1b1c52db73a7697dfcc166b23945808"
@@ -90,6 +90,10 @@
   "journeys/upgrade.mjs": {
     "owner": "upgrade",
     "sha256": "7a94751b9a109323b5f71dcd870eea2f0bb1f35b366f968395d7c8abd4fe47ab"
+  },
+  "journeys/value-marks.mjs": {
+    "owner": "test-value",
+    "sha256": "dc3751214f912b45375b59cc33ac73caa07f7140087c2cb75b15582bc7d258b3"
   },
   "test/cli.test.mjs": {
     "owner": "npm-test",
