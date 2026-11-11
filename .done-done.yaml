@@ -34,6 +34,8 @@ journeys:
     command: node journeys/journey-add.mjs --enhance
   journey-improve:
     command: node journeys/journey-add.mjs --improve
+  tier-ci:
+    command: node journeys/tier-ci.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

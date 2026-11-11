@@ -157,6 +157,7 @@ const FLAGS: Record<string, string> = {
   '--upgrade': 'with --journey: mark it the upgrade journey (upgrade: true): install the previous shipped version, upgrade over it in place, then drive the core journey',
   '--open': 'open a run for a hand- or agent-driven proof; prints its id and folder',
   '--close <run-id>': 'seal an open run and record the files in its folder',
+  '--tier <name>': 'run only journeys with this tier; in CI (GITHUB_ACTIONS=true) defaults to ci',
   '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
   '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
   '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (for scripts)',
@@ -230,8 +231,9 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done run [<journey>] [-- <command...>]', 'run a journey (or command) and record the evidence it writes'],
       ['done-done run --open [<journey>]', 'open a run for a hand- or agent-driven proof; prints its id and folder'],
       ['done-done run --close <run-id>', 'seal an open run'],
+      ['done-done run --tier <name>', 'run only journeys with this tier (defaults to ci in CI)'],
     ],
-    flags: ['-- <command...>', '--open', '--close <run-id>'],
+    flags: ['-- <command...>', '--open', '--close <run-id>', '--tier <name>'],
     more: [JOURNEYS_TEXT],
   },
   check: {
@@ -672,7 +674,7 @@ async function cmdRun(argv: string[]): Promise<number> {
   const dash = argv.indexOf('--');
   const { values, positionals } = parseArgs({
     args: dash < 0 ? argv : argv.slice(0, dash),
-    options: { open: { type: 'boolean' }, close: { type: 'string' } },
+    options: { open: { type: 'boolean' }, close: { type: 'string' }, tier: { type: 'string' } },
     allowPositionals: true,
   });
   const repo = repoRoot();
@@ -684,8 +686,23 @@ async function cmdRun(argv: string[]): Promise<number> {
     if (rec.ended_at) throw new UsageError(`run ${values.close} is already closed`);
     return emitted(closeRun(repo, cfg, rec));
   }
+  // CI mode: GITHUB_ACTIONS=true defaults to tier 'ci'
+  const inCI = process.env.GITHUB_ACTIONS === 'true';
+  const tier = values.tier ?? (inCI ? 'ci' : undefined);
   const journey = positionals[0] ?? null;
   if (positionals.length > 1) throw new UsageError('run takes at most one journey name');
+  // Filter journeys by tier if specified
+  const availableJourneys = tier
+    ? Object.fromEntries(Object.entries(cfg.journeys).filter(([_, j]) => j.tier === tier))
+    : cfg.journeys;
+  if (tier && Object.keys(availableJourneys).length === 0) {
+    throw new UsageError(`no journeys with tier ${tier}; available journeys: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+  }
+  if (journey && tier && !availableJourneys[journey]) {
+    const j = cfg.journeys[journey];
+    if (!j) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+    throw new UsageError(`journey ${journey} has tier ${j.tier ?? '(none)'}, not ${tier}`);
+  }
   const spends = journey ? cfg.journeys[journey]?.spends : undefined;
   if (spends) throw new UsageError(`journey ${journey} spends (${spends}), so run refuses it: nothing ran`, `Ask the user, then: done-done verify ${journey} --outcome "<what a user can now do>"`);
   let command = dash < 0 ? null : commandOf(argv.slice(dash + 1));
