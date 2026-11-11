@@ -55,6 +55,10 @@
     "owner": "shared-parts",
     "sha256": "5373d8fc2e15e8c622d4adc1a4ad435f4e8a1a4dbcaaed383a98fc19345ae234"
   },
+  "journeys/size-bounds.mjs": {
+    "owner": "size-bounds",
+    "sha256": "a1123b829a3f27fc3fae97d3d100dad256d380e1a18eb113906830c2b4d6b407"
+  },
   "journeys/tier-ci.mjs": {
     "owner": "tier-ci",
     "sha256": "62a7e59a5b2f305e7949b6d38d4caa76a1b1c52db73a7697dfcc166b23945808"

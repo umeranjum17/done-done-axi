@@ -10,3 +10,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [Flaky quarantine](flaky-quarantine.md): a journey that passes on its second run is named flaky with one warning line while the run passes
 - [Test inventory ownership](inventory-ownership.md): `done-done run inventory-ownership`; a stray test file and a hand edit to an owned script fail lint by name, the same edit made by a journey command passes
 - [QA planning](qa-planning.md): `done-done qa "<feature>"` plans a journey for new user-visible behaviour and marks fixtures, tests and internals no-test, recording stage planned and the reason
+- [Test size bounds](size-bounds.md): `done-done run size-bounds`; an over-bound ci journey is stopped as slow, a large journey with no reason fails lint, large is night-only, `tests measure` reports five timings per test

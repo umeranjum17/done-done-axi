@@ -21,6 +21,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, scoresOf, totals } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize } from './size.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
 import { mapChange } from './affected.js';
@@ -156,6 +157,7 @@ const FLAGS = {
     '--open': 'open a run for a hand- or agent-driven proof; prints its id and folder',
     '--close <run-id>': 'seal an open run and record the files in its folder',
     '--owner <name>': 'the journey or suite that owns a test file recorded in the inventory',
+    '--night': 'allow a large (night-only) journey to run',
     '--tier <name>': 'run only journeys with this tier; in CI (GITHUB_ACTIONS=true) defaults to ci',
     '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
     '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
@@ -231,8 +233,9 @@ const COMMANDS = {
             ['done-done run --open [<journey>]', 'open a run for a hand- or agent-driven proof; prints its id and folder'],
             ['done-done run --close <run-id>', 'seal an open run'],
             ['done-done run --tier <name>', 'run only journeys with this tier (defaults to ci in CI)'],
+            ['done-done run <journey> --night', 'run a large journey (night-only; refused without --night)'],
         ],
-        flags: ['-- <command...>', '--open', '--close <run-id>', '--tier <name>'],
+        flags: ['-- <command...>', '--open', '--close <run-id>', '--tier <name>', '--night'],
         more: [JOURNEYS_TEXT],
     },
     check: {
@@ -338,6 +341,13 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   (code in test/, tests/, __tests__/ or journeys/, or *.test.* / *.spec.*; fixtures excluded) with no entry, and for an owned file whose bytes differ from its
   entry. \`record\` re-hashes files and needs DONE_DONE_RUN_ID, which only a done-done run sets, so a hand edit stays a failure while the same edit made by a
   journey command passes; \`journey add|enhance|improve\` record the script they write. A deleted owned file is not a failure. Exit 0 clean, 1 findings, 2 usage error`],
+    },
+    tests: {
+        usage: [['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound']],
+        flags: ['--night'],
+        more: [`test sizes: set journeys.<name>.size to ci (15s), local (300s) or large (900s). \`run\` stops a journey past its bound and fails it as slow.
+  A large journey needs journeys.<name>.reason and is night-only: \`run\` and \`tests measure\` refuse it without --night. Once any journey has a size,
+  \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed`],
     },
     'after-commit': {
         usage: [['done-done after-commit [--before]', 'Claude Bash lifecycle hook; reads its event on stdin and reruns affected journey commands after a commit']],
@@ -669,7 +679,7 @@ async function cmdRun(argv) {
     const dash = argv.indexOf('--');
     const { values, positionals } = parseArgs({
         args: dash < 0 ? argv : argv.slice(0, dash),
-        options: { open: { type: 'boolean' }, close: { type: 'string' }, tier: { type: 'string' } },
+        options: { open: { type: 'boolean' }, close: { type: 'string' }, tier: { type: 'string' }, night: { type: 'boolean' } },
         allowPositionals: true,
     });
     const repo = repoRoot();
@@ -705,6 +715,9 @@ async function cmdRun(argv) {
     const spends = journey ? cfg.journeys[journey]?.spends : undefined;
     if (spends)
         throw new UsageError(`journey ${journey} spends (${spends}), so run refuses it: nothing ran`, `Ask the user, then: done-done verify ${journey} --outcome "<what a user can now do>"`);
+    const asleep = journey && cfg.journeys[journey] ? nightFault(journey, cfg.journeys[journey], !!values.night) : null;
+    if (asleep)
+        throw new UsageError(asleep, `Run it at night: done-done run ${journey} --night`);
     let command = dash < 0 ? null : commandOf(argv.slice(dash + 1));
     if (journey && !command) {
         const j = cfg.journeys[journey];
@@ -765,22 +778,23 @@ async function cmdRun(argv) {
     // The run's log lives with its run store, never in the evidence folder the judge reads: a failure names its first failing line.
     const logFile = join(runsRoot(cfg.app), rec.run_id, 'logs', 'run.log');
     mkdirSync(dirname(logFile), { recursive: true });
-    const drive = (cell) => new Promise((done) => {
+    const size = journey && !values.close ? cfg.journeys[journey]?.size : undefined;
+    const drive = (cell) => runBounded(expanded, {
         // The journey's own stdout goes to our stderr, never our stdout: stdout carries only done-done's
         // result document (TOON or --json), so a noisy journey cannot break `run --json | JSON.parse`.
-        const child = spawn(expanded, {
-            cwd: repo, shell: true, stdio: ['inherit', 'pipe', 'pipe'],
-            env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
-        });
-        for (const out of [child.stdout, child.stderr])
-            out?.on('data', (b) => { process.stderr.write(b); appendFileSync(logFile, b); });
-        child.on('error', () => done(null)).on('close', done);
+        cwd: repo, size,
+        env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
+        onData: (b) => { process.stderr.write(b); appendFileSync(logFile, b); },
     });
-    // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed.
+    // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed. A slow stop is final.
     const flaky = [];
+    let slow = null;
     for (const cell of matrix?.required ?? [{}]) {
-        let code = (await drive(cell)) ?? 1;
-        if (code !== 0 && (await drive(cell)) === 0) {
+        const r = await drive(cell);
+        let code = r.code ?? 1;
+        if (r.slow)
+            slow = slowReason(journey, size);
+        else if (code !== 0 && (await drive(cell)).code === 0) {
             flaky.push(matrix ? cellName(cell) : journey ?? expanded);
             code = 0;
         }
@@ -797,6 +811,8 @@ async function cmdRun(argv) {
     }
     reap();
     const sealed = closeRun(repo, cfg, rec, logFile);
+    if (slow)
+        return emitted({ code: FAIL, result: { ...sealed.result, slow: true, reason: slow } });
     if (matrix && failed.length)
         return emitted({ code: FAIL, result: { ...sealed.result, reason: `the run command failed for cell ${failed.join('; ')}` } });
     return emitted(sealed);
@@ -4751,6 +4767,34 @@ function cmdInventory(argv) {
     emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
     return bad.length ? FAIL : PASS;
 }
+// `done-done tests measure`: time each sized journey five times against its bound (src/size.ts).
+async function cmdTests(argv) {
+    const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' } }, allowPositionals: true });
+    if (positionals[0] !== 'measure' || positionals.length > 2)
+        throw new UsageError('tests needs the action measure and at most one journey', 'Re-run as: done-done tests measure [<journey>] [--night]');
+    const repo = repoRoot();
+    const cfg = loadConfig(repo);
+    const named = positionals[1];
+    if (named && !cfg.journeys[named])
+        throw new UsageError(`unknown journey ${named}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+    const measured = [];
+    const skipped = [];
+    for (const [name, j] of Object.entries(cfg.journeys)) {
+        if (named && name !== named)
+            continue;
+        const why = !isSize(j.size) ? 'has no size' : j.spends ? `spends (${j.spends}), so measure refuses it` : nightFault(name, j, !!values.night)?.replace(/: nothing ran$/, ', so measure needs --night');
+        if (why) {
+            skipped.push(`${name}: ${why.replace(/^journey \S+ /, '')}`);
+            continue;
+        }
+        measured.push(await measureJourney(name, j.command, j.size, repo, process.env));
+    }
+    if (named && !measured.length)
+        throw new UsageError(`journey ${named} was not measured: ${skipped[0]}`, `Set journeys.${named}.size in .done-done.yaml${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
+    const bad = measured.filter((m) => m.verdict !== 'within bound');
+    emit({ command: 'tests measure', measured, skipped, help: bad.length ? [`Slow or failing: ${bad.map((m) => m.journey).join(', ')}; make it faster or give it a larger size`] : [] });
+    return bad.length ? FAIL : PASS;
+}
 function cmdLint(argv) {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true });
     if (positionals.length !== 2)
@@ -4765,7 +4809,8 @@ function cmdLint(argv) {
         if (!(e instanceof UsageError))
             owned = e.message;
     } // outside a git repo there is no inventory
-    const why = !v.ok ? v.why : owned && `test inventory: ${owned}`;
+    const sized = sizeFault(loadConfig(process.cwd()).journeys);
+    const why = !v.ok ? v.why : owned ? `test inventory: ${owned}` : sized && `test sizes: ${sized}`;
     console.log(why ? `FAIL: ${why}` : v.warn ? `WARN: ${v.warn}` : 'PASS');
     return why ? FAIL : PASS;
 }
@@ -5129,6 +5174,8 @@ async function main(argv) {
             return await cmdLook(rest);
         if (cmd === 'inventory')
             return cmdInventory(rest);
+        if (cmd === 'tests')
+            return await cmdTests(rest);
         if (cmd === 'lint')
             return cmdLint(rest);
         if (cmd === 'gate')

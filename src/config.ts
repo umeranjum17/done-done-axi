@@ -7,6 +7,7 @@ import { checkMatrix, type Matrix } from './matrix.js';
 import { type Dom, type LookRef, parseDom, parseLook } from './dom.js';
 import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
+import { isSize } from './size.js';
 
 export class UsageError extends Error {
   // The exact next command, when the error has one.
@@ -37,7 +38,7 @@ export type Config = {
   auto_fix: Record<string, number>; // per step, as no-mistakes: how many times done-done's agent may fix its findings; 0 (the default) reports only
   app: string;
   skill: string;
-  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string }>;
+  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string; size?: string; reason?: string }>;
   // Primitive 17 (input guard): repo-relative paths or globs the drive must leave alone. Empty: today's behaviour.
   inputs: string[];
   // Primitive 1 (run-instance harness): start the app under test on its own port per run. Null when unset: today's behaviour.
@@ -240,9 +241,9 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && (n as number) >= 0)
       : spec.type === 'matrix' ? !checkMatrix(value)
       : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value as object).every(isRegex)
-      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string'));
+      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string'));
     const want = {
-      journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name>}',
+      journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
       instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
       matrix: 'a mapping with optional theme (a list of names), width (a list of CSS pixel widths) and form (a list of names), plus skip (a list of partial cells, each with a reason)',
       agent: `one of ${AGENTS.join(', ')}, or acp:<target>`,

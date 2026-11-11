@@ -1,0 +1,9 @@
+app: size-test
+journeys:
+  quick:
+    command: echo quick
+    size: ci
+  nightly:
+    command: echo nightly
+    size: large
+    reason: replays the whole release path against the live service

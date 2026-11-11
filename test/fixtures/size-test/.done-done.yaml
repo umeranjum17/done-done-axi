@@ -1,0 +1,11 @@
+app: size-test
+journeys:
+  quick:
+    command: echo quick
+    size: ci
+  over-bound:
+    command: sleep 60
+    size: ci
+  large-no-reason:
+    command: echo large
+    size: large

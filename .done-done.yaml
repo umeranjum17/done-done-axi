@@ -42,6 +42,8 @@ journeys:
     command: node journeys/inventory-ownership.mjs
   qa-plan:
     command: node journeys/qa-plan.mjs
+  size-bounds:
+    command: node journeys/size-bounds.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

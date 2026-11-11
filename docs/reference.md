@@ -339,6 +339,12 @@ journeys:
 
 `done-done inventory` lists the entry count and the findings (exit 0 clean, 1 findings). `done-done inventory record <files...> [--owner <name>]` stores current hashes (a new file needs `--owner`) and only works while `DONE_DONE_RUN_ID` is set, which `run` sets for a journey command, so the same edit passes when a journey command makes it and fails when made by hand. `journey add`, `enhance` and `improve` record the script they write when the repo keeps an inventory. A deleted owned file is a retired test, not a failure. The guard stops accidents and is not a sandbox: `.done-done-inventory.json` is committed, so review still sees any hash changed in a diff. With no inventory file nothing changes.
 
+### Test sizes
+
+Set `journeys.<name>.size` to `ci` (15s), `local` (300s) or `large` (900s). `done-done run <journey>` kills a journey that runs past its bound (the whole process group) and fails the run with `slow: true` and `journey <name> is slow: it ran past its <size> bound ...`; a slow stop is not retried as flaky. A `large` journey needs `journeys.<name>.reason` and is night-only: `run` and `tests measure` refuse it without `--night`. Sizing is opt-in per repo: once any journey has a size, `done-done lint` fails (`FAIL: test sizes: ...`, exit 1, naming each journey) a journey with no size and a large one with no reason.
+
+`done-done tests measure [<journey>] [--night]` runs each sized journey five times in scratch evidence folders (nothing is recorded as proof) and prints, per journey, `runs` (five `{seconds, result}` rows with result `ok`, `failed` or `slow`), `slowest` and a `verdict`. Journeys with no size, a `spends`, or a large size without `--night` are listed under `skipped`. Exit 0 when every journey is within its bound, 1 when one was slow or failed.
+
 ### Lint check
 
 `done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS`, `WARN: <reason>` or `FAIL: <reason>` and exits 0 (PASS or WARN), 1, or 2 on a usage error. A PR URL is read with `gh pr view` and `gh api`; a file is read as the report.
