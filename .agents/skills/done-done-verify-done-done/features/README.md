@@ -11,3 +11,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [Test inventory ownership](inventory-ownership.md): `done-done run inventory-ownership`; a stray test file and a hand edit to an owned script fail lint by name, the same edit made by a journey command passes
 - [QA planning](qa-planning.md): `done-done qa "<feature>"` plans a journey for new user-visible behaviour and marks fixtures, tests and internals no-test, recording stage planned and the reason
 - [Test size bounds](size-bounds.md): `done-done run size-bounds`; an over-bound ci journey is stopped as slow, a large journey with no reason fails lint, large is night-only, `tests measure` reports five timings per test
+- [Affected journey selection](affected-selection.md): `done-done run affected-select`; `done-done affected` follows sources, imports and path calls to a changed file, and sends unknown or global files to the whole local tier with the reason

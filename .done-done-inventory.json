@@ -1,4 +1,8 @@
 {
+  "journeys/affected-select.mjs": {
+    "owner": "affected-select",
+    "sha256": "dbac45724af12e3a8642254a4a86c9ab146634c87201dae775ed86a5e07922bd"
+  },
   "journeys/after-commit.mjs": {
     "owner": "after-commit",
     "sha256": "7cb75cc675e6b0d53a36ee0363a0ceb51057a77d34cabf094d751861b899463b"

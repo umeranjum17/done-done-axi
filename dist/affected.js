@@ -1,4 +1,5 @@
-import { posix } from 'node:path';
+import { matchesGlob, posix } from 'node:path';
+import { reach } from './deps.js';
 import { codeOnly } from './proof.js';
 // The tracked files and folders a text names. Paths are read relative to the repo, then to `from` (a feature file's folder,
 // for its markdown links); a folder counts only when written with a slash (src/), so a prose word never names one.
@@ -37,6 +38,7 @@ export function mapChange(o) {
     // A code-only journey is no proof, so the change never needs one.
     const real = Object.keys(o.journeys).filter((n) => !codeOnly(o.journeys[n].command));
     const jRefs = new Map(real.map((n) => [n, refs(o.journeys[n].command, o.tracked)]));
+    const reached = new Map(real.map((n) => [n, reach([...jRefs.get(n).files], o.tracked, o.read ?? (() => undefined))]));
     const featDir = posix.join(o.skill, 'features');
     const fRefs = new Map(Object.entries(o.features).map(([n, text]) => [n, refs(text, o.tracked, featDir)]));
     // The journeys each feature names: `run <journey>` or `verify <journey>`, or a file its command runs that the feature cites too.
@@ -49,6 +51,8 @@ export function mapChange(o) {
     const features = new Map();
     const hit = (m, name, why) => m.set(name, [...(m.get(name) ?? []), why]);
     const unmapped = [];
+    const global = [];
+    const globals = o.globalPaths ?? [];
     for (const c of o.changed) {
         let found = false;
         for (const [j, r] of jRefs)
@@ -56,6 +60,16 @@ export function mapChange(o) {
                 hit(journeys, j, `its command runs ${c}`);
                 found = true;
             }
+            else {
+                const r = reached.get(j);
+                const chain = r.files.get(c) ?? [...r.dirs].find(([d]) => c.startsWith(`${d}/`))?.[1];
+                if (chain) {
+                    hit(journeys, j, `its command reaches ${c} (${chain.join(' -> ')})`);
+                    found = true;
+                }
+            }
+        if (globals.some((g) => matchesGlob(c, g)))
+            global.push(c);
         // The skill's own SKILL.md and feature map are what every feature follows, so they need every feature.
         const shared = c.startsWith(`${o.skill}/`) && !(c.startsWith(`${featDir}/`) && posix.basename(c, '.md') in o.features);
         for (const [f, r] of fRefs) {
@@ -73,22 +87,33 @@ export function mapChange(o) {
         if (!found)
             unmapped.push(c);
     }
-    // Uncertain: the core journey runs too; with no core journey named, every real journey does, so the answer is never less.
+    // Uncertain means more, never less: unknown or uncovered files and configured global files run the whole local tier (each
+    // journey named with the reason); with no local tier, the core journey runs too, or every real journey when none is core.
     const uncertain = o.noBase ?? (unmapped.length ? `${unmapped.length} changed ${unmapped.length === 1 ? 'file is' : 'files are'} in no feature or journey` : '');
+    const globalWhy = global.length ? `${global.length === 1 ? 'a global file' : 'global files'} changed (${global.slice(0, 3).join(', ')}${global.length > 3 ? `, +${global.length - 3} more` : ''})` : '';
+    const local = real.filter((j) => o.journeys[j].tier === 'local');
     let fallback = null;
-    if (uncertain) {
-        const core = real.filter((j) => o.journeys[j].core);
-        const why = `uncertain: ${uncertain}`;
-        if (core.length)
-            core.forEach((j) => hit(journeys, j, why));
-        else if (o.coreFeature && o.coreFeature in o.features)
-            (named.get(o.coreFeature).length ? named.get(o.coreFeature).forEach((j) => hit(journeys, j, why)) : hit(features, o.coreFeature, why));
-        else if (real.length)
-            real.forEach((j) => hit(journeys, j, `${why}, and no core journey is named`));
-        else
-            Object.keys(o.features).forEach((f) => hit(features, f, `${why}, and no core journey is named`));
+    let runs = 'core journey';
+    if (uncertain || globalWhy) {
+        const reasons = [uncertain, globalWhy].filter(Boolean);
+        const why = `uncertain: ${reasons.join('; ')}`;
+        if (local.length) {
+            local.forEach((j) => hit(journeys, j, `the whole local tier runs: ${reasons.join('; ')}`));
+            runs = 'whole local tier';
+        }
+        else {
+            const core = real.filter((j) => o.journeys[j].core);
+            if (core.length)
+                core.forEach((j) => hit(journeys, j, why));
+            else if (o.coreFeature && o.coreFeature in o.features)
+                (named.get(o.coreFeature).length ? named.get(o.coreFeature).forEach((j) => hit(journeys, j, why)) : hit(features, o.coreFeature, why));
+            else if (real.length)
+                real.forEach((j) => hit(journeys, j, `${why}, and no core journey is named`));
+            else
+                Object.keys(o.features).forEach((f) => hit(features, f, `${why}, and no core journey is named`));
+        }
         fallback = why;
     }
     const list = (m) => [...m].map(([name, why]) => ({ name, why: [...new Set(why)] }));
-    return { journeys: list(journeys), features: list(features), unmapped, fallback };
+    return { journeys: list(journeys), features: list(features), unmapped, fallback, runs };
 }

@@ -4516,7 +4516,7 @@ function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[]
   const featDir = join(repo, cfg.skill, 'features');
   const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
   const coreLine = featureMap(repo, cfg).split('\n').find((l) => /^\s*[-*] /.test(l) && l.includes(MARK.core));
-  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase });
+  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase, globalPaths: cfg.affected.global_paths, read: (p) => repoText(join(repo, p)) });
 }
 
 // Which journeys the change needs (src/affected.ts) and whether HEAD's proof covers them. The change is read from `baseArg`,
@@ -4588,7 +4588,7 @@ function cmdAffected(argv: string[]): number {
     journeys: a.m.journeys.map((j) => ({ name: j.name, why: why(j.why) })),
     ...(a.m.features.length && { features: a.m.features.map((f) => ({ name: f.name, drive: 'verify --feature', why: why(f.why) })) }),
     ...(a.m.unmapped.length && { unmapped: a.m.unmapped }),
-    ...(a.m.fallback && { fallback: `${a.m.fallback}, so the core journey runs too` }),
+    ...(a.m.fallback && { fallback: `${a.m.fallback}, so the ${a.m.runs} runs${a.m.runs === 'core journey' ? ' too' : ''}` }),
     help: [
       ...(fresh
         ? [`The receipt for HEAD covers every journey this change needs (${[...a.m.journeys.map((j) => j.name), ...a.m.features.map((f) => f.name)].join(', ') || 'none'})`]

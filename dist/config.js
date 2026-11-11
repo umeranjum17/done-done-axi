@@ -91,6 +91,7 @@ const KEYS = {
     'checks.upstream_catch_up': { scope: 'repo', type: 'boolean' },
     'checks.moved_from': { scope: 'repo', type: 'boolean' },
     'checks.generated_paths': { scope: 'repo', type: 'string[]' },
+    'affected.global_paths': { scope: 'repo', type: 'string[]' },
     'signoff.post': { scope: 'repo', type: 'boolean' },
     'signoff.board': { scope: 'repo', type: 'string' },
     'suite.command': { scope: 'repo', type: 'string' },
@@ -105,7 +106,7 @@ const KEYS = {
     'judge.pool_config': { scope: 'global', type: 'string' },
     'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
+const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
@@ -419,6 +420,7 @@ function defaultConfig(repo) {
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
+        affected: { global_paths: [] },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
         suite: { command: '', timeout: '30m' },
