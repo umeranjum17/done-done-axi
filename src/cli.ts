@@ -21,6 +21,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
 import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, type Size } from './size.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
@@ -348,11 +349,18 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   journey command passes; \`journey add|enhance|improve\` record the script they write. A deleted owned file is not a failure. Exit 0 clean, 1 findings, 2 usage error`],
   },
   tests: {
-    usage: [['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound']],
-    flags: ['--night'],
+    usage: [
+      ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
+      ['done-done tests value [<journey>] [--night] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
+    ],
+    flags: ['--night', '--faults <n>', '--source <file>'],
     more: [`test sizes: set journeys.<name>.size to ci (15s), local (300s) or large (900s). \`run\` stops a journey past its bound and fails it as slow.
   A large journey needs journeys.<name>.reason and is night-only: \`run\` and \`tests measure\` refuse it without --night. Once any journey has a size,
-  \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed`],
+  \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed.
+  \`tests value\` measures what each test is worth: it flips one operator on one source line (--faults, default 12, thinned evenly; --source limits the files, default every
+  non-test source file git tracks), in a scratch copy per fault, and runs every test there. A test that fails on a fault catches it. Verdicts: real (catches a fault, and no faster
+  test catches the same set), slop (catches none), duplicate (a faster test, or an earlier-named one at equal speed, catches exactly the same faults; duplicate_of names it), failing (fails on
+  the clean copy). The work copy is only read and nothing is recorded as proof. Exit 1 when any test is slop, duplicate or failing`],
   },
   'after-commit': {
     usage: [['done-done after-commit [--before]', 'Claude Bash lifecycle hook; reads its event on stdin and reruns affected journey commands after a commit']],
@@ -4403,25 +4411,42 @@ function cmdInventory(argv: string[]): number {
   return bad.length ? FAIL : PASS;
 }
 
-// `done-done tests measure`: time each sized journey five times against its bound (src/size.ts).
+// `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
 async function cmdTests(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' } }, allowPositionals: true });
-  if (positionals[0] !== 'measure' || positionals.length > 2) throw new UsageError('tests needs the action measure and at most one journey', 'Re-run as: done-done tests measure [<journey>] [--night]');
+  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true } }, allowPositionals: true });
+  const action = positionals[0];
+  if ((action !== 'measure' && action !== 'value') || positionals.length > 2) throw new UsageError('tests needs the action measure or value and at most one journey', 'Re-run as: done-done tests measure|value [<journey>] [--night]');
+  if (action === 'measure' && (values.faults !== undefined || values.source)) throw new UsageError('--faults and --source belong to tests value', 'Drop them, or run: done-done tests value');
   const repo = repoRoot();
   const cfg = loadConfig(repo);
   const named = positionals[1];
   if (named && !cfg.journeys[named]) throw new UsageError(`unknown journey ${named}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
-  const measured = [];
+  const picked: [string, (typeof cfg.journeys)[string]][] = [];
   const skipped: string[] = [];
   for (const [name, j] of Object.entries(cfg.journeys)) {
     if (named && name !== named) continue;
-    const why = !isSize(j.size) ? 'has no size' : j.spends ? `spends (${j.spends}), so measure refuses it` : nightFault(name, j, !!values.night)?.replace(/: nothing ran$/, ', so measure needs --night');
-    if (why) { skipped.push(`${name}: ${why.replace(/^journey \S+ /, '')}`); continue; }
-    measured.push(await measureJourney(name, j.command, j.size as Size, repo, process.env));
+    const why = action === 'measure' && !isSize(j.size) ? 'has no size' : j.spends ? `spends (${j.spends}), so ${action} refuses it` : nightFault(name, j, !!values.night)?.replace(/: nothing ran$/, `, so ${action} needs --night`);
+    if (why) skipped.push(`${name}: ${why.replace(/^journey \S+ /, '')}`); else picked.push([name, j]);
   }
-  if (named && !measured.length) throw new UsageError(`journey ${named} was not measured: ${skipped[0]}`, `Set journeys.${named}.size in .done-done.yaml${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
+  if (named && !picked.length) throw new UsageError(`journey ${named} was not ${action === 'measure' ? 'measured' : 'valued'}: ${skipped[0]}`, `${action === 'measure' ? `Set journeys.${named}.size in .done-done.yaml` : 'Pick a journey that spends nothing'}${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
+  if (action === 'value') return await cmdTestsValue(repo, picked, skipped, values);
+  const measured = [];
+  for (const [name, j] of picked) measured.push(await measureJourney(name, j.command, j.size as Size, repo, process.env));
   const bad = measured.filter((m) => m.verdict !== 'within bound');
   emit({ command: 'tests measure', measured, skipped, help: bad.length ? [`Slow or failing: ${bad.map((m) => m.journey).join(', ')}; make it faster or give it a larger size`] : [] });
+  return bad.length ? FAIL : PASS;
+}
+
+async function cmdTestsValue(repo: string, picked: [string, { command: string; size?: string }][], skipped: string[], values: { faults?: string; source?: string[] }): Promise<number> {
+  const max = values.faults === undefined ? DEFAULT_FAULTS : Number(values.faults);
+  if (!Number.isInteger(max) || max < 1) throw new UsageError(`--faults must be a whole number of at least 1, got ${values.faults}`);
+  if (!picked.length) throw new UsageError('no journey can be valued', skipped.length ? `Skipped: ${skipped.join('; ')}` : 'Define journeys in .done-done.yaml');
+  const faults = listFaults(repo, sourcesOf(repo, values.source ?? []), max);
+  if (!faults.length) throw new UsageError('no source line offers a fault to plant', 'Name the source files with --source <file>');
+  const report = await measureValue(repo, picked.map(([name, j]) => ({ name, command: j.command, size: j.size })), faults, process.env);
+  const bad = report.tests.filter((t) => t.verdict !== 'real');
+  emit({ command: 'tests value', faults: report.faults.map((f) => `${f.file}:${f.line} ${f.was.trim()} => ${f.now.trim()}`), tests: report.tests, skipped,
+    help: bad.length ? [`Not worth keeping as is: ${bad.map((t) => `${t.test} (${t.verdict})`).join(', ')}; delete a slop or duplicate test, or fix a failing one`] : [] });
   return bad.length ? FAIL : PASS;
 }
 

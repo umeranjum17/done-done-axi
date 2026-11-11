@@ -345,6 +345,17 @@ Set `journeys.<name>.size` to `ci` (15s), `local` (300s) or `large` (900s). `don
 
 `done-done tests measure [<journey>] [--night]` runs each sized journey five times in scratch evidence folders (nothing is recorded as proof) and prints, per journey, `runs` (five `{seconds, result}` rows with result `ok`, `failed` or `slow`), `slowest` and a `verdict`. Journeys with no size, a `spends`, or a large size without `--night` are listed under `skipped`. Exit 0 when every journey is within its bound, 1 when one was slow or failed.
 
+### Test value
+
+`done-done tests value [<journey>] [--night] [--faults <n>] [--source <file>]` measures what each journey, run as a test, is worth. It lists the faults the source offers (one operator flipped on one line, such as `a + b` to `a - b` or `===` to `!==`; `--source` limits the files, default every non-test source file git tracks), thins them evenly to `--faults` (default 12) so the same repo plants the same faults, plants each in its own scratch copy of the repo and runs every test there. A test that fails on a fault catches it. The work copy is only read, and nothing is recorded as proof. Each test gets one verdict with `seconds` (clean-copy run) and `caught`:
+
+- `real`: catches at least one fault, and no faster test catches the same set.
+- `slop`: catches no fault; it passes on broken code.
+- `duplicate`: a faster test, or an earlier-named one at equal speed, catches exactly the same faults; `duplicate_of` names it.
+- `failing`: fails on the clean copy, so it says nothing about faults.
+
+Journeys with a `spends` (and a large one without `--night`) are listed under `skipped`. Exit 0 when every test is real, 1 when any is slop, duplicate or failing, 2 on a usage error.
+
 ### Lint check
 
 `done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS`, `WARN: <reason>` or `FAIL: <reason>` and exits 0 (PASS or WARN), 1, or 2 on a usage error. A PR URL is read with `gh pr view` and `gh api`; a file is read as the report.
