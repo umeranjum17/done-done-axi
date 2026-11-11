@@ -26,6 +26,7 @@ import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, 
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange } from './affected.js';
+import { addPairs, auditSelection, featureFor, type JourneyFailure } from './audit.js';
 import { type Covering, planQa, planWrite, type Write } from './qa.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
@@ -198,6 +199,7 @@ const FLAGS: Record<string, string> = {
   '--no-evals': 'force evals off (a detected AI-output app is then recorded as evals.enabled: false)',
   '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init; evals stay off too, since the prompt set needs the agent',
   '--setup': 'install health: git, config, evidence_root, agent and judge only; the verify skill and a repo with no journeys are warnings, and the journey rows are skipped',
+  '--audit': 'with affected, a commit range: add each journey that failed at a receipted commit the map did not select to the feature map, and print recall',
   '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
   '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
   '--hook <agent>': 'also add a SessionStart hook to .claude/settings.json (claude), .codex/hooks.json (codex) or .gemini/settings.json (gemini) that shows `done-done` to each session, or a plugin to .opencode/plugins (opencode) or an extension to .pi/extensions (pi) that adds it to the first message of each session (opt-in)',
@@ -368,8 +370,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     more: ['Install only by opting in: done-done init --hook claude --after-commit. No agent or judge is selected or started; uncovered files produce a proposal outside the skill.'],
   },
   affected: {
-    usage: [['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"]],
-    flags: [],
+    usage: [
+      ['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"],
+      ['done-done affected --audit <range>', 'compare failed journey runs with the commits\' receipts, add each missed file/journey pair to the feature map, and print recall'],
+    ],
+    flags: ['--audit'],
     more: [`affected: model-free. The change is the diff from <base>, else from the newest receipt before HEAD (the commits since the last proof),
   else from the merge base with the default branch (origin/HEAD, origin/main, origin/master, main, master), plus uncommitted changes to tracked files;
   evidence.ignore_paths and .done-done-receipts/ need nothing. A journey is needed when its command runs a changed file; a feature
@@ -378,7 +383,10 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   that names no journey is driven by your agent (verify --feature <name>). A changed file nothing covers, or no base, is uncertain:
   the core journey is needed too (every journey when none is core), never less, and the file is flagged for the feature map.
   Result: fresh (exit 0) when the receipt for HEAD has a run of every needed journey and feature and nothing is uncommitted;
-  stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1`],
+  stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1
+  --audit <range>: for each commit in the range that has a receipt, a failed run of a journey that receipt never ran is a failure; it is caught when
+  affected selects the journey for that commit's diff and missed when not. Each missed commit's changed files are written to the feature file that
+  names the journey (run <journey>), unless it already cites them; recall is caught over failures. Exit 1 only when a missed journey is named in no feature.`],
   },
   qa: {
     usage: [['done-done qa "<feature>" [<base>] [--write]', 'plan QA from the feature and the diff: a journey when a user can reach new or changed behaviour, no-test for fixtures, tests and internals; records stage planned and the reason']],
@@ -4548,6 +4556,9 @@ function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[]
   return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase, globalPaths: cfg.affected.global_paths, read: (p) => repoText(join(repo, p)) });
 }
 
+// ignore_paths and committed gate receipts need no journey.
+const needsJourney = (cfg: Config) => (p: string) => !p.startsWith(`${GATE_DIR}/`) && !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g));
+
 // Which journeys the change needs (src/affected.ts) and whether HEAD's proof covers them. The change is read from `baseArg`,
 // else from the newest receipt before HEAD (the commits since the last proof), else from the merge base with the default
 // branch; with none, the mapping is uncertain and the core journey is needed.
@@ -4572,8 +4583,7 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
   }
   const list = (...a: string[]) => git(repo, ...a).split('\0').filter(Boolean);
   const tracked = list('ls-files', '-z');
-  // ignore_paths and committed gate receipts need no journey.
-  const counts = (p: string) => !p.startsWith(`${GATE_DIR}/`) && !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g));
+  const counts = needsJourney(cfg);
   // Untracked files are no part of the change until added, as everywhere else in done-done.
   const uncommitted = list('diff', '--name-only', '--no-renames', '-z', 'HEAD').filter(counts);
   const changed = [...new Set([...(base ? list('diff', '--name-only', '--no-renames', '-z', base.commit, 'HEAD').filter(counts) : []), ...uncommitted])];
@@ -4592,9 +4602,69 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
   return { now, base, changed, m, proof, missing };
 }
 
+// `done-done affected --audit <range>`: the failed journey runs at receipted commits in the range that `affected` did not select for
+// the commit's diff. Each miss is written to the feature file that names the journey (src/audit.ts); recall is printed.
+function cmdAffectedAudit(range: string): number {
+  const repo = repoRoot();
+  const cfg = loadConfig(repo);
+  let commits: string[];
+  try {
+    commits = git(repo, 'rev-list', '--no-walk=unsorted', ...git(repo, 'rev-list', range).split('\n').filter(Boolean)).split('\n').filter(Boolean);
+  } catch {
+    throw new UsageError(`affected --audit: ${range} is not a commit range in this checkout`, 'Pass a range: done-done affected --audit main..HEAD');
+  }
+  const receipts = receiptsByHead(cfg);
+  // A failed run of a journey at a commit whose receipt holds no run of it: the full run saw what the receipt never ran.
+  const seen = new Set<string>();
+  const failures: JourneyFailure[] = [];
+  for (const r of loadRecords(cfg))
+    if (r.journey && r.exit !== null && r.exit !== 0 && commits.includes(r.commit) && receipts.has(r.commit) && !receipts.get(r.commit)!.runs.some((x) => x.journey === r.journey) && !seen.has(`${r.commit} ${r.journey}`)) {
+      seen.add(`${r.commit} ${r.journey}`);
+      failures.push({ commit: r.commit, journey: r.journey });
+    }
+  const tracked = git(repo, 'ls-files', '-z').split('\0').filter(Boolean);
+  const changed = (c: string) => git(repo, 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '--no-renames', '-z', c).split('\0').filter(Boolean).filter(needsJourney(cfg));
+  const audit = auditSelection({ failures, changed, selected: (c) => mapDiff(repo, cfg, changed(c), tracked).journeys.map((j) => j.name) });
+  const featDir = join(repo, cfg.skill, 'features');
+  const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
+  const written: string[] = [];
+  const unplaced: string[] = [];
+  const added = audit.missed.map((m) => {
+    const feature = featureFor(features, m.journey);
+    if (!feature) {
+      unplaced.push(m.journey);
+      return { ...m, commit: m.commit.slice(0, 12), mapped: 'no feature names this journey' };
+    }
+    const text = addPairs(features[feature], m.journey, m.files);
+    if (text !== null) {
+      writeFileSync(join(featDir, `${feature}.md`), text);
+      features[feature] = text;
+      written.push(`${cfg.skill}/features/${feature}.md`);
+    }
+    return { ...m, commit: m.commit.slice(0, 12), mapped: `${cfg.skill}/features/${feature}.md` };
+  });
+  emit({
+    command: 'affected --audit',
+    range,
+    failures: failures.length,
+    caught: audit.caught.length,
+    missed: added,
+    recall: audit.recall === null ? 'n/a: no failed journey at a receipted commit' : `${audit.caught.length}/${failures.length} (${Math.round(audit.recall * 100)}%)`,
+    help: [
+      ...(written.length ? [`Commit the map change (${[...new Set(written)].join(', ')}), then done-done affected selects the missed journeys for those files`] : []),
+      ...(unplaced.length ? [`Name ${[...new Set(unplaced)].join(', ')} in a feature file (run <journey>), then audit again`] : []),
+    ],
+  });
+  return unplaced.length ? FAIL : PASS;
+}
+
 // `done-done affected [<base>]`: the journeys a change needs, and exit 1 until a receipt for HEAD covers them.
 function cmdAffected(argv: string[]): number {
-  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { audit: { type: 'string' } } });
+  if (values.audit !== undefined) {
+    if (positionals.length) throw new UsageError('affected --audit takes a range, not a base', 'Re-run as: done-done affected --audit <range>');
+    return cmdAffectedAudit(values.audit);
+  }
   if (positionals.length > 1) throw new UsageError('affected takes at most one base', 'Re-run as: done-done affected [<base>]');
   const repo = repoRoot();
   const cfg = loadConfig(repo);

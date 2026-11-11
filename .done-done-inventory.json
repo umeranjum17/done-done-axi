@@ -1,4 +1,8 @@
 {
+  "journeys/affected-audit.mjs": {
+    "owner": "affected-audit",
+    "sha256": "924e29e96dfdabb0ffad6006b0db8ad307da3cffab94e412ae3c230e49ad78c7"
+  },
   "journeys/affected-select.mjs": {
     "owner": "affected-select",
     "sha256": "dbac45724af12e3a8642254a4a86c9ab146634c87201dae775ed86a5e07922bd"
