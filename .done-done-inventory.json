@@ -47,6 +47,10 @@
     "owner": "lint-journey-warn",
     "sha256": "c7bce3e4a0e27a9843ccde54ac7c98aa632ec8b2e89ef4ab2b0b1e9fd3a704b7"
   },
+  "journeys/qa-write.mjs": {
+    "owner": "qa-write",
+    "sha256": "b9dc63e1eb9e9f93aba41928fd53268b350c4bfa8e3040338ad91a0bf2138c14"
+  },
   "journeys/redesign.mjs": {
     "owner": "redesign",
     "sha256": "f378f70a6449c3cbc3a8e9f9adbb3ece8298cc0294c18783c55f1313344b3260"

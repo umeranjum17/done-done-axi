@@ -12,3 +12,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [QA planning](qa-planning.md): `done-done qa "<feature>"` plans a journey for new user-visible behaviour and marks fixtures, tests and internals no-test, recording stage planned and the reason
 - [Test size bounds](size-bounds.md): `done-done run size-bounds`; an over-bound ci journey is stopped as slow, a large journey with no reason fails lint, large is night-only, `tests measure` reports five timings per test
 - [Affected journey selection](affected-selection.md): `done-done run affected-select`; `done-done affected` follows sources, imports and path calls to a changed file, and sends unknown or global files to the whole local tier with the reason
+- [QA writing](qa-writing.md): `done-done qa "<feature>" --write` adds one journey and config entry for a new command no journey covers, writes nothing on a second run or for a refactor

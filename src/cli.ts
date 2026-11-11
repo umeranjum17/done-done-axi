@@ -25,7 +25,7 @@ import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, 
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange } from './affected.js';
-import { planQa } from './qa.js';
+import { type Covering, planQa, planWrite, type Write } from './qa.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
@@ -173,6 +173,7 @@ const FLAGS: Record<string, string> = {
   '--outcome "<what a user can now do>"': 'the outcome the run must prove',
   '--wait': 'wait until the run ends (the default)',
   '--no-wait': 'start the run and return at once (exit 4); read it later with done-done status',
+  '--write': 'with qa: write the journey the plan needs (stage writing), through journey add or enhance, only when no journey covers the behaviour',
   '--foreground': 'run every step in this process instead of a detached runner (for scripts)',
   '--run <run-id>': 'the run to show (default: the newest run of this checkout)',
   '--probe': 'ask the configured agent one JSON-schema question and require a valid answer (one call at the agent\'s model: its cheap default where it has one, else its own; set agent_config.<agent>.model to choose)',
@@ -372,13 +373,16 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1`],
   },
   qa: {
-    usage: [['done-done qa "<feature>" [<base>]', 'plan QA from the feature and the diff: a journey when a user can reach new or changed behaviour, no-test for fixtures, tests and internals; records stage planned and the reason']],
-    flags: [],
-    more: [`qa: model-free. The change is the diff from <base>, else from the newest receipt before HEAD, else from the merge base with the default branch, plus uncommitted changes to tracked files.
+    usage: [['done-done qa "<feature>" [<base>] [--write]', 'plan QA from the feature and the diff: a journey when a user can reach new or changed behaviour, no-test for fixtures, tests and internals; records stage planned and the reason']],
+    flags: ['--write'],
+    more: [`qa: model-free until --write. The change is the diff from <base>, else from the newest receipt before HEAD, else from the merge base with the default branch, plus uncommitted changes to tracked files.
   A journey is planned when an added line adds a command, flag or route, or a screen file (.tsx .vue .html .css ...) changed; the journeys it lists
   are the ones the feature map maps (done-done affected). Tests and fixtures only, docs, build output or proof files only, and source with no new
   command, flag, route or screen are no-test, each with its reason. The plan is written to <evidence root>/.done-done/qa/<feature>.json
-  as {stage: planned, plan, reason}. It runs no agent or journey and exits 0 for either plan`],
+  as {stage: planned, plan, reason}. It runs no agent or journey and exits 0 for either plan
+  --write (stage writing): when the plan is a journey and no journey covers the new command, flag or route, add one with done-done journey add;
+  when a journey runs that code but never names it, extend that journey with done-done journey enhance; when one covers it, or the plan is
+  no-test, write nothing. The result names the write: add, extend or none, with the journey and the reason. Needs the agent journey add uses`],
   },
   status: {
     usage: [['done-done status [--run <run-id>]', "show a run's steps, result, findings and next step"]],
@@ -4604,10 +4608,28 @@ function cmdAffected(argv: string[]): number {
   return fresh ? PASS : FAIL;
 }
 
-// `done-done qa "<feature>" [<base>]`: decide from the diff whether the feature needs a journey, and record the plan.
+// Stage writing: add or extend one journey through the existing journey commands, and only where none covers the behaviour.
+function writeQaJourney(repo: string, cfg: Config, feature: string, planned: ReturnType<typeof planQa>, mapped: string[]): Write {
+  const covering: Covering[] = mapped.map((name) => {
+    const script = repoText(join(repo, 'journeys', `${name}.mjs`));
+    return { name, text: `${script ?? ''}\n${repoText(join(repo, cfg.skill, 'features', `${name}.md`)) ?? ''}`, extendable: script !== undefined && cfg.journeys[name].command === `node journeys/${name}.mjs` };
+  });
+  const w = planWrite(planned, covering);
+  if (w.action === 'none') return w;
+  const args = w.action === 'add' ? ['add', feature] : ['enhance', w.journey!, `Also drive and check ${planned.surfaces.join(', ')}: ${feature}`];
+  const r = spawnSync(process.execPath, [process.argv[1], '--json', 'journey', ...args], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 8 << 20 });
+  if (r.status === 2 || r.status === null) throw new UsageError(`qa --write: journey ${args[0]} did not write a journey: ${r.error?.message ?? (r.stdout.trim() || 'see the message above')}`, 'Fix the cause above, then re-run: done-done qa "<feature>" --write');
+  if (w.action === 'add') {
+    const added = Object.keys(loadConfig(repo).journeys).filter((n) => !Object.hasOwn(cfg.journeys, n));
+    return { ...w, journey: added[0] };
+  }
+  return w;
+}
+
+// `done-done qa "<feature>" [<base>] [--write]`: decide from the diff whether the feature needs a journey, record the plan, and with --write write it.
 function cmdQa(argv: string[]): number {
-  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
-  if (positionals.length < 1 || positionals.length > 2) throw new UsageError('qa takes the feature and at most one base', 'Re-run as: done-done qa "<feature>" [<base>]');
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { write: { type: 'boolean' } } });
+  if (positionals.length < 1 || positionals.length > 2) throw new UsageError('qa takes the feature and at most one base', 'Re-run as: done-done qa "<feature>" [<base>] [--write]');
   const [feature, baseArg] = positionals;
   const repo = repoRoot();
   const cfg = loadConfig(repo);
@@ -4616,24 +4638,30 @@ function cmdQa(argv: string[]): number {
   const against = a.base?.commit ?? 'HEAD';
   const added = (f: string) => git(repo, 'diff', '--no-renames', '-U0', against, '--', f).split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
   const planned = planQa(a.changed.map((path) => ({ path, added: added(path) })));
-  const record = { stage: 'planned', feature, head: a.now.commit, base: a.base?.commit ?? null, ...planned, journeys: planned.plan === 'journey' ? a.m.journeys.map((j) => j.name) : [] };
+  const mapped = planned.plan === 'journey' ? a.m.journeys.map((j) => j.name) : [];
+  const written = values.write ? writeQaJourney(repo, cfg, feature, planned, mapped) : undefined;
+  const stage = written ? 'writing' : 'planned';
+  const record = { stage, feature, head: a.now.commit, base: a.base?.commit ?? null, ...planned, journeys: mapped, ...(written && { write: written }) };
   const file = join(cfg.evidence.root, '.done-done', 'qa', `${slug(feature)}.json`);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
   const changed = cap(a.changed);
   emit({
     command: 'qa',
-    stage: 'planned',
+    stage,
     feature,
     plan: planned.plan,
     reason: planned.reason,
     changed: changed.items,
     ...(changed.omitted && { changed_omitted: changed.omitted }),
-    ...(record.journeys.length && { journeys: record.journeys }),
+    ...(mapped.length && { journeys: mapped }),
+    ...(written && { write: written }),
     record: citable(repo, file),
-    help: planned.plan === 'journey'
-      ? [record.journeys.length ? `Capture proof: ${record.journeys.map((j) => `done-done run ${j}`).join(' && ')}` : `No journey covers this yet: done-done init --journey <name> -- <command>, or done-done verify --feature "${feature}" --outcome "<what a user can now do>"`]
-      : ['No new journey needed: keep the existing proof; done-done affected still says what the change touches'],
+    help: written
+      ? [written.action === 'none' ? 'Nothing written: ' + written.reason : `Review the ${written.action === 'add' ? 'new' : 'extended'} journey ${written.journey}, commit it, then: done-done run ${written.journey}`]
+      : planned.plan === 'journey'
+        ? [mapped.length ? `Capture proof: ${mapped.map((j) => `done-done run ${j}`).join(' && ')}` : `No journey covers this yet: done-done qa "${feature}" --write, or done-done init --journey <name> -- <command>`]
+        : ['No new journey needed: keep the existing proof; done-done affected still says what the change touches'],
   });
   return PASS;
 }
