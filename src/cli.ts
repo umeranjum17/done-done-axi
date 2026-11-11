@@ -13,7 +13,7 @@ import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUD
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
-import { CODE_CLASSES, DOC_CLASSES, review, reviewBase, TRUSTED_KEYS } from './review.js';
+import { CODE_CLASSES, DOC_CLASSES, review, reviewBase, TRUSTED_KEYS, type ReviewResult } from './review.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
 import { design, interactions, type InteractionResult, KINDS, redesign, writtenRequirement, type RequirementMatch } from './design.js';
@@ -305,13 +305,9 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     more: [MAINTAIN_TEXT, RUNS_TEXT],
   },
   review: {
-    usage: [['done-done review [<base>]', "read-only review of the commits since <base> (default: origin's default branch): a code reviewer and a docs reviewer, each finding classed"]],
+    usage: [['done-done review [<base>]', "review commits since <base> and fix clear findings once; ask a person when a decision is needed"]],
     flags: [],
-    more: [`review: two tool-less reviewers (code, docs) read the diff and the tracked docs as text in a scratch folder, with the agent
-  the user set; no project agent settings (AGENTS.md, CLAUDE.md, agent folders, hooks, MCP) reach them and no file changes. The
-  agent keys (${TRUSTED_KEYS.join(', ')}) are read from <base>, never from the branch under review. Result: each
-  reviewer's state and duration, every finding with its class (${[...CODE_CLASSES, ...DOC_CLASSES].join(', ')}), the total
-  duration; exit 0 clean, 1 findings, 3 a reviewer did not answer and none reported a finding`],
+    more: [`Two read-only reviewers classify findings as to-fix or to-ask. A clear finding triggers one fix and a fresh review; a question waits for done-done respond --run <id> --answer \"<answer>\". The fix changes and commits this checkout. Results are approved, to-ask or spent; status and report show the question and fix count.`],
   },
   design: {
     usage: [['done-done design <screens...> [--mock <screen>=<mock>]', 'a judge looks at each PNG/JPEG screen, alone or next to its mock, and fails it on visual defects']],
@@ -442,6 +438,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     flags: ['--run <run-id>'],
     more: [RUNS_TEXT],
   },
+  report: {
+    usage: [['done-done report [--run <run-id>]', 'show a review result and any question']],
+    flags: ['--run <run-id>'],
+    more: [],
+  },
   attach: {
     usage: [['done-done attach [--run <run-id>]', "stream a run's events until it ends, then show it"]],
     flags: ['--run <run-id>'],
@@ -455,9 +456,10 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   respond: {
     usage: [
       ['done-done respond [--run <run-id>] --action approve|skip --reason "<why>"', 'answer a spend gate: spend and run the journey, or end with nothing spent'],
+      ['done-done respond --run <run-id> --answer "<answer>"', 'answer a review question and resume'],
       ['done-done respond [--run <run-id>] --action fix', 'end a run waiting at its judge gate as fail (nothing moves it past the judge)'],
     ],
-    flags: ['--run <run-id>', '--action <approve|skip|fix>', '--reason "<why>"'],
+    flags: ['--run <run-id>', '--action <approve|skip|fix>', '--reason "<why>"', '--answer "<answer>"'],
     more: [RUNS_TEXT],
   },
   rerun: {
@@ -2697,9 +2699,11 @@ function showRecord(repo: string, cfg: Config, rec: RunRecord): number {
   return PASS;
 }
 
-function cmdStatus(argv: string[]): number {
+function cmdStatus(argv: string[], command = 'status'): number {
   const { values } = parseArgs({ args: argv, options: { run: { type: 'string' } } });
   const repo = repoRoot();
+  const review = reviewPath(values.run, repo);
+  if (review) return showReview(reviewRun(review), command);
   const cfg = loadConfig(repo);
   const root = runsRoot(cfg.app);
   const verify = values.run ? /^[\w-]+$/.test(values.run) && existsSync(join(root, values.run, 'run.json')) : runsIn(root).some((r) => r.repo === repo);
@@ -2905,7 +2909,22 @@ async function answerGate(dir: string, id: string, action: 'approve' | 'skip' | 
 
 // Answer a run waiting at its gate, from the terminal.
 async function cmdRespond(argv: string[]): Promise<number> {
-  const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, action: { type: 'string' }, reason: { type: 'string' } } });
+  const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, action: { type: 'string' }, reason: { type: 'string' }, answer: { type: 'string' } } });
+  const review = reviewPath(values.run, repoRoot());
+  if (review) {
+    if (!createOnce(join(review, 'respond.lock'))) throw new UsageError('review is already being answered');
+    try {
+      const run = reviewRun(review);
+      if (run.state !== 'to-ask') throw new UsageError('review is not waiting for an answer');
+      if (!values.answer?.trim()) throw new UsageError('respond needs --answer for a review question');
+      run.answer = values.answer.trim(); saveReview(review, run);
+      try {
+        if (run.fixes >= run.limit) await reviewRound(run, review, reviewConfig(run.repo, run.base), { question: run.question ?? run.result.findings.find((f) => f.action === 'to-ask')?.question ?? '', answer: run.answer });
+        else { run.state = 'to-fix'; saveReview(review, run); await reviewFix(run, review, reviewConfig(run.repo, run.base)); }
+      } catch (e) { run.state = 'failed'; run.error = errorText(e); saveReview(review, run); }
+      return showReview(run, 'respond');
+    } finally { rmSync(join(review, 'respond.lock'), { force: true }); }
+  }
   const action = values.action;
   if (action !== 'approve' && action !== 'skip' && action !== 'fix') throw new UsageError('respond needs --action approve, skip or fix', 'Run: done-done respond --run <run-id> --action <approve|skip|fix> [--reason "<why>"]');
   const reason = values.reason?.replace(/\s+/g, ' ').trim() ?? '';
@@ -4365,45 +4384,80 @@ async function cmdDoctor(argv: string[]): Promise<number> {
   return missingRequired.length ? USAGE : PASS;
 }
 
-// The look step: one page measured, with its actions clicked, against the project's look reference and the --mock design.
-async function cmdReview(argv: string[]): Promise<number> {
-  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
-  if (positionals.length > 1) throw new UsageError('review takes at most one base', 'Re-run: done-done review [<base>]');
-  const repo = repoRoot();
-  const base = reviewBase(repo, positionals[0]);
-  // The route comes from <base>'s .done-done.yaml plus the global config: a branch cannot change who reviews it.
+// Q8 review runs are independent of verify runs. The reviewer always reads committed Git objects.
+type ReviewLoop = { run_id: string; repo: string; base: string; head: string; state: 'to-fix' | 'to-ask' | 'approved' | 'spent' | 'failed'; fixes: number; limit: number; route: { agent: string; model: string }; result: ReviewResult; question?: string; answer?: string; error?: string };
+const reviewDir = (id: string) => join(home(), 'reviews', id);
+const reviewRun = (dir: string): ReviewLoop => JSON.parse(readFileSync(join(dir, 'loop.json'), 'utf8'));
+const saveReview = (dir: string, run: ReviewLoop) => writeFileSync(join(dir, 'loop.json'), `${JSON.stringify(run, null, 2)}\n`);
+function showReview(run: ReviewLoop, command: string): number {
+  emit({ command, run_id: run.run_id, status: run.state, result: run.state, base: run.base, head: run.head,
+    fix: `fix ${run.fixes} of ${run.limit}`, route: run.route, trusted_config: { source: `${run.base}:.done-done.yaml + global config`, keys: TRUSTED_KEYS }, project_agent_settings: { loaded: false, ignored: run.result.ignored_agent_settings }, ...(run.question && { question: run.question }), ...(run.answer && { answer: run.answer }),
+    merge_base: run.result.merge_base, duration_ms: run.result.duration_ms, findings: run.result.findings, reviewers: run.result.reviewers, classes: run.result.classes, ...(run.result.truncated.length && { truncated: run.result.truncated }), ...(run.error && { error: run.error }),
+    record: join(reviewDir(run.run_id), 'loop.json') });
+  return run.state === 'approved' ? PASS : run.state === 'to-ask' ? WAITING : run.state === 'failed' ? INCONCLUSIVE : FAIL;
+}
+function reviewPath(id: string | undefined, repo: string): string | undefined {
+  const root = join(home(), 'reviews');
+  if (id) { const dir = join(root, id); return /^[\w-]+$/.test(id) && existsSync(join(dir, 'loop.json')) && reviewRun(dir).repo === repo ? dir : undefined; }
+  if (!existsSync(root)) return undefined;
+  const latest = readdirSync(root).sort().reverse().map((x) => join(root, x)).find((p) => existsSync(join(p, 'loop.json')) && reviewRun(p).repo === repo);
+  if (!latest) return undefined;
+  const other = runsIn(runsRoot(loadConfig(repo).app)).filter((r) => r.repo === repo).sort((a, b) => b.created.localeCompare(a.created))[0];
+  const stamp = basename(latest).slice(0, 16).replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z');
+  return other && Date.parse(other.created) > Date.parse(stamp) ? undefined : latest;
+}
+function reviewConfig(repo: string, base: string): Config {
   let projectText = '';
   try { projectText = git(repo, 'show', `${base}:.done-done.yaml`); } catch (e) {
     const msg = (e as { stderr?: string }).stderr ?? '';
     if (!/does not exist|exists on disk, but not in/.test(msg)) throw new UsageError(`cannot read .done-done.yaml at ${base}: ${msg.trim()}`);
   }
-  const cfg = loadConfig(repo, projectText);
-  await withChoice('agent', cfg);
+  return loadConfig(repo, projectText);
+}
+async function reviewRound(run: ReviewLoop, dir: string, cfg: Config, outsideAnswer?: { question: string; answer: string }): Promise<void> {
+  if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
   const agent = selectAgent(cfg);
-  const dir = join(home(), 'reviews', newRunId(git(repo, 'rev-parse', 'HEAD')));
-  const r = await review(repo, agent, base, dir);
-  const failed = r.reviewers.filter((x) => x.state === 'failed');
-  const code = r.findings.length ? FAIL : failed.length ? INCONCLUSIVE : PASS;
-  const rows = cap(r.findings);
-  emit({
-    command: 'review',
-    result: r.findings.length ? 'findings' : failed.length ? 'inconclusive' : 'clean',
-    base: r.base, merge_base: r.merge_base, head: r.head,
-    route: { agent: agent.agent, model: agent.model },
-    trusted_config: { source: `${r.base}:.done-done.yaml + global config`, keys: TRUSTED_KEYS },
-    project_agent_settings: { loaded: false, ignored: r.ignored_agent_settings },
-    duration_ms: r.duration_ms,
-    reviewers: r.reviewers,
-    classes: r.classes,
-    findings: rows.items,
-    ...(rows.omitted && { findings_omitted: rows.omitted }),
-    ...(r.truncated.length && { truncated: r.truncated }),
-    record: r.record,
-    help: r.findings.length ? [`Fix each finding or answer it in the change, then re-run: done-done review ${r.base}`]
-      : failed.length ? [`A reviewer did not answer (${failed.map((x) => `${x.name}: ${x.error}`).join('; ')}); re-run: done-done review ${r.base}`]
-      : ['No finding from either reviewer; the review reads the diff and docs as text, so it does not prove the change works: run done-done verify for that'],
-  });
-  return code;
+  const r = await review(run.repo, agent, run.base, join(dir, `round-${run.fixes}-${outsideAnswer ? 'answer' : 'review'}`), true, outsideAnswer);
+  run.result = r; run.head = r.head;
+  if (r.reviewers.some((x) => x.state === 'failed')) { run.state = 'failed'; run.error = r.reviewers.filter((x) => x.state === 'failed').map((x) => `${x.name}: ${x.error}`).join('; '); }
+  else if (!r.findings.length) { run.state = 'approved'; delete run.question; }
+  else {
+    const ask = r.findings.find((f) => f.action === 'to-ask');
+    if (ask) { run.state = 'to-ask'; run.question = ask.question || ask.what; }
+    else run.state = run.fixes < run.limit ? 'to-fix' : 'spent';
+  }
+  saveReview(dir, run);
+}
+async function reviewFix(run: ReviewLoop, dir: string, cfg: Config): Promise<void> {
+  if (git(run.repo, 'status', '--porcelain')) throw new Error('review fix needs a clean checkout; commit or remove your changes first');
+  if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
+  const agent = selectAgent(cfg);
+  if (!agent.path) throw new Error(`review fix: no agent (${notStartable(agent.agent, agent.override)})`);
+  const a = await askAgent({ ...agent, cwd: run.repo, tools: 'edit', record: join(dir, 'agents', 'fix-1.json'), schema: FIX_SCHEMA,
+    env: { DONE_DONE_DRIVE: run.run_id }, prompt: `Fix these review findings in this checkout. Do not commit or run done-done. Findings: ${JSON.stringify(run.result.findings)}. ${run.answer ? `The person answered: ${run.answer}` : ''} Answer with summary and blocker (empty when fixed).` });
+  if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('the fixer made a commit; inspect the checkout before continuing');
+  if (!a.ok || String(a.answer?.blocker ?? '').trim()) throw new Error(`review fix failed: ${a.error || a.answer?.blocker}`);
+  if (!git(run.repo, 'status', '--porcelain')) throw new Error('review fixer changed no files');
+  git(run.repo, 'add', '-A');
+  git(run.repo, 'commit', '-m', 'fix: address review findings');
+  run.fixes++; run.head = git(run.repo, 'rev-parse', 'HEAD'); run.state = 'to-fix'; delete run.question; saveReview(dir, run);
+  await reviewRound(run, dir, cfg);
+}
+async function cmdReview(argv: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  if (positionals.length > 1) throw new UsageError('review takes at most one base');
+  const repo = repoRoot(), base = reviewBase(repo, positionals[0]), cfg = reviewConfig(repo, base);
+  await withChoice('agent', cfg);
+  const id = newRunId(git(repo, 'rev-parse', 'HEAD')), dir = reviewDir(id);
+  mkdirSync(join(dir, 'agents'), { recursive: true });
+  const r = await review(repo, selectAgent(cfg), base, join(dir, 'round-0'));
+  const run: ReviewLoop = { run_id: id, repo, base, head: r.head, state: 'to-fix', fixes: 0, limit: 1, route: { agent: selectAgent(cfg).agent, model: selectAgent(cfg).model }, result: r };
+  if (r.reviewers.some((x) => x.state === 'failed')) { run.state = 'failed'; run.error = r.reviewers.filter((x) => x.state === 'failed').map((x) => `${x.name}: ${x.error}`).join('; '); }
+  else if (!r.findings.length) run.state = 'approved';
+  else { const ask = r.findings.find((f) => f.action === 'to-ask'); if (ask) { run.state = 'to-ask'; run.question = ask.question || ask.what; } }
+  saveReview(dir, run);
+  if (run.state === 'to-fix') try { await reviewFix(run, dir, cfg); } catch (e) { run.state = 'failed'; run.error = errorText(e); saveReview(dir, run); }
+  return showReview(run, 'review');
 }
 
 async function cmdLook(argv: string[]): Promise<number> {
@@ -5062,7 +5116,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'affected') return cmdAffected(rest);
     if (cmd === 'qa') return cmdQa(rest);
     if (cmd === 'after-commit') return await cmdAfterCommit(rest);
-    if (cmd === 'status') return cmdStatus(rest);
+    if (cmd === 'status' || cmd === 'report') return cmdStatus(rest, cmd);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);
     if (cmd === 'rerun') return await cmdRerun(rest);

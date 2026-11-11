@@ -62,6 +62,8 @@ journeys:
     command: node journeys/minimum-scope.mjs
   review:
     command: node journeys/review.mjs
+  review-fix:
+    command: node journeys/review-fix.mjs
   registered-script:
     command: node journeys/registered-script.mjs
 
