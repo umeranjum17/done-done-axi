@@ -165,7 +165,7 @@ Prefer a terminal to an agent skill? The [manual walkthrough](docs/manual-cli.md
 
 ## What's next
 
-Early preview: behaviour and config keys can change between minor versions. Shipped so far: `init`, `doctor`, `run`, `check`, `receipt`, `verify`, `journey add|enhance|improve`, `maintain`, `affected`, `qa`, `lint`, `gate`, `design`, `look`, and the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`). Next: the [milestones in the vision](VISION.md#next-milestones).
+Early preview: behaviour and config keys can change between minor versions. Shipped so far: `init`, `doctor`, `run`, `check`, `receipt`, `verify`, `journey add|enhance|improve`, `maintain`, `affected`, `qa`, `lint`, `gate`, `design`, `look`, `review`, and the run tools (`status`, `attach`, `logs`, `rerun`, `abort`, `signoff`, `history`). Next: the [milestones in the vision](VISION.md#next-milestones).
 
 ## Develop
 

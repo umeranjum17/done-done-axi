@@ -13,6 +13,7 @@ import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUD
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
+import { CODE_CLASSES, DOC_CLASSES, review, reviewBase, TRUSTED_KEYS } from './review.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
 import { design, interactions, type InteractionResult, KINDS, redesign, writtenRequirement, type RequirementMatch } from './design.js';
@@ -302,6 +303,15 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     usage: [['done-done maintain [--no-wait | --wait | --foreground]', 'check the verify skill against the source in a run: links, index, cited file:line, one read-only reader per feature; with auto_fix.maintain, the agent fixes the skill on a done-done branch']],
     flags: ['--wait', '--no-wait', '--foreground'],
     more: [MAINTAIN_TEXT, RUNS_TEXT],
+  },
+  review: {
+    usage: [['done-done review [<base>]', "read-only review of the commits since <base> (default: origin's default branch): a code reviewer and a docs reviewer, each finding classed"]],
+    flags: [],
+    more: [`review: two tool-less reviewers (code, docs) read the diff and the tracked docs as text in a scratch folder, with the agent
+  the user set; no project agent settings (AGENTS.md, CLAUDE.md, agent folders, hooks, MCP) reach them and no file changes. The
+  agent keys (${TRUSTED_KEYS.join(', ')}) are read from <base>, never from the branch under review. Result: each
+  reviewer's state and duration, every finding with its class (${[...CODE_CLASSES, ...DOC_CLASSES].join(', ')}), the total
+  duration; exit 0 clean, 1 findings, 3 a reviewer did not answer and none reported a finding`],
   },
   design: {
     usage: [['done-done design <screens...> [--mock <screen>=<mock>]', 'a judge looks at each PNG/JPEG screen, alone or next to its mock, and fails it on visual defects']],
@@ -4353,6 +4363,46 @@ async function cmdDoctor(argv: string[]): Promise<number> {
 }
 
 // The look step: one page measured, with its actions clicked, against the project's look reference and the --mock design.
+async function cmdReview(argv: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  if (positionals.length > 1) throw new UsageError('review takes at most one base', 'Re-run: done-done review [<base>]');
+  const repo = repoRoot();
+  const base = reviewBase(repo, positionals[0]);
+  // The route comes from <base>'s .done-done.yaml plus the global config: a branch cannot change who reviews it.
+  let projectText = '';
+  try { projectText = git(repo, 'show', `${base}:.done-done.yaml`); } catch (e) {
+    const msg = (e as { stderr?: string }).stderr ?? '';
+    if (!/does not exist|exists on disk, but not in/.test(msg)) throw new UsageError(`cannot read .done-done.yaml at ${base}: ${msg.trim()}`);
+  }
+  const cfg = loadConfig(repo, projectText);
+  await withChoice('agent', cfg);
+  const agent = selectAgent(cfg);
+  const dir = join(home(), 'reviews', newRunId(git(repo, 'rev-parse', 'HEAD')));
+  const r = await review(repo, agent, base, dir);
+  const failed = r.reviewers.filter((x) => x.state === 'failed');
+  const code = r.findings.length ? FAIL : failed.length ? INCONCLUSIVE : PASS;
+  const rows = cap(r.findings);
+  emit({
+    command: 'review',
+    result: r.findings.length ? 'findings' : failed.length ? 'inconclusive' : 'clean',
+    base: r.base, merge_base: r.merge_base, head: r.head,
+    route: { agent: agent.agent, model: agent.model },
+    trusted_config: { source: `${r.base}:.done-done.yaml + global config`, keys: TRUSTED_KEYS },
+    project_agent_settings: { loaded: false, ignored: r.ignored_agent_settings },
+    duration_ms: r.duration_ms,
+    reviewers: r.reviewers,
+    classes: r.classes,
+    findings: rows.items,
+    ...(rows.omitted && { findings_omitted: rows.omitted }),
+    ...(r.truncated.length && { truncated: r.truncated }),
+    record: r.record,
+    help: r.findings.length ? [`Fix each finding or answer it in the change, then re-run: done-done review ${r.base}`]
+      : failed.length ? [`A reviewer did not answer (${failed.map((x) => `${x.name}: ${x.error}`).join('; ')}); re-run: done-done review ${r.base}`]
+      : ['No finding from either reviewer; the review reads the diff and docs as text, so it does not prove the change works: run done-done verify for that'],
+  });
+  return code;
+}
+
 async function cmdLook(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, options: { out: { type: 'string' }, mock: { type: 'string' }, act: { type: 'string', multiple: true } }, allowPositionals: true });
   if (positionals.length !== 1) throw new UsageError('look needs one page URL', 'Re-run with the page to check: done-done look <url>');
@@ -5000,6 +5050,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'verify') return await cmdVerify(rest);
     if (cmd === 'maintain') return await cmdMaintain(rest);
     if (cmd === 'design') return await cmdDesign(rest);
+    if (cmd === 'review') return await cmdReview(rest);
     if (cmd === 'look') return await cmdLook(rest);
     if (cmd === 'inventory') return cmdInventory(rest);
     if (cmd === 'tests') return await cmdTests(rest);
