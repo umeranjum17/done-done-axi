@@ -330,6 +330,15 @@ journeys:
 | bad flags, a bad `look` block, no Chrome, the page did not load, or `--mock` with no judge set | 2 |
 | no hit, but the `--mock` judge is unsure | 3 |
 
+### Test inventory
+
+`done-done inventory` is opt-in test ownership. Commit `.done-done-inventory.json`, a map of repo-relative path to `{owner, sha256}`, and `done-done lint` also fails (`FAIL: test inventory: <path>: ...`, exit 1, naming each file) for:
+
+- a test file with no entry. A test file is code in a `test/`, `tests/`, `__tests__/` or `journeys/` folder, or named `*.test.*` / `*.spec.*`, tracked or untracked and not git-ignored; a `fixtures/` folder is data and is skipped;
+- an owned file whose bytes no longer match its entry, a hand edit outside a done-done run.
+
+`done-done inventory` lists the entry count and the findings (exit 0 clean, 1 findings). `done-done inventory record <files...> [--owner <name>]` stores current hashes (a new file needs `--owner`) and only works while `DONE_DONE_RUN_ID` is set, which `run` sets for a journey command, so the same edit passes when a journey command makes it and fails when made by hand. `journey add`, `enhance` and `improve` record the script they write when the repo keeps an inventory. A deleted owned file is a retired test, not a failure. The guard stops accidents and is not a sandbox: `.done-done-inventory.json` is committed, so review still sees any hash changed in a diff. With no inventory file nothing changes.
+
 ### Lint check
 
 `done-done lint <PR URL | report file> <evidence folder>` is a deterministic gate on a worker's claim: no judge, no model, and the project config only switches on two optional size rules. It prints `PASS`, `WARN: <reason>` or `FAIL: <reason>` and exits 0 (PASS or WARN), 1, or 2 on a usage error. A PR URL is read with `gh pr view` and `gh api`; a file is read as the report.

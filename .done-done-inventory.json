@@ -1,0 +1,78 @@
+{
+  "journeys/after-commit.mjs": {
+    "owner": "after-commit",
+    "sha256": "7cb75cc675e6b0d53a36ee0363a0ceb51057a77d34cabf094d751861b899463b"
+  },
+  "journeys/agents-live.mjs": {
+    "owner": "agents-live",
+    "sha256": "dbf6cb92dcb6b5ab04e21cef9c6045c90c129b8471bc3a1c84afa93bec8d41ec"
+  },
+  "journeys/approved-design.mjs": {
+    "owner": "approved-design",
+    "sha256": "86d412b2e2edbc798dd0e60a4ba93b2b66ea9a23260ce19ff2a51551be4362cf"
+  },
+  "journeys/create-maintain.mjs": {
+    "owner": "create-maintain",
+    "sha256": "6619515132537c78673bcc553a0165d17481a4925d898445db1fd8639bde068d"
+  },
+  "journeys/e2e.mjs": {
+    "owner": "e2e",
+    "sha256": "af077a8b185d6c7ab807af6dbf80d4bf92d8d1b3b2022270756cf2af5e84598f"
+  },
+  "journeys/flaky-quarantine.mjs": {
+    "owner": "flaky-quarantine",
+    "sha256": "04841d01c18a1b4371e1a330e338fa869fe123ae37495a53df22b67126fc7b67"
+  },
+  "journeys/init-first-release.mjs": {
+    "owner": "init-first-release",
+    "sha256": "e29dab9ecf99e627b809fb7bd2d8fb564eb08fe9d0769f82799c70c46ff874dc"
+  },
+  "journeys/inventory-ownership.mjs": {
+    "owner": "inventory-ownership",
+    "sha256": "a29d89289454cd6439abb1d5c6b5e1888ee673eabff54d1cb9d8ab410b453f98"
+  },
+  "journeys/journey-add.mjs": {
+    "owner": "journey-add",
+    "sha256": "b44ee77400fdb60ed3068a2eeef1dc410f6ab09052dc681e976a4bf624e864e3"
+  },
+  "journeys/lint-generated.mjs": {
+    "owner": "lint-generated",
+    "sha256": "1c88c2aa748235212168874ffcd93b777c5f3bfa172c70f487eea9a55923fe06"
+  },
+  "journeys/lint-journey-warn.mjs": {
+    "owner": "lint-journey-warn",
+    "sha256": "c7bce3e4a0e27a9843ccde54ac7c98aa632ec8b2e89ef4ab2b0b1e9fd3a704b7"
+  },
+  "journeys/redesign.mjs": {
+    "owner": "redesign",
+    "sha256": "f378f70a6449c3cbc3a8e9f9adbb3ece8298cc0294c18783c55f1313344b3260"
+  },
+  "journeys/requirements-scope.mjs": {
+    "owner": "requirements-scope",
+    "sha256": "d3f3c16e5e4c7e7ec311332a7aec64d5c2756ca05120c3188cdab83415ba3d94"
+  },
+  "journeys/shared-parts.mjs": {
+    "owner": "shared-parts",
+    "sha256": "5373d8fc2e15e8c622d4adc1a4ad435f4e8a1a4dbcaaed383a98fc19345ae234"
+  },
+  "journeys/tier-ci.mjs": {
+    "owner": "tier-ci",
+    "sha256": "62a7e59a5b2f305e7949b6d38d4caa76a1b1c52db73a7697dfcc166b23945808"
+  },
+  "journeys/upgrade.mjs": {
+    "owner": "upgrade",
+    "sha256": "7a94751b9a109323b5f71dcd870eea2f0bb1f35b366f968395d7c8abd4fe47ab"
+  },
+  "test/cli.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "30745d3ef4c0e19f9f4a3cbdafc79bab25489bd5921a32d27d0ea4c82f0dd3d7"
+  },
+  "test/conformance.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "ae4a2fc0e2db464067e0685765347e8f3173c1f5bb49cd57fa6adbec87e18f9e"
+  },
+  "test/evals.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "0a4dc054afc61f08784934549008b8375c6dcf5d6b9f1d34ecd33dbf4883de75"
+  }
+}

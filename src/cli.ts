@@ -19,6 +19,7 @@ import { design, interactions, type InteractionResult, KINDS, redesign, writtenR
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
+import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
@@ -157,6 +158,7 @@ const FLAGS: Record<string, string> = {
   '--upgrade': 'with --journey: mark it the upgrade journey (upgrade: true): install the previous shipped version, upgrade over it in place, then drive the core journey',
   '--open': 'open a run for a hand- or agent-driven proof; prints its id and folder',
   '--close <run-id>': 'seal an open run and record the files in its folder',
+  '--owner <name>': 'the journey or suite that owns a test file recorded in the inventory',
   '--tier <name>': 'run only journeys with this tier; in CI (GITHUB_ACTIONS=true) defaults to ci',
   '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
   '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
@@ -328,6 +330,17 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   a "moved-from: <owner>/<repo>@<ref> <dst>=<src>" body line says came from a repo of the same owner; both are off by default.
   checks.generated_paths: ["gen/**", "*.snap"] adds your own globs to the generated files above; the default is none.
   Every run is appended to lint.log next to the store. Exit 0 PASS or WARN, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
+  },
+  inventory: {
+    usage: [
+      ['done-done inventory', 'list the repo\'s test files with their owners; exit 1 for a test file with no owner or an owned one edited outside a run'],
+      ['done-done inventory record <files...> [--owner <name>]', 'inside a done-done run (journey command): store the files\' current hashes; a new file needs --owner'],
+    ],
+    flags: ['--owner <name>'],
+    more: [`inventory: opt-in test ownership. Commit ${'.done-done-inventory.json'} (path -> {owner, sha256}) and \`done-done lint\` then FAILs, naming the file, for a test file
+  (code in test/, tests/, __tests__/ or journeys/, or *.test.* / *.spec.*; fixtures excluded) with no entry, and for an owned file whose bytes differ from its
+  entry. \`record\` re-hashes files and needs DONE_DONE_RUN_ID, which only a done-done run sets, so a hand edit stays a failure while the same edit made by a
+  journey command passes; \`journey add|enhance|improve\` record the script they write. A deleted owned file is not a failure. Exit 0 clean, 1 findings, 2 usage error`],
   },
   'after-commit': {
     usage: [['done-done after-commit [--before]', 'Claude Bash lifecycle hook; reads its event on stdin and reruns affected journey commands after a commit']],
@@ -3334,6 +3347,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
     }
     throw e;
   }
+  if (loadInventory(repo)) recordInventory(repo, [relative(repo, script)], s.name); // the script is owned by its journey, so lint accepts what this command wrote
   process.stderr.write(`${named ? label : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
   return cmdRun([s.name]);
 }
@@ -4340,13 +4354,37 @@ function cmdGate(argv: string[]): number {
   return why === null ? PASS : FAIL;
 }
 
+// `done-done inventory`: test ownership (src/inventory.ts). Reading lists; recording needs a done-done run.
+function cmdInventory(argv: string[]): number {
+  const { values, positionals } = parseArgs({ args: argv, options: { owner: { type: 'string' } }, allowPositionals: true });
+  const repo = repoRoot();
+  if (positionals[0] === 'record') {
+    if (!process.env.DONE_DONE_RUN_ID) throw new UsageError('inventory record only works inside a done-done run (DONE_DONE_RUN_ID is not set): a hand edit to an owned test file is a lint failure, not something to record', 'Make the edit from a journey command: done-done run <journey>');
+    if (positionals.length < 2) throw new UsageError('inventory record needs at least one file', 'Re-run as: done-done inventory record <files...> [--owner <name>]');
+    const paths = positionals.slice(1).map((p) => relative(repo, resolve(p)));
+    try { recordInventory(repo, paths, values.owner); } catch (e) { throw new UsageError((e as Error).message); }
+    emit({ command: 'inventory record', recorded: paths });
+    return PASS;
+  }
+  if (positionals.length) throw new UsageError(`unknown inventory action ${positionals[0]}`, 'Re-run as: done-done inventory [record <files...> --owner <name>]');
+  let inv;
+  try { inv = loadInventory(repo); } catch (e) { throw new UsageError((e as Error).message); }
+  if (!inv) throw new UsageError(`${INVENTORY_FILE} does not exist, so no test ownership is enforced`, 'Create it with: done-done inventory record <files...> --owner <name> from a done-done run');
+  const bad = inventoryFindings(repo, inv);
+  emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
+  return bad.length ? FAIL : PASS;
+}
+
 function cmdLint(argv: string[]): number {
   const { positionals } = parseArgs({ args: argv, allowPositionals: true });
   if (positionals.length !== 2) throw new UsageError('lint needs a PR URL or report file, then the evidence folder', 'Re-run as: done-done lint <PR URL | report file> <evidence folder>');
   const { checks } = loadConfig(process.cwd());
   const v = lint(positionals[0], positionals[1], home(), checks);
-  console.log(!v.ok ? `FAIL: ${v.why}` : v.warn ? `WARN: ${v.warn}` : 'PASS');
-  return v.ok ? PASS : FAIL;
+  let owned: string | null = null;
+  try { owned = inventoryFault(repoRoot()); } catch (e) { if (!(e instanceof UsageError)) owned = (e as Error).message; } // outside a git repo there is no inventory
+  const why = !v.ok ? v.why : owned && `test inventory: ${owned}`;
+  console.log(why ? `FAIL: ${why}` : v.warn ? `WARN: ${v.warn}` : 'PASS');
+  return why ? FAIL : PASS;
 }
 
 // A screen or mock file for the design judge.
@@ -4642,6 +4680,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'maintain') return await cmdMaintain(rest);
     if (cmd === 'design') return await cmdDesign(rest);
     if (cmd === 'look') return await cmdLook(rest);
+    if (cmd === 'inventory') return cmdInventory(rest);
     if (cmd === 'lint') return cmdLint(rest);
     if (cmd === 'gate') return cmdGate(rest);
     if (cmd === 'affected') return cmdAffected(rest);
