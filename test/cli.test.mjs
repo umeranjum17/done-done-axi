@@ -77,7 +77,7 @@ function setup(projectYaml = JUDGED) {
   // The fixture never inherits the machine's git config or hooks: GIT_CONFIG_* env (it can set core.hooksPath) is dropped, and the global config is an empty file in the fixture.
   writeFileSync(join(dir, 'gitconfig'), '');
   const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
-  const env = { ...host, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   withStubJudge(env, dir);
   mkdirSync(join(repo, 'src'), { recursive: true });
   mkdirSync(join(repo, 'docs'));
@@ -133,6 +133,26 @@ test('sealed runs use the caller capture folder unless evidence.root overrides i
   const overridden = t.dd('run', '--', command);
   assert.equal(overridden.code, 0, overridden.out);
   assert.equal(readFileSync(join(t.repo, '.proof', toon(overridden).run_id, 'result.txt'), 'utf8'), 'captured');
+});
+
+test('tier filtering keeps local fixtures independent of CI and enforces CI and explicit tiers', () => {
+  const t = setup(JUDGED + '  local-only:\n    command: node make-shots.mjs ${RUN_ID}\n    tier: local\n');
+  assert.equal(t.dd('run', 'shots').code, 0, 'untagged local journey runs locally');
+  t.env.GITHUB_ACTIONS = 'true';
+  const untagged = t.dd('run', 'shots');
+  assert.equal(untagged.code, 2);
+  assert.match(untagged.out, /no journeys with tier ci/);
+  writeFileSync(join(t.repo, '.done-done.yaml'), readFileSync(join(t.repo, '.done-done.yaml'), 'utf8').replace('    core: true', '    tier: ci\n    core: true'));
+  t.sh('add', '.done-done.yaml');
+  t.sh('commit', '-qm', 'tag CI journey');
+  assert.equal(t.dd('run', 'shots').code, 0, 'CI journey runs in GitHub Actions');
+  const refused = t.dd('run', 'local-only');
+  assert.equal(refused.code, 2);
+  assert.match(refused.out, /has tier local, not ci/);
+  assert.equal(t.dd('run', '--tier', 'local', 'local-only').code, 0, 'explicit tier overrides CI default');
+  const missing = t.dd('run', '--tier', 'missing', 'shots');
+  assert.equal(missing.code, 2);
+  assert.match(missing.out, /no journeys with tier missing/);
 });
 
 test('approved design coverage: real CLI names a missing screen, then passes the complete contract', () => {
@@ -616,7 +636,9 @@ function bareRepo(dirName = 'repo') {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-init-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, dirName);
-  const env = { ...process.env, DONE_DONE_EVIDENCE_ROOT: '', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  writeFileSync(join(dir, 'gitconfig'), '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_EVIDENCE_ROOT: '', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');
@@ -765,7 +787,7 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
 test('after-commit opt-in drives actual Bash hooks around mapped and uncovered fixture commits', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'dd-commit-e2e-'));
   try {
-    const r = spawnSync(process.execPath, [CLI, 'run', 'after-commit', '--json'], { cwd: dirname(dirname(CLI)), env: { ...process.env, DONE_DONE_HOME: join(tmp, 'home') }, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'run', 'after-commit', '--json'], { cwd: dirname(dirname(CLI)), env: { ...process.env, GITHUB_ACTIONS: 'false', DONE_DONE_HOME: join(tmp, 'home') }, encoding: 'utf8' });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     const record = JSON.parse(r.stdout);
     assert.equal(record.result, 'recorded');
@@ -855,7 +877,9 @@ function shapeRepo(kind, name) {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-shape-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, name);
-  const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  writeFileSync(join(dir, 'gitconfig'), '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
   if (kind === 'proof') {
     writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, scripts: { start: 'node engine.js' } }));
@@ -3571,7 +3595,7 @@ test('the project test suite is one proof step: a pass is sealed in the receipt 
 test('status shows fix attempt stage (n of N) in steps output and events', () => {
   const t = setup('app: notes\nauto_fix:\n  verify: 2\njourneys:\n  smoke:\n    command: node journey.mjs\n');
   const e = pathEnv(t.env, []);
-  
+
   // Journey that fails initially
   writeFileSync(join(t.repo, 'journey.mjs'), `
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -3584,44 +3608,44 @@ if (broken) process.exit(1);
   writeFileSync(join(t.repo, 'steps.mjs'), '');
   t.sh('add', '-A');
   t.sh('commit', '-qm', 'initial');
-  
+
   // Stub agent that fixes on first attempt
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}
 const { writeFileSync } = require('node:fs');
 writeFileSync('state.txt', 'fixed\\n');
 console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed state', blocker: '' }) } }));
   `, { mode: 0o755 });
-  
+
   mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
-  
+
   // Run verify with auto_fix
   const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'journey passes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'smoke', '--outcome', 'journey passes', '--foreground');
-  
+
   const result = toon(r);
-  
+
   // Find the run directory
   const runId = result.run_id;
   const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', runId);
-  
+
   // Check events.jsonl for attempt info
   const events = readFileSync(join(runDir, 'events.jsonl'), 'utf8')
     .trim()
     .split('\n')
     .map(line => JSON.parse(line))
     .filter(e => e.step === 'fix' || e.step === 'triage');
-  
+
   // Verify that fix events include attempt and max_attempts
   const fixEvents = events.filter(e => e.step === 'fix');
   assert.ok(fixEvents.length > 0, 'should have fix events');
   assert.ok(fixEvents.some(e => e.attempt === 1 && e.max_attempts === 2), `fix events should include attempt info: ${JSON.stringify(fixEvents)}`);
-  
+
   // Check the run.json for step attempt info
   const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'));
   const fixSteps = run.steps.filter(s => s.name === 'fix');
   assert.ok(fixSteps.length > 0, 'should have fix steps');
   assert.ok(fixSteps.some(s => s.attempt === 1 && s.max_attempts === 2), `fix steps should include attempt info: ${JSON.stringify(fixSteps)}`);
-  
+
   // Check status output for stage field
   const statusResult = toon(t.dd('status', '--run', runId));
   const stepsWithStage = statusResult.steps.filter(s => s.stage);

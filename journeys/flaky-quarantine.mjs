@@ -13,9 +13,13 @@ const cli = join(process.cwd(), 'dist/cli.js');
 const dir = mkdtempSync(join(tmpdir(), 'flaky-'));
 try {
   cpSync('test/fixtures/flaky-test', dir, { recursive: true });
-  const sh = (c) => spawnSync('sh', ['-c', c], { cwd: dir });
+  const gitConfig = `${dir}.gitconfig`;
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const base = { ...host, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1' };
+  const sh = (c) => spawnSync('sh', ['-c', c], { cwd: dir, env: base });
   sh('git init -q && git add . && git -c user.name=t -c user.email=t@t commit -q -m init');
-  const r = spawnSync('node', [cli, 'run', 'flaky-check', '--json'], { cwd: dir, encoding: 'utf8', env: { ...env, DONE_DONE_EVIDENCE_ROOT: undefined, DONE_DONE_RUN_ID: undefined } });
+  const r = spawnSync('node', [cli, 'run', 'flaky-check', '--json'], { cwd: dir, encoding: 'utf8', env: { ...base, DONE_DONE_EVIDENCE_ROOT: undefined, DONE_DONE_RUN_ID: undefined } });
   const warnings = r.stderr.split('\n').filter((l) => l.startsWith('warning:'));
   const result = JSON.parse(r.stdout);
   writeFileSync(join(evidence, 'flaky-quarantine.log'), `exit: ${r.status}\nwarning lines: ${warnings.length}\n${warnings.join('\n')}\n${r.stdout}\n`);
@@ -30,4 +34,5 @@ try {
   }, null, 2));
 } finally {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(`${dir}.gitconfig`, { force: true });
 }

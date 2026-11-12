@@ -18,7 +18,10 @@ try {
   mkdirSync(join(repo, 'journeys'), { recursive: true });
   mkdirSync(join(repo, 'test'));
   mkdirSync(evidence);
-  const env = { ...process.env, DONE_DONE_HOME: join(tmp, 'home'), GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
+  const gitConfig = join(tmp, 'gitconfig');
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, DONE_DONE_HOME: join(tmp, 'home'), GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
   delete env.DONE_DONE_RUN_ID;
   const git = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   const dd = (...a) => spawnSync(process.execPath, [CLI, ...a], { cwd: repo, env, encoding: 'utf8' });

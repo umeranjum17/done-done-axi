@@ -26,13 +26,20 @@ const say = (s) => { log.push(s); console.error(s); };
 const tmp = mkdtempSync(join(tmpdir(), 'dd-e2e-'));
 const home = join(tmp, 'home');
 const repo = join(tmp, 'repo');
+const gitConfig = join(tmp, 'gitconfig');
+writeFileSync(gitConfig, '');
+const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
 mkdirSync(join(repo, 'src'), { recursive: true });
 const env = {
-  ...process.env,
+  ...host,
+  // The fixture drives local user flows; only the outer journey runs in CI mode.
+  GITHUB_ACTIONS: 'false',
   DONE_DONE_HOME: home,
   DONE_DONE_EVIDENCE_ROOT: "",
   DONE_DONE_TEST_CLI: CLI,
   DONE_DONE_LOOK_FIXTURES: join(REPO, 'test', 'fixtures', 'look'),
+  GIT_CONFIG_GLOBAL: gitConfig,
+  GIT_CONFIG_NOSYSTEM: '1',
   GIT_AUTHOR_NAME: 'e2e', GIT_AUTHOR_EMAIL: 'e2e@example.com',
   GIT_COMMITTER_NAME: 'e2e', GIT_COMMITTER_EMAIL: 'e2e@example.com',
 };

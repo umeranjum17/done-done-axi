@@ -39,7 +39,10 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stri
   writeFileSync(join(bin, 'claude'), `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: '', structured_output: ${JSON.stringify(answer)} }));\n`, { mode: 0o755 });
   writeFileSync(join(ddHome, 'config.yaml'), `agent: claude\nagent_path_override: { claude: ${JSON.stringify(join(bin, 'claude'))} }\n`);
 
-  const base = { ...env, HOME: scratch, DONE_DONE_HOME: ddHome, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
+  const gitConfig = join(scratch, 'gitconfig');
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const base = { ...host, HOME: scratch, DONE_DONE_HOME: ddHome, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
   for (const k of ['DONE_DONE_DRIVE', 'DONE_DONE_RUN_ID', 'DONE_DONE_EVIDENCE_ROOT', 'CI']) delete base[k];
   const sh = (cmd) => spawnSync('sh', ['-c', cmd], { cwd: dir, encoding: 'utf8', env: base }).stdout;
   const dd = (label, ...args) => {

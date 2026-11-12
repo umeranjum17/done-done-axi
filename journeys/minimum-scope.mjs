@@ -13,7 +13,10 @@ const cli = join(process.cwd(), 'dist/cli.js');
 const scratch = mkdtempSync(join(tmpdir(), 'minimum-scope-'));
 const bin = join(scratch, 'bin'), ddHome = join(scratch, 'dd-home');
 mkdirSync(bin); mkdirSync(ddHome);
-const env = { ...process.env, HOME: scratch, DONE_DONE_HOME: ddHome, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
+const gitConfig = join(scratch, 'gitconfig');
+writeFileSync(gitConfig, '');
+const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+const env = { ...host, HOME: scratch, DONE_DONE_HOME: ddHome, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
 
 // The stub judge says every capture shows the outcome.
 const judge = join(bin, 'judge-gemini');

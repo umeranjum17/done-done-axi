@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Tier filtering proof: CI mode runs only tier 'ci' journeys with no agent call
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { env } from 'node:process';
 
@@ -11,6 +11,10 @@ if (!evidence || !runId) throw new Error('missing DONE_DONE_EVIDENCE_ROOT or DON
 const fixture = 'test/fixtures/tier-test';
 const cli = join(process.cwd(), 'dist/cli.js');
 const log = join(evidence, 'tier-ci.log');
+const gitConfig = join(evidence, 'tier-ci.gitconfig');
+writeFileSync(gitConfig, '');
+const host = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+const fixtureEnv = { ...host, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Umer', GIT_AUTHOR_EMAIL: 'umer@example.com', GIT_COMMITTER_NAME: 'Umer', GIT_COMMITTER_EMAIL: 'umer@example.com' };
 let output = '';
 
 const run = (desc, cmd, expectSuccess = true) => {
@@ -20,7 +24,7 @@ const run = (desc, cmd, expectSuccess = true) => {
 
   const r = spawnSync(cmd[0], cmd.slice(1), {
     cwd: fixture,
-    env: { ...env, GITHUB_ACTIONS: 'true' },
+    env: { ...fixtureEnv, GITHUB_ACTIONS: 'true' },
     encoding: 'utf8',
     shell: false
   });
@@ -36,7 +40,7 @@ const run = (desc, cmd, expectSuccess = true) => {
 };
 
 // Initialize fixture as git repo
-spawnSync('sh', ['-c', 'rm -rf .git && git init -q && git add .done-done.yaml && git commit -q -m "init"'], { cwd: fixture });
+spawnSync('sh', ['-c', 'rm -rf .git && git init -q && git add .done-done.yaml && git commit -q -m "init"'], { cwd: fixture, env: fixtureEnv });
 
 // Test 1: CI mode runs tier 'ci' journey
 const r1 = run('CI mode runs tier ci', ['node', cli, 'run', 'fast-check']);
@@ -56,7 +60,7 @@ console.error('\n✓ All tier CI tests passed');
 
 writeFileSync(log, output);
 writeFileSync(join(evidence, 'steps.json'), JSON.stringify({
-  target: { version: '0.6.26' },
+  target: { version: JSON.parse(readFileSync('package.json', 'utf8')).version },
   start: 'tier-test fixture with three-tier journeys',
   steps: [
     'Initialize tier-test fixture as git repo',

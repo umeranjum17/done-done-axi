@@ -12,7 +12,10 @@ let transcript = '';
 try {
   const repo = join(tmp, 'repo'), bin = join(tmp, 'bin'), home = join(tmp, 'home'), evidence = join(tmp, 'evidence');
   for (const p of [repo, bin, home]) mkdirSync(p);
-  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_CACHE_HOME: home, TMPDIR: tmp, DONE_DONE_HOME: join(tmp, 'dd'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', PATH: `${bin}:${process.env.PATH}` };
+  const gitConfig = join(tmp, 'gitconfig');
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_CACHE_HOME: home, TMPDIR: tmp, DONE_DONE_HOME: join(tmp, 'dd'), GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', PATH: `${bin}:${process.env.PATH}` };
   writeFileSync(join(bin, 'done-done'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"\n`, { mode: 0o755 });
   const git = (...args) => execFileSync('git', args, { cwd: repo, env, encoding: 'utf8' }).trim();
   const dd = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });

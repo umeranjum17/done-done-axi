@@ -46,7 +46,9 @@ function cleanRepo(yaml = 'app: notes\nevidence:\n  root: .proof\njourneys:\n  s
   const dir = mkdtempSync(join(tmpdir(), 'dd-conformance-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo');
-  const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  writeFileSync(join(dir, 'gitconfig'), '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(join(repo, 'src'), { recursive: true });
   writeFileSync(join(repo, '.done-done.yaml'), yaml);
   writeFileSync(join(repo, 'src', 'app.js'), 'export const app = 1;\n');
@@ -83,7 +85,9 @@ test('the README manual-CLI worked example runs as written: init, journey, run, 
   const dir = mkdtempSync(join(tmpdir(), 'dd-conformance-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'app');
-  const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  writeFileSync(join(dir, 'gitconfig'), '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');

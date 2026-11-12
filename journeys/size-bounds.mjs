@@ -17,8 +17,11 @@ const home = mkdtempSync(join(tmpdir(), 'size-home-'));
 let log = '';
 try {
   cpSync('test/fixtures/size-test', dir, { recursive: true });
-  spawnSync('sh', ['-c', 'git init -q && git add . && git -c user.name=t -c user.email=t@t commit -q -m init'], { cwd: dir });
-  const base = { ...env, DONE_DONE_EVIDENCE_ROOT: undefined, DONE_DONE_RUN_ID: undefined, DONE_DONE_HOME: home };
+  const gitConfig = join(home, 'gitconfig');
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const base = { ...host, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_EVIDENCE_ROOT: undefined, DONE_DONE_RUN_ID: undefined, DONE_DONE_HOME: home };
+  spawnSync('sh', ['-c', 'git init -q && git add . && git -c user.name=t -c user.email=t@t commit -q -m init'], { cwd: dir, env: base });
   const dd = (...args) => {
     const r = spawnSync('node', [cli, ...args], { cwd: dir, encoding: 'utf8', env: base });
     log += `$ done-done ${args.join(' ')}\nexit ${r.status}\n${r.stdout}${r.stderr.split('\n').filter((l) => l.includes('error')).join('\n')}\n\n`;

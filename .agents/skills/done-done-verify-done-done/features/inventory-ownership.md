@@ -1,6 +1,6 @@
 # Test inventory ownership
 
-`done-done inventory` and the inventory check inside `done-done lint`: every test file (`test/`, `journeys/`, `*.test.*`) needs an owner entry in `.done-done-inventory.json`, and an owned file may only change inside a done-done run.
+Inventory contract (file discovery, recorded hashes and lifecycle): [Test inventory](../../../../../docs/reference.md#test-inventory).
 
 Drive: `done-done run inventory-ownership` builds a throwaway repo with two owned test files, lints it clean, adds a stray `test/stray.test.mjs`, hand-edits the owned `journeys/smoke.mjs`, then makes the same edit with a journey command (`done-done run edit-owned`, which calls `done-done inventory record`) and lints again.
 

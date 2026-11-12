@@ -18,10 +18,13 @@ const home = mkdtempSync(join(tmpdir(), 'improve-home-'));
 let log = '';
 try {
   cpSync('test/fixtures/improve-test', dir, { recursive: true });
-  const sh = (cmd) => spawnSync('sh', ['-c', cmd], { cwd: dir, encoding: 'utf8' }).stdout;
+  const gitConfig = join(home, 'gitconfig');
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const base = { ...host, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_EVIDENCE_ROOT: undefined, DONE_DONE_RUN_ID: undefined, DONE_DONE_HOME: home };
+  const sh = (cmd) => spawnSync('sh', ['-c', cmd], { cwd: dir, encoding: 'utf8', env: base }).stdout;
   sh('git init -q && git add . && git -c user.name=t -c user.email=t@t commit -q -m init');
   assert.equal(sh('git status --porcelain'), '', 'the fixture starts clean');
-  const base = { ...env, DONE_DONE_EVIDENCE_ROOT: undefined, DONE_DONE_RUN_ID: undefined, DONE_DONE_HOME: home };
   const r = spawnSync('node', [cli, 'tests', 'improve', '--plan-only', '--json'], { cwd: dir, encoding: 'utf8', env: base });
   log += `$ done-done tests improve --plan-only --json\nexit ${r.status}\n${r.stdout}\n`;
   const doc = JSON.parse(r.stdout);
