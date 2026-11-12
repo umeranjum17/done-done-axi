@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 import { checkMatrix } from './matrix.js';
 import { parseDom, parseLook } from './dom.js';
 import { parseEvals } from './evals.js';
+import { isSize } from './size.js';
 export class UsageError extends Error {
     help;
     // The exact next command, when the error has one.
@@ -61,6 +62,7 @@ const MAX_CAPTURES = 10;
 const KEYS = {
     agent: { scope: 'any', type: 'agent' },
     auto_fix: { scope: 'any', type: 'auto_fix' },
+    review_enabled: { scope: 'global', type: 'boolean' },
     agent_config: { scope: 'global', type: 'agent_config' },
     agent_args_override: { scope: 'global', type: 'args' },
     agent_path_override: { scope: 'global', type: 'paths' },
@@ -90,6 +92,7 @@ const KEYS = {
     'checks.upstream_catch_up': { scope: 'repo', type: 'boolean' },
     'checks.moved_from': { scope: 'repo', type: 'boolean' },
     'checks.generated_paths': { scope: 'repo', type: 'string[]' },
+    'affected.global_paths': { scope: 'repo', type: 'string[]' },
     'signoff.post': { scope: 'repo', type: 'boolean' },
     'signoff.board': { scope: 'repo', type: 'string' },
     'suite.command': { scope: 'repo', type: 'string' },
@@ -104,7 +107,7 @@ const KEYS = {
     'judge.pool_config': { scope: 'global', type: 'string' },
     'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
+const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
@@ -194,9 +197,9 @@ function apply(target, text, file, scope) {
                                                             : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
                                                                 : spec.type === 'matrix' ? !checkMatrix(value)
                                                                     : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean'));
+                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string'));
         const want = {
-            journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>}',
+            journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
             matrix: 'a mapping with optional theme (a list of names), width (a list of CSS pixel widths) and form (a list of names), plus skip (a list of partial cells, each with a reason)',
             agent: `one of ${AGENTS.join(', ')}, or acp:<target>`,
@@ -402,6 +405,7 @@ function defaultConfig(repo) {
         acpx_path: 'acpx',
         agent_timeout: AGENT_TIMEOUT,
         auto_fix: {},
+        review_enabled: true,
         app: basename(repo),
         skill: '',
         journeys: {},
@@ -418,6 +422,7 @@ function defaultConfig(repo) {
         base_ref: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
+        affected: { global_paths: [] },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
         suite: { command: '', timeout: '30m' },
@@ -459,7 +464,9 @@ export function loadConfig(repo, projectText) {
     for (const a of Object.keys(cfg.agent_path_override))
         cfg.agent_path_override[a] = tilde(cfg.agent_path_override[a]);
     // A relative root is under the repo (and dies with the checkout); an absolute one is used as-is.
-    cfg.evidence.root = cfg.evidence.root ? resolve(repo, cfg.evidence.root) : join(local, cfg.app);
+    cfg.evidence.root = cfg.evidence.root ? resolve(repo, cfg.evidence.root)
+        : !cfg.from['evidence.local_root'] && process.env.DONE_DONE_EVIDENCE_ROOT ? resolve(process.env.DONE_DONE_EVIDENCE_ROOT)
+            : join(local, cfg.app);
     return cfg;
 }
 // The commented global config `init` writes when there is none: every global key at its built-in default.
@@ -468,6 +475,9 @@ export function globalConfigText() {
     const agents = Object.entries(CHEAP).map(([a, c]) => `  ${a}:\n    model: ${c.model}\n${c.effort ? `    effort: ${c.effort}\n` : ''}`).join('');
     return `# done-done global config. \`done-done init\` writes it once; \`init --agent\` then sets agent and its model in place.
 # A repo's .done-done.yaml may set agent (and the repo keys); every key here except agent is global-only.
+
+# Set false to skip review in every verify receipt (the reason is recorded).
+review_enabled: true
 
 # The coding agent done-done starts: one of ${AGENTS.join(', ')}, or acp:<target>. done-done never picks one: while none is set
 # it asks you in a terminal, or stops with the command that sets it: done-done init --agent <agent> --model <model>.

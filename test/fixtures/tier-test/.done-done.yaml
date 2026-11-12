@@ -1,0 +1,14 @@
+app: tier-test
+journeys:
+  fast-check:
+    command: echo "fast-check ran" > $DONE_DONE_EVIDENCE_ROOT/fast-check.log
+    tier: ci
+  integration-test:
+    command: echo "integration-test ran" > $DONE_DONE_EVIDENCE_ROOT/integration-test.log
+    tier: integration
+  slow-check:
+    command: echo "slow-check ran" > $DONE_DONE_EVIDENCE_ROOT/slow-check.log
+    tier: ci
+  manual-test:
+    command: echo "manual-test ran" > $DONE_DONE_EVIDENCE_ROOT/manual-test.log
+    tier: manual

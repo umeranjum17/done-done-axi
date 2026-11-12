@@ -7,6 +7,7 @@ import { checkMatrix, type Matrix } from './matrix.js';
 import { type Dom, type LookRef, parseDom, parseLook } from './dom.js';
 import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
+import { isSize } from './size.js';
 
 export class UsageError extends Error {
   // The exact next command, when the error has one.
@@ -34,10 +35,11 @@ export type Config = {
   agent_path_override: Record<string, string>; // a binary per agent instead of the one on PATH
   acpx_path: string; // the acpx bridge for acp:<target> agents
   agent_timeout: string; // how long one agent call may run, e.g. 30m
+  review_enabled: boolean; // global rollback for the verify review step
   auto_fix: Record<string, number>; // per step, as no-mistakes: how many times done-done's agent may fix its findings; 0 (the default) reports only
   app: string;
   skill: string;
-  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean }>;
+  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string; size?: string; reason?: string }>;
   // Primitive 17 (input guard): repo-relative paths or globs the drive must leave alone. Empty: today's behaviour.
   inputs: string[];
   // Primitive 1 (run-instance harness): start the app under test on its own port per run. Null when unset: today's behaviour.
@@ -59,6 +61,7 @@ export type Config = {
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
+  affected: { global_paths: string[] }; // globs of files every journey depends on: a change to one runs the whole local tier
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
   signoff: { post: boolean; board: string };
@@ -116,6 +119,7 @@ const MAX_CAPTURES = 10;
 const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
+  review_enabled: { scope: 'global', type: 'boolean' },
   agent_config: { scope: 'global', type: 'agent_config' },
   agent_args_override: { scope: 'global', type: 'args' },
   agent_path_override: { scope: 'global', type: 'paths' },
@@ -145,6 +149,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'checks.upstream_catch_up': { scope: 'repo', type: 'boolean' },
   'checks.moved_from': { scope: 'repo', type: 'boolean' },
   'checks.generated_paths': { scope: 'repo', type: 'string[]' },
+  'affected.global_paths': { scope: 'repo', type: 'string[]' },
   'signoff.post': { scope: 'repo', type: 'boolean' },
   'signoff.board': { scope: 'repo', type: 'string' },
   'suite.command': { scope: 'repo', type: 'string' },
@@ -159,7 +164,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.pool_config': { scope: 'global', type: 'string' },
   'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
+const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
@@ -240,9 +245,9 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && (n as number) >= 0)
       : spec.type === 'matrix' ? !checkMatrix(value)
       : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value as object).every(isRegex)
-      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean'));
+      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string'));
     const want = {
-      journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>}',
+      journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
       instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
       matrix: 'a mapping with optional theme (a list of names), width (a list of CSS pixel widths) and form (a list of names), plus skip (a list of partial cells, each with a reason)',
       agent: `one of ${AGENTS.join(', ')}, or acp:<target>`,
@@ -408,6 +413,7 @@ function defaultConfig(repo: string): Config {
     acpx_path: 'acpx',
     agent_timeout: AGENT_TIMEOUT,
     auto_fix: {},
+    review_enabled: true,
     app: basename(repo),
     skill: '',
     journeys: {},
@@ -424,6 +430,7 @@ function defaultConfig(repo: string): Config {
     base_ref: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
+    affected: { global_paths: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
     suite: { command: '', timeout: '30m' },
@@ -462,7 +469,9 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   cfg.acpx_path = tilde(cfg.acpx_path);
   for (const a of Object.keys(cfg.agent_path_override)) cfg.agent_path_override[a] = tilde(cfg.agent_path_override[a]);
   // A relative root is under the repo (and dies with the checkout); an absolute one is used as-is.
-  cfg.evidence.root = cfg.evidence.root ? resolve(repo, cfg.evidence.root) : join(local, cfg.app);
+  cfg.evidence.root = cfg.evidence.root ? resolve(repo, cfg.evidence.root)
+    : !cfg.from['evidence.local_root'] && process.env.DONE_DONE_EVIDENCE_ROOT ? resolve(process.env.DONE_DONE_EVIDENCE_ROOT)
+    : join(local, cfg.app);
   return cfg;
 }
 
@@ -472,6 +481,9 @@ export function globalConfigText(): string {
   const agents = Object.entries(CHEAP).map(([a, c]) => `  ${a}:\n    model: ${c.model}\n${c.effort ? `    effort: ${c.effort}\n` : ''}`).join('');
   return `# done-done global config. \`done-done init\` writes it once; \`init --agent\` then sets agent and its model in place.
 # A repo's .done-done.yaml may set agent (and the repo keys); every key here except agent is global-only.
+
+# Set false to skip review in every verify receipt (the reason is recorded).
+review_enabled: true
 
 # The coding agent done-done starts: one of ${AGENTS.join(', ')}, or acp:<target>. done-done never picks one: while none is set
 # it asks you in a terminal, or stops with the command that sets it: done-done init --agent <agent> --model <model>.

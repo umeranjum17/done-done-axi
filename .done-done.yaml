@@ -4,6 +4,7 @@ app: "done-done"
 journeys:
   e2e:
     command: node journeys/e2e.mjs
+    tier: ci
     core: true
   upgrade:
     command: node journeys/upgrade.mjs
@@ -34,6 +35,42 @@ journeys:
     command: node journeys/journey-add.mjs --enhance
   journey-improve:
     command: node journeys/journey-add.mjs --improve
+  tier-ci:
+    command: node journeys/tier-ci.mjs
+  flaky-quarantine:
+    command: node journeys/flaky-quarantine.mjs
+  inventory-ownership:
+    command: node journeys/inventory-ownership.mjs
+  qa-plan:
+    command: node journeys/qa-plan.mjs
+  size-bounds:
+    command: node journeys/size-bounds.mjs
+  affected-select:
+    command: node journeys/affected-select.mjs
+  qa-write:
+    command: node journeys/qa-write.mjs
+  qa-prove:
+    command: node journeys/qa-prove.mjs
+  test-value:
+    command: node journeys/value-marks.mjs
+  affected-audit:
+    command: node journeys/affected-audit.mjs
+  test-improve:
+    command: node journeys/improve-plan.mjs
+  test-apply:
+    command: node journeys/apply-plan.mjs
+  minimum-scope:
+    command: node journeys/minimum-scope.mjs
+  review:
+    command: node journeys/review.mjs
+  review-fix:
+    command: node journeys/review-fix.mjs
+  verify-review:
+    command: node journeys/verify-review.mjs
+  registered-script:
+    command: node journeys/registered-script.mjs
+  affected-proof:
+    command: node journeys/affected-proof.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

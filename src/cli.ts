@@ -13,16 +13,26 @@ import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUD
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
+import { CODE_CLASSES, DOC_CLASSES, review, reviewBase, TRUSTED_KEYS, type ReviewResult } from './review.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
 import { design, interactions, type InteractionResult, KINDS, redesign, writtenRequirement, type RequirementMatch } from './design.js';
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
+import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { planImprove } from './improve.js';
+import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
+import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
+import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, type Size } from './size.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange } from './affected.js';
+import { affectedProof, affectedShape, extendReceipt, noReview, parseFiles, undriven, type AffectedProof } from './affected-proof.js';
+import { addPairs, auditSelection, featureFor, type JourneyFailure } from './audit.js';
+import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
+import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
@@ -157,6 +167,9 @@ const FLAGS: Record<string, string> = {
   '--upgrade': 'with --journey: mark it the upgrade journey (upgrade: true): install the previous shipped version, upgrade over it in place, then drive the core journey',
   '--open': 'open a run for a hand- or agent-driven proof; prints its id and folder',
   '--close <run-id>': 'seal an open run and record the files in its folder',
+  '--owner <name>': 'the journey or suite that owns a test file recorded in the inventory',
+  '--night': 'allow a large (night-only) journey to run',
+  '--tier <name>': 'run only journeys with this tier; in CI (GITHUB_ACTIONS=true) defaults to ci',
   '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
   '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
   '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (for scripts)',
@@ -167,6 +180,17 @@ const FLAGS: Record<string, string> = {
   '--outcome "<what a user can now do>"': 'the outcome the run must prove',
   '--wait': 'wait until the run ends (the default)',
   '--no-wait': 'start the run and return at once (exit 4); read it later with done-done status',
+  '--plan-only': 'with tests improve: propose the plan (stage proposed) and change nothing',
+  '--apply': 'with tests improve: apply one class (drop or move) of a saved plan after rerunning the kept tests against its recorded faults',
+  '--plan': 'with tests improve --apply: the saved plan file (tests improve --plan-only --json output)',
+  '--write': 'with qa: write the journey the plan needs (stage writing), through journey add or enhance, only when no journey covers the behaviour',
+  '--fix-tries <n>': 'with verify: the fix attempts this run may make instead of auto_fix.verify (0 reports only)',
+  '--journeys <list>': 'with verify: the closed list of journeys this run drives (one in this version), so the receipt records minimum scope, the journeys not run, and the affected ones it omits',
+  '--named-by <who>': 'with --journeys: who named the list (default caller); the receipt records it',
+  '--affected-by <files>': 'with verify: repo files separated by commas that changed; only the journeys they need run (`affected`, local tier when unsure), the receipt extends the prior one and no review runs again',
+  '--extends <head>': 'with verify --affected-by: the head of the prior receipt to extend (default: the newest receipt before HEAD)',
+  '--prove': 'with qa: run the journey that covers the feature through verify, judge it, fix up to --max times and seal a receipt for the commit (stage sealed, or fail)',
+  '--max <n>': 'with qa --prove: the most fix attempts (default 2)',
   '--foreground': 'run every step in this process instead of a detached runner (for scripts)',
   '--run <run-id>': 'the run to show (default: the newest run of this checkout)',
   '--probe': 'ask the configured agent one JSON-schema question and require a valid answer (one call at the agent\'s model: its cheap default where it has one, else its own; set agent_config.<agent>.model to choose)',
@@ -190,6 +214,7 @@ const FLAGS: Record<string, string> = {
   '--no-evals': 'force evals off (a detected AI-output app is then recorded as evals.enabled: false)',
   '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init; evals stay off too, since the prompt set needs the agent',
   '--setup': 'install health: git, config, evidence_root, agent and judge only; the verify skill and a repo with no journeys are warnings, and the journey rows are skipped',
+  '--audit': 'with affected, a commit range: add each journey that failed at a receipted commit the map did not select to the feature map, and print recall',
   '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
   '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
   '--hook <agent>': 'also add a SessionStart hook to .claude/settings.json (claude), .codex/hooks.json (codex) or .gemini/settings.json (gemini) that shows `done-done` to each session, or a plugin to .opencode/plugins (opencode) or an extension to .pi/extensions (pi) that adds it to the first message of each session (opt-in)',
@@ -230,8 +255,10 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done run [<journey>] [-- <command...>]', 'run a journey (or command) and record the evidence it writes'],
       ['done-done run --open [<journey>]', 'open a run for a hand- or agent-driven proof; prints its id and folder'],
       ['done-done run --close <run-id>', 'seal an open run'],
+      ['done-done run --tier <name>', 'run only journeys with this tier (defaults to ci in CI)'],
+      ['done-done run <journey> --night', 'run a large journey (night-only; refused without --night)'],
     ],
-    flags: ['-- <command...>', '--open', '--close <run-id>'],
+    flags: ['-- <command...>', '--open', '--close <run-id>', '--tier <name>', '--night'],
     more: [JOURNEYS_TEXT],
   },
   check: {
@@ -255,10 +282,12 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
   verify: {
     usage: [
       ['done-done verify [<journey>] --outcome "<what a user can now do>" [--claim-id <id>]', 'drive the journey in a run that outlives this command, check its evidence, judge each capture and record a receipt'],
+      ['done-done verify --journeys <journey> [--named-by <who>] --outcome "<claim>"', 'minimum journey scope: drive only the journey the caller names; the receipt records the list, who named it, and the journeys it did not run (those `affected` selected too)'],
+      ['done-done verify --affected-by <files> [--extends <head>] --outcome "<claim>"', 'drive only the journeys the named files affect (the whole local tier for a file no journey covers) and record a receipt that extends the prior one: its head, the files, the journeys and no review again; writes no journey, starts no reviewer'],
       ['done-done verify --outcome "<claim>" [--feature <name>]', 'with no journey, the author agent drives a verify skill feature and the judge the user set judges its captures'],
       ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process'],
     ],
-    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--claim-id <id>', '--wait', '--no-wait', '--foreground'],
+    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--affected-by <files>', '--extends <head>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
     more: [RUNS_TEXT],
   },
   journey: {
@@ -278,6 +307,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     usage: [['done-done maintain [--no-wait | --wait | --foreground]', 'check the verify skill against the source in a run: links, index, cited file:line, one read-only reader per feature; with auto_fix.maintain, the agent fixes the skill on a done-done branch']],
     flags: ['--wait', '--no-wait', '--foreground'],
     more: [MAINTAIN_TEXT, RUNS_TEXT],
+  },
+  review: {
+    usage: [['done-done review [<base>]', "review commits since <base> and fix clear findings once; ask a person when a decision is needed"]],
+    flags: [],
+    more: [`Two read-only reviewers classify findings as to-fix or to-ask. A clear finding triggers one fix and a fresh review; a question waits for done-done respond --run <id> --answer \"<answer>\". The fix changes and commits this checkout. Results are approved, to-ask or spent; status and report show the question and fix count.`],
   },
   design: {
     usage: [['done-done design <screens...> [--mock <screen>=<mock>]', 'a judge looks at each PNG/JPEG screen, alone or next to its mock, and fails it on visual defects']],
@@ -327,14 +361,50 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   checks.generated_paths: ["gen/**", "*.snap"] adds your own globs to the generated files above; the default is none.
   Every run is appended to lint.log next to the store. Exit 0 PASS or WARN, 1 FAIL, 2 usage error. Needs gh for a PR URL`],
   },
+  inventory: {
+    usage: [
+      ['done-done inventory', 'list the repo\'s test files with their owners; exit 1 for a test file with no owner or an owned one edited outside a run'],
+      ['done-done inventory record <files...> [--owner <name>]', 'inside a done-done run (journey command): store the files\' current hashes; a new file needs --owner'],
+    ],
+    flags: ['--owner <name>'],
+    more: [`inventory: opt-in test ownership. Commit ${'.done-done-inventory.json'} (path -> {owner, sha256}) and \`done-done lint\` then FAILs, naming the file, for a test file
+  (code in test/, tests/, __tests__/ or journeys/, or *.test.* / *.spec.*; fixtures excluded) with no entry, and for an owned file whose bytes differ from its
+  entry. \`record\` re-hashes files and needs DONE_DONE_RUN_ID, which only a done-done run sets, so a hand edit stays a failure while the same edit made by a
+  journey command passes; \`journey add|enhance|improve\` record the script they write. A deleted owned file is not a failure. Exit 0 clean, 1 findings, 2 usage error`],
+  },
+  tests: {
+    usage: [
+      ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
+      ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
+      ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
+      ['done-done tests value [<journey>] [--night] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
+    ],
+    flags: ['--night', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
+    more: [`test sizes: set journeys.<name>.size to ci (15s), local (300s) or large (900s). \`run\` stops a journey past its bound and fails it as slow.
+  A large journey needs journeys.<name>.reason and is night-only: \`run\` and \`tests measure\` refuse it without --night. Once any journey has a size,
+  \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed.
+  \`tests value\` measures what each test is worth: it flips one operator on one source line (--faults, default 12, thinned evenly; --source limits the files, default every
+  non-test source file git tracks), in a scratch copy per fault, and runs every test there. A test that fails on a fault catches it. Verdicts: real (catches a fault, and no faster
+  test catches the same set), slop (catches none), duplicate (a faster test, or an earlier-named one at equal speed, catches exactly the same faults; duplicate_of names it), failing (fails on
+  the clean copy). The work copy is only read and nothing is recorded as proof. Exit 1 when any test is slop, duplicate or failing.
+  \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: one row per test (action keep, drop for slop or a duplicate, move with \`to\` when a real
+  test's measured time fits a smaller size with 3x headroom, fix for a failing one, each with its reason), gaps, the planted faults that no test caught, as file:line, and faults, every planted fault. It writes no file and exits 0.
+  \`tests improve --apply drop|move --plan <file>\` applies one class of a saved plan (stage applied). It first reruns the kept tests, at their new sizes, against the plan's recorded faults: if a fault the plan
+  said was caught is caught by no kept test, or a kept test now fails, or the plan is stale (a source line or journey changed), or the change set is over 300 lines, it is refused (stage refused, exit 1) and writes nothing.
+  Otherwise drop removes the journeys from .done-done.yaml, deletes their scripts that no kept journey runs and forgets their inventory entries; move sets the smaller size. It reports the tests' summed clean-run seconds
+  before and after. Commit each class alone on its own ticket branch; fill gaps with \`done-done qa "<feature>" --write\``],
+  },
   'after-commit': {
     usage: [['done-done after-commit [--before]', 'Claude Bash lifecycle hook; reads its event on stdin and reruns affected journey commands after a commit']],
     flags: ['--before'],
     more: ['Install only by opting in: done-done init --hook claude --after-commit. No agent or judge is selected or started; uncovered files produce a proposal outside the skill.'],
   },
   affected: {
-    usage: [['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"]],
-    flags: [],
+    usage: [
+      ['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"],
+      ['done-done affected --audit <range>', 'compare failed journey runs with the commits\' receipts, add each missed file/journey pair to the feature map, and print recall'],
+    ],
+    flags: ['--audit'],
     more: [`affected: model-free. The change is the diff from <base>, else from the newest receipt before HEAD (the commits since the last proof),
   else from the merge base with the default branch (origin/HEAD, origin/main, origin/master, main, master), plus uncommitted changes to tracked files;
   evidence.ignore_paths and .done-done-receipts/ need nothing. A journey is needed when its command runs a changed file; a feature
@@ -343,12 +413,39 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   that names no journey is driven by your agent (verify --feature <name>). A changed file nothing covers, or no base, is uncertain:
   the core journey is needed too (every journey when none is core), never less, and the file is flagged for the feature map.
   Result: fresh (exit 0) when the receipt for HEAD has a run of every needed journey and feature and nothing is uncommitted;
-  stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1`],
+  stale (a receipt for an earlier commit, a receipt that misses a needed journey, or uncommitted changes) or missing (no receipt) exit 1
+  --audit <range>: for each commit in the range that has a receipt, a failed run of a journey that receipt never ran is a failure; it is caught when
+  affected selects the journey for that commit's diff and missed when not. Each missed commit's changed files are written to the feature file that
+  names the journey (run <journey>), unless it already cites them; recall is caught over failures. Exit 1 only when a missed journey is named in no feature.`],
+  },
+  qa: {
+    usage: [
+      ['done-done qa "<feature>" [<base>] [--write]', 'plan QA from the feature and the diff: a journey when a user can reach new or changed behaviour, no-test for fixtures, tests and internals; records stage planned and the reason'],
+      ['done-done qa "<feature>" [<base>] --prove [--max <n>]', 'run the covering journey through verify, judge it, fix up to n times (default 2) and seal a receipt for the commit; ends stage sealed, fixed or fail'],
+    ],
+    flags: ['--write', '--prove', '--max <n>'],
+    more: [`qa: model-free until --write. The change is the diff from <base>, else from the newest receipt before HEAD, else from the merge base with the default branch, plus uncommitted changes to tracked files.
+  A journey is planned when an added line adds a command, flag or route, or a screen file (.tsx .vue .html .css ...) changed; the journeys it lists
+  are the ones the feature map maps (done-done affected). Tests and fixtures only, docs, build output or proof files only, and source with no new
+  command, flag, route or screen are no-test, each with its reason. The plan is written to <evidence root>/.done-done/qa/<feature>.json
+  as {stage: planned, plan, reason}. It runs no agent or journey and exits 0 for either plan
+  --write (stage writing): when the plan is a journey and no journey covers the new command, flag or route, add one with done-done journey add;
+  when a journey runs that code but never names it, extend that journey with done-done journey enhance; when one covers it, or the plan is
+  no-test, write nothing. The result names the write: add, extend or none, with the journey and the reason. Needs the agent journey add uses
+  --prove (stage sealed): for a journey plan, run \`done-done verify <journey> --outcome "<feature>" --fix-tries <n>\` for the one journey that covers the
+  change (commit a written journey first): the existing drive, check, judge, fix loop and receipt, with at most n fixes (--max, default 2; 0 reports only).
+  A pass seals a receipt for HEAD (stage sealed, exit 0). A fix lives on a done-done/verify-<run-id> branch, so the result is stage fixed (exit 1): merge it and re-run
+  to seal. A run that still fails after n fixes ends stage fail (exit 1) with the reason. A no-test plan runs nothing and seals nothing`],
   },
   status: {
     usage: [['done-done status [--run <run-id>]', "show a run's steps, result, findings and next step"]],
     flags: ['--run <run-id>'],
     more: [RUNS_TEXT],
+  },
+  report: {
+    usage: [['done-done report [--run <run-id>]', 'show a review result and any question']],
+    flags: ['--run <run-id>'],
+    more: [],
   },
   attach: {
     usage: [['done-done attach [--run <run-id>]', "stream a run's events until it ends, then show it"]],
@@ -363,9 +460,10 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   respond: {
     usage: [
       ['done-done respond [--run <run-id>] --action approve|skip --reason "<why>"', 'answer a spend gate: spend and run the journey, or end with nothing spent'],
+      ['done-done respond --run <run-id> --answer "<answer>"', 'answer a review question and resume'],
       ['done-done respond [--run <run-id>] --action fix', 'end a run waiting at its judge gate as fail (nothing moves it past the judge)'],
     ],
-    flags: ['--run <run-id>', '--action <approve|skip|fix>', '--reason "<why>"'],
+    flags: ['--run <run-id>', '--action <approve|skip|fix>', '--reason "<why>"', '--answer "<answer>"'],
     more: [RUNS_TEXT],
   },
   rerun: {
@@ -494,6 +592,8 @@ type RunRecord = {
   eval?: { pass: boolean; partial: boolean; prompts: number; total: number; win_rate: number; mean_score: number; model_calls: number }; // an `eval` run: totals, and partial for --limit
   tool?: string; // the done-done version that recorded the run: a run without it is older than step records
   steps?: StepRecord; // the user steps the journey wrote to STEPS_FILE in the run folder: target version, start state, steps, result
+  flaky?: string[]; // journeys (or matrix cells) that failed once and passed on the second run: quarantined, the run still passes
+  warning?: string; // the one warning line a quarantined run prints
   steps_error?: string; // why that file is not a step record
 };
 
@@ -650,6 +750,7 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
     record: shown(repo, record),
   };
   if (reason) result.reason = reason;
+  if (rec.flaky) { result.flaky = rec.flaky; result.warning = rec.warning; }
   result.evidence = rows.items;
   if (rows.omitted) result.evidence_omitted = rows.omitted;
   if (rec.matrix) result.matrix = rec.matrix;
@@ -672,7 +773,7 @@ async function cmdRun(argv: string[]): Promise<number> {
   const dash = argv.indexOf('--');
   const { values, positionals } = parseArgs({
     args: dash < 0 ? argv : argv.slice(0, dash),
-    options: { open: { type: 'boolean' }, close: { type: 'string' } },
+    options: { open: { type: 'boolean' }, close: { type: 'string' }, tier: { type: 'string' }, night: { type: 'boolean' } },
     allowPositionals: true,
   });
   const repo = repoRoot();
@@ -684,10 +785,27 @@ async function cmdRun(argv: string[]): Promise<number> {
     if (rec.ended_at) throw new UsageError(`run ${values.close} is already closed`);
     return emitted(closeRun(repo, cfg, rec));
   }
+  // CI mode: GITHUB_ACTIONS=true defaults to tier 'ci'
+  const inCI = process.env.GITHUB_ACTIONS === 'true';
+  const tier = values.tier ?? (inCI ? 'ci' : undefined);
   const journey = positionals[0] ?? null;
   if (positionals.length > 1) throw new UsageError('run takes at most one journey name');
+  // Filter journeys by tier if specified
+  const availableJourneys = tier
+    ? Object.fromEntries(Object.entries(cfg.journeys).filter(([_, j]) => j.tier === tier))
+    : cfg.journeys;
+  if (tier && Object.keys(availableJourneys).length === 0) {
+    throw new UsageError(`no journeys with tier ${tier}; available journeys: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+  }
+  if (journey && tier && !availableJourneys[journey]) {
+    const j = cfg.journeys[journey];
+    if (!j) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+    throw new UsageError(`journey ${journey} has tier ${j.tier ?? '(none)'}, not ${tier}`);
+  }
   const spends = journey ? cfg.journeys[journey]?.spends : undefined;
   if (spends) throw new UsageError(`journey ${journey} spends (${spends}), so run refuses it: nothing ran`, `Ask the user, then: done-done verify ${journey} --outcome "<what a user can now do>"`);
+  const asleep = journey && cfg.journeys[journey] ? nightFault(journey, cfg.journeys[journey], !!values.night) : null;
+  if (asleep) throw new UsageError(asleep, `Run it at night: done-done run ${journey} --night`);
   let command = dash < 0 ? null : commandOf(argv.slice(dash + 1));
   if (journey && !command) {
     const j = cfg.journeys[journey];
@@ -739,25 +857,35 @@ async function cmdRun(argv: string[]): Promise<number> {
   // The run's log lives with its run store, never in the evidence folder the judge reads: a failure names its first failing line.
   const logFile = join(runsRoot(cfg.app), rec.run_id, 'logs', 'run.log');
   mkdirSync(dirname(logFile), { recursive: true });
-  for (const cell of matrix?.required ?? [{}]) {
+  const size = journey && !values.close ? cfg.journeys[journey]?.size : undefined;
+  const drive = (cell: Parameters<typeof cellEnv>[0]) => runBounded(expanded, {
     // The journey's own stdout goes to our stderr, never our stdout: stdout carries only done-done's
     // result document (TOON or --json), so a noisy journey cannot break `run --json | JSON.parse`.
-    const r = await new Promise<number | null>((done) => {
-      const child = spawn(expanded, {
-        cwd: repo, shell: true, stdio: ['inherit', 'pipe', 'pipe'],
-        env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
-      });
-      for (const out of [child.stdout, child.stderr]) out?.on('data', (b: Buffer) => { process.stderr.write(b); appendFileSync(logFile, b); });
-      child.on('error', () => done(null)).on('close', done);
-    });
-    const code = r ?? 1;
+    cwd: repo, size,
+    env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
+    onData: (b) => { process.stderr.write(b); appendFileSync(logFile, b); },
+  });
+  // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed. A slow stop is final.
+  const flaky: string[] = [];
+  let slow: string | null = null;
+  for (const cell of matrix?.required ?? [{}]) {
+    const r = await drive(cell);
+    let code = r.code ?? 1;
+    if (r.slow) slow = slowReason(journey!, size as Size);
+    else if (code !== 0 && (await drive(cell)).code === 0) { flaky.push(matrix ? cellName(cell) : journey ?? expanded); code = 0; }
     if (code !== 0) {
       if (!failed.length) rec.exit = code;
       failed.push(`${cellName(cell)} (exit ${code})`);
     }
   }
+  if (flaky.length) {
+    rec.flaky = flaky;
+    rec.warning = `flaky: ${flaky.join(', ')} passed on the second run and is quarantined; fix it`;
+    process.stderr.write(`warning: ${rec.warning}\n`);
+  }
   reap();
   const sealed = closeRun(repo, cfg, rec, logFile);
+  if (slow) return emitted({ code: FAIL, result: { ...sealed.result, slow: true, reason: slow } });
   if (matrix && failed.length) return emitted({ code: FAIL, result: { ...sealed.result, reason: `the run command failed for cell ${failed.join('; ')}` } });
   return emitted(sealed);
 }
@@ -835,6 +963,7 @@ type CheckOutcome = {
   warnings: string[];
   evals?: string; // `pass <run id>` of the eval run the check needed (evals.enabled)
   suite?: SuiteRecord; // the project's own test suite at this head
+  scope?: Scope; // a verify run's caller-named minimum journey list
 };
 
 // Run a check and return its result without printing it, so `check` and `receipt` share one path.
@@ -1317,6 +1446,9 @@ type Receipt = {
   judge: JudgeBlock;
   evals?: string; // `pass <run id>`: the full eval run at this head (only when evals.enabled)
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
+  review?: { state: 'approved' | 'skipped'; reason?: string; head?: string; result?: ReviewResult };
+  scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
+  affected?: AffectedProof; // verify --affected-by: the prior receipt this one extends, the files, the journeys and no review again
 };
 
 const receiptsDir = (cfg: Config) => join(cfg.evidence.root, '.done-done', 'receipts');
@@ -1340,6 +1472,17 @@ function writeReceipt(cfg: Config, rec: Receipt): string {
   return path;
 }
 
+// The extended receipt already written for `head` by an earlier journey of a selection (src/affected-proof.ts), read raw because
+// receiptFault refuses it until every selected journey has run; undefined when there is none.
+function earlierReceipt(cfg: Config, head: string): Receipt | undefined {
+  try {
+    const rec: Receipt = JSON.parse(readFileSync(join(receiptsDir(cfg), `${head}.json`), 'utf8'));
+    return affectedShape(rec.affected) ? rec : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Why a parsed receipt is not a well-formed passing one (a judge block that names its judge and passes only captures the receipt cites,
 // and capture runs that are not all code-only), or null.
 function receiptFault(rec: Receipt, short: string): string | null {
@@ -1356,6 +1499,10 @@ function receiptFault(rec: Receipt, short: string): string | null {
     const rows = j.interaction_checklist;
     if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256))))) return `receipt for ${short} has a malformed interaction-checklist verdict`;
   }
+  if (rec.review !== undefined && (rec.review.state === 'skipped' ? !rec.review.reason?.trim() : rec.review.state !== 'approved' || rec.review.head !== rec.head || rec.review.result?.head !== rec.head || !Array.isArray(rec.review.result?.reviewers) || rec.review.result.reviewers.length !== 2 || rec.review.result.reviewers.some((r) => r.state !== 'completed') || !Array.isArray(rec.review.result.findings) || rec.review.result.findings.length !== 0)) return `receipt for ${short} has a malformed review record`;
+  if (rec.scope !== undefined && !scopeShape(rec.scope)) return `receipt for ${short} has a malformed journey scope`;
+  if (rec.affected !== undefined && !affectedShape(rec.affected)) return `receipt for ${short} has a malformed affected-journey record`;
+  if (rec.affected && undriven(rec.affected).length) return `receipt for ${short} is incomplete: the affected journeys ${undriven(rec.affected).join(', ')} have not run`;
   if (rec.suite !== undefined && !suiteShape(rec.suite)) return `receipt for ${short} has a malformed test-suite record`;
   if (rec.evals !== undefined && !/^pass \S+$/.test(String(rec.evals))) return `receipt for ${short} has a malformed evals line`;
   const code = runsFault(rec.runs);
@@ -1367,6 +1514,21 @@ function receiptFault(rec: Receipt, short: string): string | null {
 // The warning a well-formed receipt still carries: its runs were recorded before step records.
 const receiptWarning = (rec: Receipt): string | null =>
   [stepsFault(rec.runs).warning, rec.suite ? null : 'it was written before the test-suite step and records no suite result; re-run done-done receipt so it does'].filter(Boolean).join('; ') || null;
+
+// Why the prior receipt an extended receipt links is gone: its file is missing, changed since, or no longer a well-formed pass. Or null.
+function priorFault(cfg: Config, a: AffectedProof): string | null {
+  const path = join(receiptsDir(cfg), `${a.extends.head}.json`);
+  const short = a.extends.head.slice(0, 12);
+  if (!existsSync(path)) return `this receipt extends the receipt for ${short}, which is no longer in ${receiptsDir(cfg)}`;
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== a.extends.sha256) return `this receipt extends the receipt for ${short}, whose file changed since`;
+  try {
+    const fault = receiptFault(JSON.parse(bytes.toString('utf8')), short);
+    return fault && `this receipt extends the receipt for ${short}, which is not valid: ${fault}`;
+  } catch {
+    return `this receipt extends the receipt for ${short}, which cannot be read`;
+  }
+}
 
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
@@ -1413,7 +1575,9 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
     }
   }
   if (bad.length) return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+  const gone = rec.affected && priorFault(cfg, rec.affected);
+  if (gone) return fail(gone);
+  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.review && { review: rec.review }), ...(rec.scope && { scope: rec.scope }), ...(rec.affected && { affected: rec.affected }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 
 async function cmdReceipt(argv: string[]): Promise<number> {
@@ -1441,14 +1605,15 @@ function assertCleanForReceipt(repo: string): void {
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: number; result: Record<string, unknown> } {
+function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-  const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }) };
+  let rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(extended && { affected: extended.affected }) };
+  if (extended) rec = extendReceipt(earlierReceipt(cfg, rec.head), rec, extended.journey);
   const path = writeReceipt(cfg, rec);
-  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 
@@ -1541,7 +1706,7 @@ function report(findings: Finding[], files: string[], ctx: ReportContext): { cod
 type StepState = 'pending' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'skipped';
 // A gate finding asks the caller (ask-user): the judge did not pass a capture.
 type GateFinding = { id: string; severity: 'error' | 'warning'; what: string; action: 'ask-user' };
-type Step = { name: string; status: StepState; started?: string; ended?: string; exit?: number; outputs?: string[]; findings?: unknown };
+type Step = { name: string; status: StepState; started?: string; ended?: string; exit?: number; outputs?: string[]; findings?: unknown; attempt?: number; max_attempts?: number };
 type Run = {
   // journey null: the author agent drives `feature` (features/<name>.md of the verify skill; unset until the agent picks one); a maintain run has no journey or claim.
   schema: 2; run_id: string; kind: 'verify' | 'maintain'; app: string; repo: string; journey?: string | null; feature?: string; author?: { agent: string; model: string };
@@ -1551,8 +1716,12 @@ type Run = {
   runner?: { pid: number; started: string; heartbeat: string; journey_pgid?: number; instance_pgid?: number }; steps: Step[];
   result?: 'pass' | 'fail' | 'inconclusive' | MaintainResult; reason?: string; findings?: MaintainFinding[]; unverified?: string[]; git_status?: string;
   record?: string; receipt?: string; created: string; updated: string;
+  review?: { state: 'requested' | 'stalled' | 'to-ask' | 'approved' | 'skipped' | 'to-fix' | 'spent'; base: string; head: string; fixes: number; result?: ReviewResult; reason?: string; question?: string; answer?: string; checked?: CheckOutcome };
+  fix_tries?: number; // verify --fix-tries: the fix attempts this run may make, in place of auto_fix.verify (qa --run caps its loop here)
   fix?: { branch?: string; commit: string; files?: string[]; attempts?: number; record?: string }; // a maintain or verify fix (auto_fix)
   inputs?: { head: string; journey: string; skill: string };
+  scope?: Scope; // verify --journeys: the minimum journey list the caller named
+  affected?: AffectedProof; // verify --affected-by: what this run extends (its journey is one of `journeys`)
   // Primitive 17 (input guard): the watched inputs hashed before and after the drive.
   guarded?: { patterns: string[]; before: GuardFile[]; after: GuardFile[] };
   // What respond needs to write the receipt once the caller answers the gate, and the answer.
@@ -1568,7 +1737,7 @@ const HEARTBEAT_MS = 5_000;
 // A run that never recorded its runner's pid this long after it was created has no runner.
 const STALE_MS = 60_000;
 const runsRoot = (app: string) => join(home(), 'runs', app);
-const verifySteps = (cfg: Config) => ['resolve', 'drive', 'check', 'judge', ...(cfg.auto_fix.verify ? ['triage', 'fix'] : []), 'gate', 'receipt', 'report'];
+const verifySteps = (tries: number) => ['resolve', 'drive', 'check', 'judge', ...(tries ? ['triage', 'fix'] : []), 'gate', 'reviewing', 'receipt', 'report'];
 // Commands an agent drive must not run: they answer a gate, write a receipt or start a run that can write one.
 const DRIVE_REFUSED = ['respond', 'eval', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit', 'journey'];
 // One agent drive may launch the app, drive it and save captures; past this it is killed with everything it started.
@@ -1814,7 +1983,12 @@ const logEvent = (dir: string, e: Record<string, unknown>) => appendFileSync(joi
 
 const setStep = (dir: string, run: Run, s: Step, status: StepState, extra: Partial<Step> = {}) => {
   Object.assign(s, { status, [status === 'running' ? 'started' : 'ended']: now() }, extra);
-  logEvent(dir, { step: s.name, status });
+  const event: Record<string, unknown> = { step: s.name, status };
+  if (s.attempt !== undefined && s.max_attempts !== undefined) {
+    event.attempt = s.attempt;
+    event.max_attempts = s.max_attempts;
+  }
+  logEvent(dir, event);
   saveRun(dir, run);
 };
 
@@ -1888,7 +2062,7 @@ async function runSteps(dir: string): Promise<void> {
 
     // One drive, check and judge of the claim at `at`: the user's checkout, or (`fix` names the re-run) a fix worktree.
     // With auto_fix.verify, a product failure (a drive the product stopped, a screen the judge calls wrong) may be fixed.
-    const tries = cfg.auto_fix.verify ?? 0;
+    const tries = run.fix_tries ?? cfg.auto_fix.verify ?? 0;
     const pass = async (at: string, fix = ''): Promise<VerifyPass> => {
     const id = fix ? `${run.run_id}-${fix}` : run.run_id;
     const fail = (reason: string, fixable: Failure[] = [], result: 'fail' | 'inconclusive' = 'fail'): VerifyPass => ({ end: { result, reason: `drive: ${reason}` }, asks: [], fixable });
@@ -2085,8 +2259,8 @@ async function runSteps(dir: string): Promise<void> {
     return { checked, asks: [], fixable: [] };
     };
     const h: Harness = { begin, set, log, spawned };
-    let p = await pass(run.repo);
-    let fixed = false;
+    let p: VerifyPass = run.review?.checked ? { checked: run.review.checked, asks: [], fixable: [] } : await pass(run.repo);
+    let fixed = !!(run.review?.checked && run.fix?.branch);
     // auto_fix.verify: the judge sorts the product failures first (an ask parks the run at the gate); then a checkout with
     // uncommitted tracked changes is never fixed, since the fix starts from the committed head.
     if (tries && p.end && p.fixable.length && journey?.spends) p.end = { ...p.end, reason: `${p.end.reason}; auto_fix.verify does not re-run a spends journey` };
@@ -2103,6 +2277,7 @@ async function runSteps(dir: string): Promise<void> {
         if ('blocked' in f) return finish('blocked', `fix: ${f.blocked}`);
         p = f;
         fixed = true;
+        if (run.fix?.record) run.record = run.fix.record;
       }
     }
 
@@ -2123,8 +2298,82 @@ async function runSteps(dir: string): Promise<void> {
     }
     if (p.end) return finish(p.end.result, p.end.reason);
 
+    // Review belongs to this proof run. A review fix returns to the same drive, checks and judge.
+    let proof: Receipt['review'];
+    if (run.affected) proof = noReview(run.affected);
+    else if (!cfg.review_enabled) proof = { state: 'skipped', reason: 'review disabled in global config' };
+    else {
+      const base = run.review?.base ?? reviewBase(run.repo);
+      const current = p.checked!.head.commit;
+      const mergeBase = git(run.repo, 'merge-base', base, current);
+      if (!git(run.repo, 'diff', '--name-only', mergeBase, current)) proof = { state: 'skipped', reason: 'no diff' };
+      else {
+        let fixes = run.review?.fixes ?? 0;
+        for (;;) {
+          begin('reviewing');
+          const rcfg = reviewConfig(run.repo, base);
+          const reviewDirPath = join(dir, 'review');
+          mkdirSync(join(reviewDirPath, 'agents'), { recursive: true });
+          run.review = { ...run.review, state: 'requested', base, head: p.checked!.head.commit, fixes, checked: p.checked };
+          saveRun(dir, run);
+          let result: ReviewResult;
+          try {
+            result = await review(run.repo, selectAgent(rcfg), base, join(reviewDirPath, `round-${fixes}`), true,
+              run.review.answer && run.review.question ? { question: run.review.question, answer: run.review.answer } : undefined, run.review.head);
+            const errors = result.reviewers.filter((r) => r.state === 'failed');
+            if (errors.length) throw new Error(errors.map((r) => `${r.name}: ${r.error}`).join('; '));
+          } catch (e) {
+            run.review.state = 'stalled'; run.review.reason = errorText(e);
+            run.status = 'awaiting_approval';
+            set(step!, 'awaiting_approval');
+            return;
+          }
+          run.review.result = result; run.review.head = result.head;
+          if (!result.findings.length) {
+            run.review.state = 'approved'; set(step!, 'completed');
+            proof = { state: 'approved', head: result.head, result }; break;
+          }
+          const question = result.findings.find((f) => f.action === 'to-ask');
+          if (question) {
+            run.review.state = 'to-ask'; run.review.question = question.question || question.what;
+            run.status = 'awaiting_approval'; set(step!, 'awaiting_approval'); return;
+          }
+          if (fixes >= 1) { run.review.state = 'spent'; return finish('fail', 'review: fix limit reached'); }
+          run.review.state = 'to-fix'; saveRun(dir, run);
+          const loop: ReviewLoop = { run_id: run.run_id, repo: run.repo, base, head: result.head, state: 'to-fix', fixes, limit: 1, route: { agent: selectAgent(rcfg).agent, model: selectAgent(rcfg).model }, result };
+          if (fixed) {
+            const wt = join(dir, 'review-fix');
+            await inWorktree(run.repo, wt, async () => {
+              const own = [cfg.evidence.root, home()].map((path) => under(run.repo, path)).filter((path) => path !== null);
+              const ignored = git(run.repo, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory', ...pathspec(own)).split('\0').filter(Boolean);
+              for (const path of ignored) cpSync(join(run.repo, path), join(wt, path), { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
+              loop.repo = wt;
+              await reviewFix(loop, reviewDirPath, rcfg, false);
+              p = await pass(wt, `review-fix${loop.fixes}`);
+              git(run.repo, 'branch', '-f', run.fix!.branch!, loop.head);
+              run.fix!.commit = loop.head;
+            }, loop.head);
+          } else {
+            await reviewFix(loop, reviewDirPath, rcfg, false);
+            p = await pass(run.repo, `review-fix${loop.fixes}`);
+          }
+          fixes = loop.fixes; run.review.fixes = fixes; run.review.head = loop.head; saveRun(dir, run);
+          run.record = join(recordsDir(cfg), `${run.run_id}-review-fix${fixes}.json`);
+          if (p.end) return finish(p.end.result, p.end.reason);
+          if (p.asks.length) {
+            begin('gate');
+            const findings: GateFinding[] = p.asks.map((f, i) => ({ id: `gate-${i + 1}`, severity: f.level === 'fail' ? 'error' : 'warning', what: f.why, action: 'ask-user' }));
+            run.gate = { findings, cited: p.checked!.cited, head: { commit: p.checked!.head.commit, tree: p.checked!.head.tree }, ...(p.checked!.judgeBlock && { judge: p.checked!.judgeBlock }) };
+            run.status = 'awaiting_approval'; set(step!, 'awaiting_approval', { findings }); return;
+          }
+        }
+      }
+    }
+    if (run.review) delete run.review.checked;
+    if (proof.state === 'skipped') run.review = { state: 'skipped', base: '', head: p.checked!.head.commit, fixes: 0, reason: proof.reason };
+    if (proof.head && proof.head !== p.checked!.head.commit) return finish('fail', 'review: reviewed head differs from judged head');
     begin('receipt');
-    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }) });
+    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) }, proof, run.affected && run.journey ? { affected: run.affected, journey: run.journey } : undefined);
     log('receipt', receipt.result);
     run.receipt = receipt.result.receipt as string | undefined;
     set(step!, receipt.code === PASS ? 'completed' : 'failed', { exit: receipt.code });
@@ -2169,10 +2418,14 @@ const VERIFY_TRIAGE: Triage = {
 // The judge the user set sorts the judge's failures before each fix: [] sends them all to the fixer;
 // with any ask (or unsure answer), or `park`, every judge failure goes to the gate with its class. A judge that does not
 // answer throws, so the run fails with the cause.
-async function sortJudged(run: Run, cfg: Config, open: MaintainFinding[], record: string, h: Harness, park = false): Promise<Finding[]> {
+async function sortJudged(run: Run, cfg: Config, open: MaintainFinding[], record: string, h: Harness, park = false, attempt?: { current: number; max: number }): Promise<Finding[]> {
   const judged = open.filter((f) => f.kind === 'judge');
   if (!judged.length) return [];
   const step = h.begin('triage');
+  if (attempt) {
+    step.attempt = attempt.current;
+    step.max_attempts = attempt.max;
+  }
   const choice = selectJudge(cfg, selectAgent(cfg));
   const asks = await triage(cfg, choice, judged, VERIFY_TRIAGE, { app: cfg.app, outcome: run.claim, findings: judged }, record);
   h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, ask_user: asks });
@@ -2218,6 +2471,8 @@ async function fixVerify(run: Run, cfg: Config, dir: string, first: VerifyPass, 
     if (copied) return (h.set(fixStep, 'failed'), run.findings = open, { blocked: copied });
     for (let k = 1; k <= tries; k++) {
       const step = h.begin('fix');
+      step.attempt = k;
+      step.max_attempts = tries;
       const round: Record<string, unknown> = { attempt: k, failures: open };
       rounds.push(round);
       const close = (status: StepState) => (h.log('fix', { agent: agent.agent, model: agent.model, worktree: wt, rounds }), h.set(step, status));
@@ -2255,7 +2510,7 @@ Answer with summary (what you changed, in one line) and blocker ("" when you fix
       const next = await again(wt, `fix${k}`);
       round.rerun = { result: next.end?.result ?? (next.asks.length ? 'gate' : 'pass'), reason: next.end?.reason, ...next.logs };
       if (next.end && !next.fixable.length) return blocked(`the re-run after attempt ${k} did not pass: ${next.end.reason}`, []);
-      const sorted = next.end ? await sortJudged(run, cfg, failures(next.fixable), join(dir, 'agents', `triage-fix${k}.json`), h).catch((e) => { close('failed'); throw e; }) : [];
+      const sorted = next.end ? await sortJudged(run, cfg, failures(next.fixable), join(dir, 'agents', `triage-fix${k}.json`), h, false, { current: k, max: tries }).catch((e) => { close('failed'); throw e; }) : [];
       if (!next.end || sorted.length) {
         run.fix.branch = `done-done/verify-${run.run_id}`;
         git(repo, 'branch', run.fix.branch, made.commit);
@@ -2319,7 +2574,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
     reapJourney(dir, run);
   }
   const code = runCode(run, status);
-  const drive = run.journey ?? (run.feature ? `--feature ${arg(run.feature)}` : '');
+  const drive = run.affected ? `--affected-by ${arg(run.affected.files.join(','))} --extends ${run.affected.extends.head}` : run.journey ?? (run.feature ? `--feature ${arg(run.feature)}` : '');
   const again = run.kind === 'maintain' ? 'done-done maintain' : `done-done verify ${drive ? `${drive} ` : ''}--outcome ${arg(run.claim!)}${run.claim_id ? ` --claim-id ${arg(run.claim_id)}` : ''}`;
   const findings = cap(run.findings ?? []);
   const ev = cap(rec ? evidenceOf(run.repo, cfg, rec) : []);
@@ -2329,11 +2584,21 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
   if (reason) result.reason = reason;
   Object.assign(result, {
     ...(run.kind === 'verify' && { claim: run.claim, journey: run.journey }),
+    ...(run.scope && { scope: run.scope }),
+    ...(run.affected && { affected: run.affected }),
     ...(run.kind === 'verify' && run.journey === null && { feature: run.feature ?? 'picked by the agent', author: run.author && `${run.author.agent} (model ${run.author.model || 'its own default'})` }),
     repo: run.repo, ...(rec && { head: rec.commit }),
-    steps: run.steps.map((s) => ({ name: s.name, status: s === at && (status === 'failed' || (status === 'cancelled' && (s.status === 'running' || s.status === 'awaiting_approval'))) ? status : s.status })),
+    steps: run.steps.map((s) => {
+      const stepStatus = s === at && (status === 'failed' || (status === 'cancelled' && (s.status === 'running' || s.status === 'awaiting_approval'))) ? status : s.status;
+      const stepInfo: Record<string, unknown> = { name: s.name, status: stepStatus };
+      if (s.attempt !== undefined && s.max_attempts !== undefined) {
+        stepInfo.stage = `${s.name} ${s.attempt} of ${s.max_attempts}`;
+      }
+      return stepInfo;
+    }),
   });
   if (status === 'awaiting_approval' && run.gate) result.findings = run.gate.findings;
+  if (run.review) { const { checked: _checked, ...visible } = run.review; result.review = visible; if (run.review.state === 'stalled') result.wait = { owner: 'outside', reason: 'quota' }; }
   if (run.response) result.response = run.response;
   if (run.spend) result.spend = run.spend;
   if (run.signoff) result.signoff = run.signoff;
@@ -2351,7 +2616,9 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
   result.run = shown(run.repo, dir);
   const id = run.run_id;
   result.help =
-    status === 'awaiting_approval' && run.gate?.spend ? [
+    status === 'awaiting_approval' && run.review?.state === 'stalled' ? [`Review stalled: ${run.review.reason}; retry the same run when the engine is available: done-done rerun --run ${id}`]
+    : status === 'awaiting_approval' && run.review?.state === 'to-ask' ? [`Answer the review question: done-done respond --run ${id} --answer \"<answer>\"`]
+    : status === 'awaiting_approval' && run.gate?.spend ? [
       `Ask the user whether to spend ${run.gate.spend} on this run; never decide it for them. Their yes runs the journey:`,
       `done-done respond --run ${id} --action approve --reason "<who approved the spend>"`,
       `Their no: done-done respond --run ${id} --action skip --reason "<why they said no>"   (ends fail, nothing spent)`,
@@ -2419,49 +2686,130 @@ function refuseParked(cfg: Config, repo: string, claim: string | undefined) {
 }
 
 // Before a verify starts: its judge, plus the agent when it drives (no journey) or fixes (auto_fix.verify, an agent that can edit).
-async function preflightVerify(cfg: Config, agentDrives: boolean): Promise<void> {
-  if (agentDrives || cfg.auto_fix.verify) await withChoice('agent', cfg);
-  if (cfg.auto_fix.verify && cfg.agent.startsWith('acp:')) throw new UsageError(`${cfg.agent} cannot fix the product: done-done runs ACP agents with every tool denied`, `Set auto_fix.verify: 0 to report only, or set agent: to one of ${AGENTS.join(', ')}`);
+async function preflightVerify(cfg: Config, agentDrives: boolean, tries = cfg.auto_fix.verify ?? 0): Promise<void> {
+  if (agentDrives || tries) await withChoice('agent', cfg);
+  if (tries && cfg.agent.startsWith('acp:')) throw new UsageError(`${cfg.agent} cannot fix the product: done-done runs ACP agents with every tool denied`, `Set auto_fix.verify: 0 to report only, or set agent: to one of ${AGENTS.join(', ')}`);
   await preflightJudge(cfg, false);
 }
 
 async function cmdVerify(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { outcome: { type: 'string' }, feature: { type: 'string' }, 'claim-id': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
+    options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'affected-by': { type: 'string' }, extends: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
     allowPositionals: true,
   });
   if (!values.outcome?.trim()) throw new UsageError('verify needs --outcome "<what a user can now do>"');
+  const fixTries = values['fix-tries'] === undefined ? undefined : Number(values['fix-tries']);
+  if (fixTries !== undefined && !(Number.isInteger(fixTries) && fixTries >= 0)) throw new UsageError('--fix-tries needs a whole number, 0 or more', 'Run: done-done verify <journey> --outcome "<claim>" --fix-tries 2');
   if (positionals.length > 1) throw new UsageError('verify takes at most one journey name');
+  if (values.journeys !== undefined && (positionals.length || values.feature !== undefined)) throw new UsageError('pass --journeys <list> or a journey or --feature, not several: the list is the journeys this run drives');
+  if (values['named-by'] !== undefined && values.journeys === undefined) throw new UsageError('--named-by says who named the --journeys list, so it needs --journeys <list>');
+  if (values['affected-by'] !== undefined && (positionals.length || values.feature !== undefined || values.journeys !== undefined || fixTries !== undefined)) throw new UsageError('pass --affected-by <files> alone: it picks the journeys, and a fix would change the head the receipt extends');
+  if (values.extends !== undefined && values['affected-by'] === undefined) throw new UsageError('--extends names the prior receipt that --affected-by extends, so it needs --affected-by <files>');
   if (positionals.length && values.feature !== undefined) throw new UsageError('pass a journey or --feature, not both: a journey drives by its command, --feature by the author agent');
   if ([values.wait, values['no-wait'], values.foreground].filter(Boolean).length > 1) throw new UsageError('pass only one of --wait, --no-wait and --foreground');
   const repo = repoRoot();
   const cfg = loadConfig(repo);
   const names = Object.keys(cfg.journeys);
-  // A named journey, or the only one, drives by its command; with --feature or no journey at all, the author agent drives.
-  const journey = positionals[0] ?? (names.length === 1 && values.feature === undefined ? names[0] : null);
-  if (journey === null && names.length > 1 && values.feature === undefined) throw new UsageError(`verify needs a journey name or --feature; .done-done.yaml defines: ${names.join(', ')}`, `Run: done-done verify <${names.join('|')}> --outcome "<what a user can now do>"`);
-  if (journey !== null && !cfg.journeys[journey]) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${names.join(', ') || 'none'}`);
   if (values['claim-id']?.trim() === '') throw new UsageError('--claim-id needs a non-empty id');
   const branch = git(repo, 'branch', '--show-current');
   if (!values['claim-id'] && !branch) throw new UsageError('HEAD is detached, so no branch names this claim; pass --claim-id <id>');
+  if (values['affected-by'] !== undefined) return verifyAffected(repo, cfg, branch, { ...values, outcome: values.outcome, 'affected-by': values['affected-by'] });
+  // A named journey, or the only one, drives by its command; with --feature or no journey at all, the author agent drives.
+  let list: string[] = [];
+  if (values.journeys !== undefined) {
+    try {
+      list = parseList(values.journeys);
+    } catch (e) {
+      throw new UsageError((e as Error).message, 'Run: done-done verify --journeys <journey> --outcome "<what a user can now do>"');
+    }
+    if (list.length > 1) throw new UsageError(`a verify run drives one journey, and --journeys names ${list.length}: ${list.join(', ')}`, `Run each in its own verify: done-done verify --journeys ${list[0]} --outcome "<what a user can now do>"`);
+  }
+  const journey = list[0] ?? positionals[0] ?? (names.length === 1 && values.feature === undefined ? names[0] : null);
+  if (journey === null && names.length > 1 && values.feature === undefined) throw new UsageError(`verify needs a journey name or --feature; .done-done.yaml defines: ${names.join(', ')}`, `Run: done-done verify <${names.join('|')}> --outcome "<what a user can now do>"`);
+  if (journey !== null && !cfg.journeys[journey]) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${names.join(', ') || 'none'}`);
+  // The scope is settled here: the affected journeys the list leaves out are read at the commit the run starts on.
+  let scope: Scope | undefined;
+  if (list.length) {
+    try {
+      scope = minimumScope({ list, defined: names, affected: affectedOf(repo, cfg).m.journeys.map((j) => j.name), by: values['named-by']?.trim() || 'caller' });
+    } catch (e) {
+      throw e instanceof UsageError ? e : new UsageError((e as Error).message);
+    }
+  }
   refuseParked(cfg, repo, values['claim-id'] ?? branch);
   const drive = journey === null ? await agentDrive(repo, cfg, values.feature) : undefined;
   // verify always runs the judge the user set, the author's own agent and model included; the judge is settled here, so a
   // run never fails later for one it never had.
-  await preflightVerify(cfg, journey === null);
+  await preflightVerify(cfg, journey === null, fixTries);
+  const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey, drive, fixTries, scope });
+  return launch(dir, cfg, 'verify', values);
+}
+
+// A pending verify run of `journey` (null: the author agent drives), saved and logged; its folder.
+function newVerifyRun(repo: string, cfg: Config, o: { claim: string; claimId?: string; branch: string; journey: string | null; drive?: { author: { agent: string; model: string }; feature?: string }; fixTries?: number; scope?: Scope; affected?: AffectedProof }): string {
   const id = newRunId(git(repo, 'rev-parse', 'HEAD'));
   const dir = join(runsRoot(cfg.app), id);
   mkdirSync(join(dir, 'logs'), { recursive: true });
   const created = now();
   const run: Run = {
-    schema: 2, run_id: id, kind: 'verify', app: cfg.app, repo, journey, ...drive, claim: values.outcome, claim_id: values['claim-id'] ?? null, branch, status: 'pending',
-    steps: verifySteps(cfg).map((name) => ({ name, status: 'pending' })), created, updated: created,
-    inputs: inputsOf(repo, cfg, journey, drive?.author),
+    schema: 2, run_id: id, kind: 'verify', app: cfg.app, repo, journey: o.journey, ...o.drive, claim: o.claim, claim_id: o.claimId ?? null, branch: o.branch, status: 'pending',
+    steps: verifySteps(o.fixTries ?? cfg.auto_fix.verify ?? 0).map((name) => ({ name, status: 'pending' })), created, updated: created, ...(o.fixTries !== undefined && { fix_tries: o.fixTries }),
+    inputs: inputsOf(repo, cfg, o.journey, o.drive?.author), ...(o.scope && { scope: o.scope }), ...(o.affected && { affected: o.affected }),
   };
   saveRun(dir, run);
   logEvent(dir, { status: 'pending' });
-  return launch(dir, cfg, 'verify', values);
+  return dir;
+}
+
+// The prior receipt `verify --affected-by` extends: the one `--extends` names, else the newest receipted ancestor of HEAD.
+// A rebased commit has none of its own as an ancestor, so the caller names the receipt of its head before the rebase.
+function priorReceipt(repo: string, cfg: Config, arg?: string): { head: string; sha256: string; review?: string } {
+  const receipts = receiptsByHead(cfg);
+  const now = head(repo).commit;
+  let prior: string | undefined;
+  if (arg === undefined) prior = nearestReceipt(repo, [...receipts.keys()], now);
+  else {
+    try {
+      prior = git(repo, 'rev-parse', '--verify', `${arg}^{commit}`);
+    } catch {
+      throw new UsageError(`--extends: ${arg} is not a commit in this checkout`, 'Pass the head the prior receipt was written for: done-done verify --affected-by <files> --extends <head> --outcome "<claim>"');
+    }
+  }
+  if (!prior) throw new UsageError('--affected-by extends a prior receipt, and no commit before HEAD has one', 'Name it: done-done verify --affected-by <files> --extends <head of the prior receipt> --outcome "<claim>"');
+  if (prior === now) throw new UsageError('--extends names the receipt for HEAD itself, so there is nothing to extend', 'Name the receipt of the head before the rebase or the change');
+  const rec = receipts.get(prior);
+  if (!rec) throw new UsageError(`no valid receipt for ${prior.slice(0, 12)} in ${receiptsDir(cfg)}, so there is nothing to extend`, 'Record one for that head first: done-done receipt --from <file|->');
+  return { head: prior, sha256: sha256(readFileSync(join(receiptsDir(cfg), `${prior}.json`))), review: rec.review?.state };
+}
+
+// `verify --affected-by <files>`: only the journeys the named files need run (src/affected.ts: a file no journey covers, or a global one,
+// runs the whole local tier), one verify run each in turn. The receipt extends the prior one, records the files and the journeys, and
+// runs no review again; it is complete, and so valid, only once every selected journey has passed. Writes no journey, starts no reviewer.
+async function verifyAffected(repo: string, cfg: Config, branch: string, values: { outcome: string; 'affected-by': string; extends?: string; 'claim-id'?: string; 'no-wait'?: boolean; foreground?: boolean; wait?: boolean }): Promise<number> {
+  let files: string[];
+  try {
+    files = parseFiles(values['affected-by']);
+  } catch (e) {
+    throw new UsageError((e as Error).message, 'Run: done-done verify --affected-by <file>,<file> --outcome "<what a user can now do>"');
+  }
+  const prior = priorReceipt(repo, cfg, values.extends);
+  const m = mapDiff(repo, cfg, files, git(repo, 'ls-files', '-z').split('\0').filter(Boolean));
+  // A feature no journey drives belongs to the author agent, whose drive is its own verify run.
+  if (m.features.length) throw new UsageError(`these files need the verify skill feature ${m.features.map((f) => f.name).join(', ')}, which no journey drives, so --affected-by would prove less than they need`, `Drive it on its own: done-done verify --feature ${m.features[0].name} --outcome "<what a user can now do>"`);
+  const journeys = m.journeys.map((j) => j.name);
+  if (!journeys.length) throw new UsageError(`these files select no journey to run; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`, 'Record a journey that drives the product: done-done init --journey <name> -- <command>');
+  if (journeys.length > 1 && values['no-wait']) throw new UsageError(`these files select ${journeys.length} journeys (${journeys.join(', ')}), which run one after another, so --no-wait cannot start them`, 'Re-run with --wait or --foreground');
+  const proof = affectedProof({ prior, files, journeys });
+  refuseParked(cfg, repo, values['claim-id'] ?? branch);
+  await preflightVerify(cfg, false, 0);
+  for (let i = 0; ; i++) {
+    const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey: journeys[i], fixTries: 0, affected: proof });
+    const { gone } = await startRunner(dir, values);
+    const run = loadRun(dir);
+    // The run that ends the selection, or the first that does not pass, is the one shown.
+    if (i === journeys.length - 1 || run.status !== 'completed' || run.result !== 'pass') return showRun(dir, cfg, 'verify', gone);
+  }
 }
 
 // Run the steps in this process (--foreground), or in a detached runner with no pipe back to this process, so the
@@ -2529,9 +2877,11 @@ function showRecord(repo: string, cfg: Config, rec: RunRecord): number {
   return PASS;
 }
 
-function cmdStatus(argv: string[]): number {
+function cmdStatus(argv: string[], command = 'status'): number {
   const { values } = parseArgs({ args: argv, options: { run: { type: 'string' } } });
   const repo = repoRoot();
+  const review = reviewPath(values.run, repo);
+  if (review) return showReview(reviewRun(review), command);
   const cfg = loadConfig(repo);
   const root = runsRoot(cfg.app);
   const verify = values.run ? /^[\w-]+$/.test(values.run) && existsSync(join(root, values.run, 'run.json')) : runsIn(root).some((r) => r.repo === repo);
@@ -2594,6 +2944,15 @@ async function cmdRerun(argv: string[]): Promise<number> {
   const src = loadRun(join(root, srcId));
   if (src.kind === 'maintain') throw new UsageError(`run ${srcId} is a maintain run, which cannot be rerun`, 'Start a new one: done-done maintain');
   const open = shownStatus(src);
+  if (src.review?.state === 'stalled' && src.status === 'awaiting_approval') {
+    if (git(repo, 'rev-parse', src.fix?.branch ?? 'HEAD') !== src.review.head) throw new UsageError('reviewed HEAD changed while stalled');
+    src.status = 'pending'; src.runner = undefined;
+    const reviewing = src.steps.find((s) => s.name === 'reviewing');
+    if (reviewing) reviewing.status = 'pending';
+    saveRun(join(root, srcId), src);
+    rmSync(join(root, srcId, 'runner.lock'), { force: true });
+    return launch(join(root, srcId), cfg, 'rerun', values);
+  }
   if (open === 'pending' || open === 'running') throw new UsageError(`run ${srcId} is still ${open}, so it cannot be rerun while its runner lives`, `Read it: done-done status --run ${srcId}; stop it first: done-done abort --run ${srcId}`);
   const group = src.runner?.journey_pgid ?? src.runner?.instance_pgid;
   if (['pending', 'running'].includes(src.status) && group && alive(-group)) throw new UsageError(`the journey of run ${srcId} is still running, so it cannot be rerun yet`, `Read it: done-done status --run ${srcId}`);
@@ -2609,16 +2968,16 @@ async function cmdRerun(argv: string[]): Promise<number> {
   const driveReuse = same && drivesClean(src.record, src.inputs?.head) && JSON.stringify(src.guarded?.patterns ?? []) === JSON.stringify(srcCfg.inputs);
   const reused = (name: string) => (name === 'resolve' && same) || (name === 'drive' && driveReuse);
   // A rerun always judges, whatever its source run did. A missing or forbidden judge is a usage error here too.
-  await preflightVerify(cfg, src.journey === null);
+  await preflightVerify(cfg, src.journey === null, src.fix_tries);
   const id = newRunId(git(repo, 'rev-parse', 'HEAD'));
   const dir = join(root, id);
   mkdirSync(join(dir, 'logs'), { recursive: true });
-  const steps = verifySteps(cfg).map((name) => {
+  const steps = verifySteps(src.fix_tries ?? cfg.auto_fix.verify ?? 0).map((name) => {
     const s = src.steps.find((x) => x.name === name);
     return s && reused(name) && s.status === 'completed' ? { ...s } : { name, status: 'pending' as StepState };
   });
   const created = now();
-  const run: Run = { schema: 2, run_id: id, kind: src.kind, app: cfg.app, repo: src.repo, journey, ...drive, claim: src.claim, claim_id: src.claim_id, branch: src.branch, status: 'pending', inputs, steps, created, updated: created, ...(driveReuse && src.record && { record: src.record }), ...(driveReuse && src.guarded && { guarded: src.guarded }) };
+  const run: Run = { schema: 2, run_id: id, kind: src.kind, app: cfg.app, repo: src.repo, journey, ...drive, claim: src.claim, claim_id: src.claim_id, branch: src.branch, ...(src.fix_tries !== undefined && { fix_tries: src.fix_tries }), ...(src.affected && { affected: src.affected }), status: 'pending', inputs, steps, created, updated: created, ...(driveReuse && src.record && { record: src.record }), ...(driveReuse && src.guarded && { guarded: src.guarded }) };
   saveRun(dir, run);
   for (const s of steps) {
     const f = join(root, srcId, 'logs', `${s.name}.log`);
@@ -2737,7 +3096,32 @@ async function answerGate(dir: string, id: string, action: 'approve' | 'skip' | 
 
 // Answer a run waiting at its gate, from the terminal.
 async function cmdRespond(argv: string[]): Promise<number> {
-  const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, action: { type: 'string' }, reason: { type: 'string' } } });
+  const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, action: { type: 'string' }, reason: { type: 'string' }, answer: { type: 'string' } } });
+  const review = reviewPath(values.run, repoRoot());
+  if (review) {
+    if (!createOnce(join(review, 'respond.lock'))) throw new UsageError('review is already being answered');
+    try {
+      const run = reviewRun(review);
+      if (run.state !== 'to-ask') throw new UsageError('review is not waiting for an answer');
+      if (!values.answer?.trim()) throw new UsageError('respond needs --answer for a review question');
+      run.answer = values.answer.trim(); saveReview(review, run);
+      try {
+        if (run.fixes >= run.limit) await reviewRound(run, review, reviewConfig(run.repo, run.base), { question: run.question ?? run.result.findings.find((f) => f.action === 'to-ask')?.question ?? '', answer: run.answer });
+        else { run.state = 'to-fix'; saveReview(review, run); await reviewFix(run, review, reviewConfig(run.repo, run.base)); }
+      } catch (e) { run.state = 'failed'; run.error = errorText(e); saveReview(review, run); }
+      return showReview(run, 'respond');
+    } finally { rmSync(join(review, 'respond.lock'), { force: true }); }
+  }
+  if (values.run && values.answer?.trim()) {
+    const repo = repoRoot(), cfg = loadConfig(repo), root = runsRoot(cfg.app);
+    const id = pickId(root, repo, 'respond', cfg, values.run), dir = join(root, id), run = loadRun(dir);
+    if (run.status !== 'awaiting_approval' || run.review?.state !== 'to-ask') throw new UsageError('run is not waiting for a review answer');
+    if (git(repo, 'rev-parse', run.fix?.branch ?? 'HEAD') !== run.review.head) throw new UsageError('reviewed HEAD changed while waiting');
+    run.review.answer = values.answer.trim(); run.status = 'pending'; run.runner = undefined;
+    const reviewing = run.steps.find((s) => s.name === 'reviewing'); if (reviewing) reviewing.status = 'pending';
+    saveRun(dir, run); rmSync(join(dir, 'runner.lock'), { force: true });
+    return launch(dir, cfg, 'respond', {});
+  }
   const action = values.action;
   if (action !== 'approve' && action !== 'skip' && action !== 'fix') throw new UsageError('respond needs --action approve, skip or fix', 'Run: done-done respond --run <run-id> --action <approve|skip|fix> [--reason "<why>"]');
   const reason = values.reason?.replace(/\s+/g, ' ').trim() ?? '';
@@ -3209,10 +3593,13 @@ async function cmdJourney(argv: string[]): Promise<number> {
   const name = named ? positionals[1] : '';
   if (named && !Object.hasOwn(cfg.journeys, name)) throw new UsageError(`unknown journey ${name}; nothing written`);
   if (named && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(name)) throw new UsageError(`${action} needs a lowercase kebab-case journey name`);
-  const priorScript = join(repo, 'journeys', `${name}.mjs`), priorFeature = join(dirname(index), `${name}.md`);
+  // A journey whose command runs a registered test script is rewritten in place and keeps its command; any other journey gets journeys/<name>.mjs.
+  const entry = named ? entryScript(cfg.journeys[name].command) : null, scriptRel = entry ?? `journeys/${name}.mjs`;
+  const priorScript = join(repo, scriptRel), priorFeature = join(dirname(index), `${name}.md`);
   if (named) {
     for (const p of [priorScript, priorFeature]) safePath(p);
-    if (existsSync(priorScript) && (cfg.journeys[name].command !== `node journeys/${name}.mjs` || Object.entries(cfg.journeys).some(([n, j]) => n !== name && j.command.includes(`journeys/${name}.mjs`)))) throw new UsageError(`${shown(repo, priorScript)} is not exclusive to this journey; nothing written`);
+    if (entry && loadInventory(repo) && !loadInventory(repo)![entry]) throw new UsageError(`${entry} is not registered in ${INVENTORY_FILE}; nothing written`, `Register it first: done-done inventory record ${entry} --owner ${name}`);
+    if (existsSync(priorScript) && (!entry || Object.entries(cfg.journeys).some(([n, j]) => n !== name && j.command.includes(scriptRel)))) throw new UsageError(`${shown(repo, priorScript)} is not exclusive to this journey; nothing written`);
     if (existsSync(priorFeature) && !readFileSync(priorFeature, 'utf8').includes(`done-done run ${name}`)) throw new UsageError(`${shown(repo, priorFeature)} does not name this journey; nothing written`);
   }
   const agent = selectAgent(cfg), toolless = agent.agent !== 'claude';
@@ -3250,7 +3637,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   } catch (e) {
     throw new UsageError(`the agent returned invalid JavaScript; nothing written: ${String((e as { stderr?: string }).stderr || (e as Error).message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
   }
-  const script = join(repo, 'journeys', `${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
+  const script = join(repo, named ? scriptRel : `journeys/${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
   for (const p of [script, feature]) {
     safePath(p);
     if (!named && existsSync(p)) throw new UsageError(`${shown(repo, p)} already exists; nothing written`);
@@ -3259,7 +3646,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   const doc = parseDocument(originalConfig);
   if (doc.get('journeys') == null) doc.set('journeys', doc.createNode({}));
   if (!named) doc.setIn(['journeys', s.name], doc.createNode({}));
-  doc.setIn(['journeys', s.name, 'command'], `node journeys/${s.name}.mjs`);
+  if (!entry) doc.setIn(['journeys', s.name, 'command'], `node journeys/${s.name}.mjs`);
   if (s.spends.trim()) doc.setIn(['journeys', s.name, 'spends'], [cfg.journeys[s.name]?.spends, s.spends.trim()].filter(Boolean).join('; '));
   if (named) {
     const command = doc.getIn(['journeys', s.name, 'command'], true) as { commentBefore?: string };
@@ -3288,7 +3675,8 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
     }
     throw e;
   }
-  process.stderr.write(`${named ? label : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
+  if (loadInventory(repo)) recordInventory(repo, [relative(repo, script)], s.name); // the script is owned by its journey, so lint accepts what this command wrote
+  process.stderr.write(`Stage writing: ${relative(repo, script)}\n${named ? label : 'Added'} journey ${s.name} through ${agent.agent}. Review these repo changes:\n${git(repo, 'diff', '--stat', '--', ...[...files.keys()].map(p => relative(repo, p)))}\n${[script, feature].filter(p => originals.get(p) === null).map(p => ` ${relative(repo, p)} | ${files.get(p)!.split('\n').length - 1} new lines`).join('\n')}\nThe first run is a dirty-tree trial, not clean proof. Review and commit, then: done-done run ${s.name}\n`);
   return cmdRun([s.name]);
 }
 
@@ -4193,7 +4581,82 @@ async function cmdDoctor(argv: string[]): Promise<number> {
   return missingRequired.length ? USAGE : PASS;
 }
 
-// The look step: one page measured, with its actions clicked, against the project's look reference and the --mock design.
+// Q8 review runs are independent of verify runs. The reviewer always reads committed Git objects.
+type ReviewLoop = { run_id: string; repo: string; base: string; head: string; state: 'to-fix' | 'to-ask' | 'approved' | 'spent' | 'failed'; fixes: number; limit: number; route: { agent: string; model: string }; result: ReviewResult; question?: string; answer?: string; error?: string };
+const reviewDir = (id: string) => join(home(), 'reviews', id);
+const reviewRun = (dir: string): ReviewLoop => JSON.parse(readFileSync(join(dir, 'loop.json'), 'utf8'));
+const saveReview = (dir: string, run: ReviewLoop) => writeFileSync(join(dir, 'loop.json'), `${JSON.stringify(run, null, 2)}\n`);
+function showReview(run: ReviewLoop, command: string): number {
+  emit({ command, run_id: run.run_id, status: run.state, result: run.state, base: run.base, head: run.head,
+    fix: `fix ${run.fixes} of ${run.limit}`, route: run.route, trusted_config: { source: `${run.base}:.done-done.yaml + global config`, keys: TRUSTED_KEYS }, project_agent_settings: { loaded: false, ignored: run.result.ignored_agent_settings }, ...(run.question && { question: run.question }), ...(run.answer && { answer: run.answer }),
+    merge_base: run.result.merge_base, duration_ms: run.result.duration_ms, findings: run.result.findings, reviewers: run.result.reviewers, classes: run.result.classes, ...(run.result.truncated.length && { truncated: run.result.truncated }), ...(run.error && { error: run.error }),
+    record: join(reviewDir(run.run_id), 'loop.json') });
+  return run.state === 'approved' ? PASS : run.state === 'to-ask' ? WAITING : run.state === 'failed' ? INCONCLUSIVE : FAIL;
+}
+function reviewPath(id: string | undefined, repo: string): string | undefined {
+  const root = join(home(), 'reviews');
+  if (id) { const dir = join(root, id); return /^[\w-]+$/.test(id) && existsSync(join(dir, 'loop.json')) && reviewRun(dir).repo === repo ? dir : undefined; }
+  if (!existsSync(root)) return undefined;
+  const latest = readdirSync(root).sort().reverse().map((x) => join(root, x)).find((p) => existsSync(join(p, 'loop.json')) && reviewRun(p).repo === repo);
+  if (!latest) return undefined;
+  const other = runsIn(runsRoot(loadConfig(repo).app)).filter((r) => r.repo === repo).sort((a, b) => b.created.localeCompare(a.created))[0];
+  const stamp = basename(latest).slice(0, 16).replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z');
+  return other && Date.parse(other.created) > Date.parse(stamp) ? undefined : latest;
+}
+function reviewConfig(repo: string, base: string): Config {
+  let projectText = '';
+  try { projectText = git(repo, 'show', `${base}:.done-done.yaml`); } catch (e) {
+    const msg = (e as { stderr?: string }).stderr ?? '';
+    if (!/does not exist|exists on disk, but not in/.test(msg)) throw new UsageError(`cannot read .done-done.yaml at ${base}: ${msg.trim()}`);
+  }
+  return loadConfig(repo, projectText);
+}
+async function reviewRound(run: ReviewLoop, dir: string, cfg: Config, outsideAnswer?: { question: string; answer: string }): Promise<void> {
+  if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
+  const agent = selectAgent(cfg);
+  const r = await review(run.repo, agent, run.base, join(dir, `round-${run.fixes}-${outsideAnswer ? 'answer' : 'review'}`), true, outsideAnswer);
+  run.result = r; run.head = r.head;
+  if (r.reviewers.some((x) => x.state === 'failed')) { run.state = 'failed'; run.error = r.reviewers.filter((x) => x.state === 'failed').map((x) => `${x.name}: ${x.error}`).join('; '); }
+  else if (!r.findings.length) { run.state = 'approved'; delete run.question; }
+  else {
+    const ask = r.findings.find((f) => f.action === 'to-ask');
+    if (ask) { run.state = 'to-ask'; run.question = ask.question || ask.what; }
+    else run.state = run.fixes < run.limit ? 'to-fix' : 'spent';
+  }
+  saveReview(dir, run);
+}
+async function reviewFix(run: ReviewLoop, dir: string, cfg: Config, rereview = true): Promise<void> {
+  if (git(run.repo, 'status', '--porcelain')) throw new Error('review fix needs a clean checkout; commit or remove your changes first');
+  if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
+  const agent = selectAgent(cfg);
+  if (!agent.path) throw new Error(`review fix: no agent (${notStartable(agent.agent, agent.override)})`);
+  const a = await askAgent({ ...agent, cwd: run.repo, tools: 'edit', record: join(dir, 'agents', 'fix-1.json'), schema: FIX_SCHEMA,
+    env: { DONE_DONE_DRIVE: run.run_id }, prompt: `Fix these review findings in this checkout. Do not commit or run done-done. Findings: ${JSON.stringify(run.result.findings)}. ${run.answer ? `The person answered: ${run.answer}` : ''} Answer with summary and blocker (empty when fixed).` });
+  if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('the fixer made a commit; inspect the checkout before continuing');
+  if (!a.ok || String(a.answer?.blocker ?? '').trim()) throw new Error(`review fix failed: ${a.error || a.answer?.blocker}`);
+  if (!git(run.repo, 'status', '--porcelain')) throw new Error('review fixer changed no files');
+  git(run.repo, 'add', '-A');
+  git(run.repo, 'commit', '-m', 'fix: address review findings');
+  run.fixes++; run.head = git(run.repo, 'rev-parse', 'HEAD'); run.state = 'to-fix'; delete run.question; saveReview(dir, run);
+  if (rereview) await reviewRound(run, dir, cfg);
+}
+async function cmdReview(argv: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  if (positionals.length > 1) throw new UsageError('review takes at most one base');
+  const repo = repoRoot(), base = reviewBase(repo, positionals[0]), cfg = reviewConfig(repo, base);
+  await withChoice('agent', cfg);
+  const id = newRunId(git(repo, 'rev-parse', 'HEAD')), dir = reviewDir(id);
+  mkdirSync(join(dir, 'agents'), { recursive: true });
+  const r = await review(repo, selectAgent(cfg), base, join(dir, 'round-0'));
+  const run: ReviewLoop = { run_id: id, repo, base, head: r.head, state: 'to-fix', fixes: 0, limit: 1, route: { agent: selectAgent(cfg).agent, model: selectAgent(cfg).model }, result: r };
+  if (r.reviewers.some((x) => x.state === 'failed')) { run.state = 'failed'; run.error = r.reviewers.filter((x) => x.state === 'failed').map((x) => `${x.name}: ${x.error}`).join('; '); }
+  else if (!r.findings.length) run.state = 'approved';
+  else { const ask = r.findings.find((f) => f.action === 'to-ask'); if (ask) { run.state = 'to-ask'; run.question = ask.question || ask.what; } }
+  saveReview(dir, run);
+  if (run.state === 'to-fix') try { await reviewFix(run, dir, cfg); } catch (e) { run.state = 'failed'; run.error = errorText(e); saveReview(dir, run); }
+  return showReview(run, 'review');
+}
+
 async function cmdLook(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, options: { out: { type: 'string' }, mock: { type: 'string' }, act: { type: 'string', multiple: true } }, allowPositionals: true });
   if (positionals.length !== 1) throw new UsageError('look needs one page URL', 'Re-run with the page to check: done-done look <url>');
@@ -4294,13 +4757,119 @@ function cmdGate(argv: string[]): number {
   return why === null ? PASS : FAIL;
 }
 
+// `done-done inventory`: test ownership (src/inventory.ts). Reading lists; recording needs a done-done run.
+function cmdInventory(argv: string[]): number {
+  const { values, positionals } = parseArgs({ args: argv, options: { owner: { type: 'string' } }, allowPositionals: true });
+  const repo = repoRoot();
+  if (positionals[0] === 'record') {
+    if (!process.env.DONE_DONE_RUN_ID) throw new UsageError('inventory record only works inside a done-done run (DONE_DONE_RUN_ID is not set): a hand edit to an owned test file is a lint failure, not something to record', 'Make the edit from a journey command: done-done run <journey>');
+    if (positionals.length < 2) throw new UsageError('inventory record needs at least one file', 'Re-run as: done-done inventory record <files...> [--owner <name>]');
+    const paths = positionals.slice(1).map((p) => relative(repo, resolve(p)));
+    try { recordInventory(repo, paths, values.owner); } catch (e) { throw new UsageError((e as Error).message); }
+    emit({ command: 'inventory record', recorded: paths });
+    return PASS;
+  }
+  if (positionals.length) throw new UsageError(`unknown inventory action ${positionals[0]}`, 'Re-run as: done-done inventory [record <files...> --owner <name>]');
+  let inv;
+  try { inv = loadInventory(repo); } catch (e) { throw new UsageError((e as Error).message); }
+  if (!inv) throw new UsageError(`${INVENTORY_FILE} does not exist, so no test ownership is enforced`, 'Create it with: done-done inventory record <files...> --owner <name> from a done-done run');
+  const bad = inventoryFindings(repo, inv);
+  emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
+  return bad.length ? FAIL : PASS;
+}
+
+// `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
+async function cmdTests(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
+  const action = positionals[0];
+  if ((action !== 'measure' && action !== 'value' && action !== 'improve') || positionals.length > 2) throw new UsageError('tests needs the action measure, value or improve and at most one journey', 'Re-run as: done-done tests measure|value|improve [<journey>] [--night]');
+  if (action === 'improve' && !values['plan-only'] === !values.apply) throw new UsageError('tests improve needs exactly one of --plan-only or --apply <drop|move> --plan <file>', 'Re-run as: done-done tests improve --plan-only, or done-done tests improve --apply drop --plan plan.json');
+  if (action !== 'improve' && (values['plan-only'] || values.apply || values.plan)) throw new UsageError('--plan-only, --apply and --plan belong to tests improve', 'Drop them, or run: done-done tests improve --plan-only');
+  if (action === 'improve' && values.apply && (!(APPLIES as readonly string[]).includes(values.apply) || !values.plan)) throw new UsageError('--apply takes drop or move, one class at a time, with --plan <file>', 'Re-run as: done-done tests improve --apply drop --plan plan.json');
+  if (action === 'improve' && values.plan && !values.apply) throw new UsageError('--plan belongs to --apply', 'Drop it, or run: done-done tests improve --apply drop --plan plan.json');
+  if (action === 'measure' && (values.faults !== undefined || values.source)) throw new UsageError('--faults and --source belong to tests value', 'Drop them, or run: done-done tests value');
+  const repo = repoRoot();
+  const cfg = loadConfig(repo);
+  const named = positionals[1];
+  if (named && !cfg.journeys[named]) throw new UsageError(`unknown journey ${named}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+  const picked: [string, (typeof cfg.journeys)[string]][] = [];
+  const skipped: string[] = [];
+  for (const [name, j] of Object.entries(cfg.journeys)) {
+    if (named && name !== named) continue;
+    const why = action === 'measure' && !isSize(j.size) ? 'has no size' : j.spends ? `spends (${j.spends}), so ${action} refuses it` : nightFault(name, j, !!values.night)?.replace(/: nothing ran$/, `, so ${action} needs --night`);
+    if (why) skipped.push(`${name}: ${why.replace(/^journey \S+ /, '')}`); else picked.push([name, j]);
+  }
+  if (named && !picked.length) throw new UsageError(`journey ${named} was not ${action === 'measure' ? 'measured' : 'valued'}: ${skipped[0]}`, `${action === 'measure' ? `Set journeys.${named}.size in .done-done.yaml` : 'Pick a journey that spends nothing'}${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
+  if (action === 'value') return await cmdTestsValue(repo, picked, skipped, values);
+  if (action === 'improve' && values.apply) return await cmdTestsApply(repo, cfg.journeys, values.apply as Apply, values.plan!);
+  if (action === 'improve') return await cmdTestsImprove(repo, picked, skipped, values);
+  const measured = [];
+  for (const [name, j] of picked) measured.push(await measureJourney(name, j.command, j.size as Size, repo, process.env));
+  const bad = measured.filter((m) => m.verdict !== 'within bound');
+  emit({ command: 'tests measure', measured, skipped, help: bad.length ? [`Slow or failing: ${bad.map((m) => m.journey).join(', ')}; make it faster or give it a larger size`] : [] });
+  return bad.length ? FAIL : PASS;
+}
+
+// Plant the faults and run every picked journey as a test; the work copy is only read.
+async function valueOf(repo: string, picked: [string, { command: string; size?: string }][], skipped: string[], values: { faults?: string; source?: string[] }) {
+  const max = values.faults === undefined ? DEFAULT_FAULTS : Number(values.faults);
+  if (!Number.isInteger(max) || max < 1) throw new UsageError(`--faults must be a whole number of at least 1, got ${values.faults}`);
+  if (!picked.length) throw new UsageError('no journey can be valued', skipped.length ? `Skipped: ${skipped.join('; ')}` : 'Define journeys in .done-done.yaml');
+  const faults = listFaults(repo, sourcesOf(repo, values.source ?? []), max);
+  if (!faults.length) throw new UsageError('no source line offers a fault to plant', 'Name the source files with --source <file>');
+  return await measureValue(repo, picked.map(([name, j]) => ({ name, command: j.command, size: j.size })), faults, process.env);
+}
+
+async function cmdTestsValue(repo: string, picked: [string, { command: string; size?: string }][], skipped: string[], values: { faults?: string; source?: string[] }): Promise<number> {
+  const report = await valueOf(repo, picked, skipped, values);
+  const bad = report.tests.filter((t) => t.verdict !== 'real');
+  emit({ command: 'tests value', faults: report.faults.map((f) => `${f.file}:${f.line} ${f.was.trim()} => ${f.now.trim()}`), tests: report.tests, skipped,
+    help: bad.length ? [`Not worth keeping as is: ${bad.map((t) => `${t.test} (${t.verdict})`).join(', ')}; delete a slop or duplicate test, or fix a failing one`] : [] });
+  return bad.length ? FAIL : PASS;
+}
+
+// `tests improve --plan-only`: stage proposed. Inventory (the journeys), measure and value (one valued run), then keep/drop/move rows and the gaps. Changes no file.
+async function cmdTestsImprove(repo: string, picked: [string, { command: string; size?: string }][], skipped: string[], values: { faults?: string; source?: string[] }): Promise<number> {
+  const report = await valueOf(repo, picked, skipped, values);
+  const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.faults, report.uncaught);
+  const act = (a: string) => plan.rows.filter((r) => r.action === a).map((r) => r.test);
+  emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, faults: plan.faults, skipped,
+    help: [
+      ...(act('drop').length ? [`Drop: ${act('drop').join(', ')}`] : []),
+      ...plan.rows.filter((r) => r.action === 'move').map((r) => `Move ${r.test} to size ${r.to}`),
+      ...(act('fix').length ? [`Fix first: ${act('fix').join(', ')}`] : []),
+      ...(plan.gaps.length ? [`Gaps no test protects: ${plan.gaps.map((g) => `${g.file}:${g.line}`).join(', ')}; write a journey for them: done-done qa "<feature>" --write`] : []),
+      'Nothing was changed; this is a proposal',
+    ] });
+  return PASS;
+}
+
+// `tests improve --apply <class> --plan <file>`: stage applied. Rerun the kept tests against the plan's recorded faults and write the change set only if no fault lost its catcher.
+async function cmdTestsApply(repo: string, journeys: Record<string, { command: string; size?: string }>, klass: Apply, file: string): Promise<number> {
+  let text: string;
+  try { text = readFileSync(resolve(file), 'utf8'); } catch (e) { throw new UsageError(`cannot read the plan file ${file}: ${(e as Error).message}`); }
+  const r = await applyPlan(repo, parsePlan(text), klass, journeys, process.env);
+  const { refused, ...applied } = r;
+  emit({ command: 'tests improve', stage: refused ? 'refused' : 'applied', ...applied, ...(refused && { refused }),
+    help: refused ? [refused, 'Nothing was changed'] : [
+      `${klass === 'drop' ? 'Removed' : 'Moved'}: ${r.tests.join(', ')} (${r.lines} lines changed, ${r.kept} tests kept, ${r.seconds.before}s to ${r.seconds.after}s)`,
+      'Commit this class alone on its own ticket branch, then apply the next class from a fresh plan',
+      'Fill any gap through normal QA writing: done-done qa "<feature>" --write',
+    ] });
+  return refused ? FAIL : PASS;
+}
+
 function cmdLint(argv: string[]): number {
   const { positionals } = parseArgs({ args: argv, allowPositionals: true });
   if (positionals.length !== 2) throw new UsageError('lint needs a PR URL or report file, then the evidence folder', 'Re-run as: done-done lint <PR URL | report file> <evidence folder>');
   const { checks } = loadConfig(process.cwd());
   const v = lint(positionals[0], positionals[1], home(), checks);
-  console.log(!v.ok ? `FAIL: ${v.why}` : v.warn ? `WARN: ${v.warn}` : 'PASS');
-  return v.ok ? PASS : FAIL;
+  let owned: string | null = null;
+  try { owned = inventoryFault(repoRoot()); } catch (e) { if (!(e instanceof UsageError)) owned = (e as Error).message; } // outside a git repo there is no inventory
+  const sized = sizeFault(loadConfig(process.cwd()).journeys);
+  const why = !v.ok ? v.why : owned ? `test inventory: ${owned}` : sized && `test sizes: ${sized}`;
+  console.log(why ? `FAIL: ${why}` : v.warn ? `WARN: ${v.warn}` : 'PASS');
+  return why ? FAIL : PASS;
 }
 
 // A screen or mock file for the design judge.
@@ -4380,13 +4949,23 @@ function defaultBranch(repo: string): string {
 
 const isAncestor = (repo: string, a: string, b: string) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: repo, stdio: 'ignore' }).status === 0;
 
+// The newest of the receipted commits that are ancestors of `at` (not `at` itself), if any.
+// ponytail: one git call per receipt to find the ones before HEAD; index receipts by commit when a repo keeps thousands.
+function nearestReceipt(repo: string, receipted: string[], at: string): string | undefined {
+  const older = receipted.filter((h) => h !== at && isAncestor(repo, h, at));
+  return older.find((h) => older.every((o) => isAncestor(repo, o, h)));
+}
+
 // The journeys and features `changed` needs (src/affected.ts), from the verify skill at the working tree.
 function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[], noBase?: string) {
   const featDir = join(repo, cfg.skill, 'features');
   const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
   const coreLine = featureMap(repo, cfg).split('\n').find((l) => /^\s*[-*] /.test(l) && l.includes(MARK.core));
-  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase });
+  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase, globalPaths: cfg.affected.global_paths, read: (p) => repoText(join(repo, p)) });
 }
+
+// ignore_paths and committed gate receipts need no journey.
+const needsJourney = (cfg: Config) => (p: string) => !p.startsWith(`${GATE_DIR}/`) && !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g));
 
 // Which journeys the change needs (src/affected.ts) and whether HEAD's proof covers them. The change is read from `baseArg`,
 // else from the newest receipt before HEAD (the commits since the last proof), else from the merge base with the default
@@ -4402,9 +4981,7 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
       throw new UsageError(`affected: ${baseArg} is not a commit in this checkout`, 'Pass a branch, tag or commit: done-done affected [<base>]');
     }
   } else {
-    // ponytail: one git call per receipt to find the ones before HEAD; index receipts by commit when a repo keeps thousands.
-    const older = [...receipts.keys()].filter((h) => h !== now.commit && isAncestor(repo, h, now.commit));
-    const nearest = older.find((h) => older.every((o) => isAncestor(repo, o, h)));
+    const nearest = nearestReceipt(repo, [...receipts.keys()], now.commit);
     const ref = nearest ? '' : defaultBranch(repo);
     const mb = ref ? spawnSync('git', ['merge-base', ref, 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim() : '';
     if (nearest) base = { commit: nearest, from: `the last receipt, for ${nearest.slice(0, 12)}` };
@@ -4412,8 +4989,7 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
   }
   const list = (...a: string[]) => git(repo, ...a).split('\0').filter(Boolean);
   const tracked = list('ls-files', '-z');
-  // ignore_paths and committed gate receipts need no journey.
-  const counts = (p: string) => !p.startsWith(`${GATE_DIR}/`) && !cfg.evidence.ignore_paths.some((g) => matchesGlob(p, g));
+  const counts = needsJourney(cfg);
   // Untracked files are no part of the change until added, as everywhere else in done-done.
   const uncommitted = list('diff', '--name-only', '--no-renames', '-z', 'HEAD').filter(counts);
   const changed = [...new Set([...(base ? list('diff', '--name-only', '--no-renames', '-z', base.commit, 'HEAD').filter(counts) : []), ...uncommitted])];
@@ -4432,9 +5008,69 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
   return { now, base, changed, m, proof, missing };
 }
 
+// `done-done affected --audit <range>`: the failed journey runs at receipted commits in the range that `affected` did not select for
+// the commit's diff. Each miss is written to the feature file that names the journey (src/audit.ts); recall is printed.
+function cmdAffectedAudit(range: string): number {
+  const repo = repoRoot();
+  const cfg = loadConfig(repo);
+  let commits: string[];
+  try {
+    commits = git(repo, 'rev-list', '--no-walk=unsorted', ...git(repo, 'rev-list', range).split('\n').filter(Boolean)).split('\n').filter(Boolean);
+  } catch {
+    throw new UsageError(`affected --audit: ${range} is not a commit range in this checkout`, 'Pass a range: done-done affected --audit main..HEAD');
+  }
+  const receipts = receiptsByHead(cfg);
+  // A failed run of a journey at a commit whose receipt holds no run of it: the full run saw what the receipt never ran.
+  const seen = new Set<string>();
+  const failures: JourneyFailure[] = [];
+  for (const r of loadRecords(cfg))
+    if (r.journey && r.exit !== null && r.exit !== 0 && commits.includes(r.commit) && receipts.has(r.commit) && !receipts.get(r.commit)!.runs.some((x) => x.journey === r.journey) && !seen.has(`${r.commit} ${r.journey}`)) {
+      seen.add(`${r.commit} ${r.journey}`);
+      failures.push({ commit: r.commit, journey: r.journey });
+    }
+  const tracked = git(repo, 'ls-files', '-z').split('\0').filter(Boolean);
+  const changed = (c: string) => git(repo, 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', '--no-renames', '-z', c).split('\0').filter(Boolean).filter(needsJourney(cfg));
+  const audit = auditSelection({ failures, changed, selected: (c) => mapDiff(repo, cfg, changed(c), tracked).journeys.map((j) => j.name) });
+  const featDir = join(repo, cfg.skill, 'features');
+  const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
+  const written: string[] = [];
+  const unplaced: string[] = [];
+  const added = audit.missed.map((m) => {
+    const feature = featureFor(features, m.journey);
+    if (!feature) {
+      unplaced.push(m.journey);
+      return { ...m, commit: m.commit.slice(0, 12), mapped: 'no feature names this journey' };
+    }
+    const text = addPairs(features[feature], m.journey, m.files);
+    if (text !== null) {
+      writeFileSync(join(featDir, `${feature}.md`), text);
+      features[feature] = text;
+      written.push(`${cfg.skill}/features/${feature}.md`);
+    }
+    return { ...m, commit: m.commit.slice(0, 12), mapped: `${cfg.skill}/features/${feature}.md` };
+  });
+  emit({
+    command: 'affected --audit',
+    range,
+    failures: failures.length,
+    caught: audit.caught.length,
+    missed: added,
+    recall: audit.recall === null ? 'n/a: no failed journey at a receipted commit' : `${audit.caught.length}/${failures.length} (${Math.round(audit.recall * 100)}%)`,
+    help: [
+      ...(written.length ? [`Commit the map change (${[...new Set(written)].join(', ')}), then done-done affected selects the missed journeys for those files`] : []),
+      ...(unplaced.length ? [`Name ${[...new Set(unplaced)].join(', ')} in a feature file (run <journey>), then audit again`] : []),
+    ],
+  });
+  return unplaced.length ? FAIL : PASS;
+}
+
 // `done-done affected [<base>]`: the journeys a change needs, and exit 1 until a receipt for HEAD covers them.
 function cmdAffected(argv: string[]): number {
-  const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { audit: { type: 'string' } } });
+  if (values.audit !== undefined) {
+    if (positionals.length) throw new UsageError('affected --audit takes a range, not a base', 'Re-run as: done-done affected --audit <range>');
+    return cmdAffectedAudit(values.audit);
+  }
   if (positionals.length > 1) throw new UsageError('affected takes at most one base', 'Re-run as: done-done affected [<base>]');
   const repo = repoRoot();
   const cfg = loadConfig(repo);
@@ -4457,7 +5093,7 @@ function cmdAffected(argv: string[]): number {
     journeys: a.m.journeys.map((j) => ({ name: j.name, why: why(j.why) })),
     ...(a.m.features.length && { features: a.m.features.map((f) => ({ name: f.name, drive: 'verify --feature', why: why(f.why) })) }),
     ...(a.m.unmapped.length && { unmapped: a.m.unmapped }),
-    ...(a.m.fallback && { fallback: `${a.m.fallback}, so the core journey runs too` }),
+    ...(a.m.fallback && { fallback: `${a.m.fallback}, so the ${a.m.runs} runs${a.m.runs === 'core journey' ? ' too' : ''}` }),
     help: [
       ...(fresh
         ? [`The receipt for HEAD covers every journey this change needs (${[...a.m.journeys.map((j) => j.name), ...a.m.features.map((f) => f.name)].join(', ') || 'none'})`]
@@ -4471,6 +5107,84 @@ function cmdAffected(argv: string[]): number {
     ],
   });
   return fresh ? PASS : FAIL;
+}
+
+// Stage writing: add or extend one journey through the existing journey commands, and only where none covers the behaviour.
+const coveringOf = (repo: string, cfg: Config, mapped: string[]): Covering[] => mapped.map((name) => {
+  const script = repoText(join(repo, 'journeys', `${name}.mjs`));
+  return { name, text: `${script ?? ''}\n${repoText(join(repo, cfg.skill, 'features', `${name}.md`)) ?? ''}`, extendable: script !== undefined && cfg.journeys[name].command === `node journeys/${name}.mjs` };
+});
+
+function writeQaJourney(repo: string, cfg: Config, feature: string, planned: ReturnType<typeof planQa>, mapped: string[]): Write {
+  const w = planWrite(planned, coveringOf(repo, cfg, mapped));
+  if (w.action === 'none') return w;
+  const args = w.action === 'add' ? ['add', feature] : ['enhance', w.journey!, `Also drive and check ${planned.surfaces.join(', ')}: ${feature}`];
+  const r = spawnSync(process.execPath, [process.argv[1], '--json', 'journey', ...args], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 8 << 20 });
+  if (r.status === 2 || r.status === null) throw new UsageError(`qa --write: journey ${args[0]} did not write a journey: ${r.error?.message ?? (r.stdout.trim() || 'see the message above')}`, 'Fix the cause above, then re-run: done-done qa "<feature>" --write');
+  if (w.action === 'add') {
+    const added = Object.keys(loadConfig(repo).journeys).filter((n) => !Object.hasOwn(cfg.journeys, n));
+    return { ...w, journey: added[0] };
+  }
+  return w;
+}
+
+// `done-done qa "<feature>" [<base>] [--write]`: decide from the diff whether the feature needs a journey, record the plan, and with --write write it.
+function cmdQa(argv: string[]): number {
+  const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { write: { type: 'boolean' }, prove: { type: 'boolean' }, max: { type: 'string' } } });
+  if (positionals.length < 1 || positionals.length > 2) throw new UsageError('qa takes the feature and at most one base', 'Re-run as: done-done qa "<feature>" [<base>] [--write] [--prove [--max <n>]]');
+  const max = values.max === undefined ? 2 : Number(values.max);
+  if (values.max !== undefined && !values.prove) throw new UsageError('--max belongs to --prove', 'Re-run as: done-done qa "<feature>" --prove --max <n>');
+  if (!Number.isInteger(max) || max < 0) throw new UsageError('--max needs a whole number, 0 or more', 'Re-run as: done-done qa "<feature>" --prove --max 2');
+  const [feature, baseArg] = positionals;
+  const repo = repoRoot();
+  const cfg = loadConfig(repo);
+  const a = affectedOf(repo, cfg, baseArg);
+  // The added lines of each changed file, from the base (or HEAD when there is none) to the working tree; a new untracked file has none until added.
+  const against = a.base?.commit ?? 'HEAD';
+  const added = (f: string) => git(repo, 'diff', '--no-renames', '-U0', against, '--', f).split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1));
+  const planned = planQa(a.changed.map((path) => ({ path, added: added(path) })));
+  const mapped = planned.plan === 'journey' ? a.m.journeys.map((j) => j.name) : [];
+  const written = values.write ? writeQaJourney(repo, cfg, feature, planned, mapped) : undefined;
+  const proved = values.prove ? proveQa(repo, cfg, feature, planned, written, mapped, max) : undefined;
+  const stage = proved?.stage ?? (written ? 'writing' : 'planned');
+  const record = { stage, feature, head: a.now.commit, base: a.base?.commit ?? null, ...planned, journeys: mapped, ...(written && { write: written }), ...(proved && { prove: proved }) };
+  const file = join(cfg.evidence.root, '.done-done', 'qa', `${slug(feature)}.json`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  const changed = cap(a.changed);
+  emit({
+    command: 'qa',
+    stage,
+    feature,
+    plan: planned.plan,
+    reason: planned.reason,
+    changed: changed.items,
+    ...(changed.omitted && { changed_omitted: changed.omitted }),
+    ...(mapped.length && { journeys: mapped }),
+    ...(written && { write: written }),
+    ...(proved && { prove: proved }),
+    record: citable(repo, file),
+    help: proved ? proved.help : written
+      ? [written.action === 'none' ? 'Nothing written: ' + written.reason : `Review the ${written.action === 'add' ? 'new' : 'extended'} journey ${written.journey}, commit it, then: done-done run ${written.journey}`]
+      : planned.plan === 'journey'
+        ? [mapped.length ? `Capture proof: ${mapped.map((j) => `done-done run ${j}`).join(' && ')}` : `No journey covers this yet: done-done qa "${feature}" --write, or done-done init --journey <name> -- <command>`]
+        : ['No new journey needed: keep the existing proof; done-done affected still says what the change touches'],
+  });
+  return proved && proved.stage !== 'sealed' && proved.stage !== 'planned' ? FAIL : PASS;
+}
+
+// Stage sealed: the loop of at most `max` fixes is the existing verify run (drive, check, judge, fix, receipt), started for the
+// one journey that covers the feature. It seals only a pass at the user's own HEAD; a fix lands on a done-done branch the user merges.
+function proveQa(repo: string, cfg: Config, feature: string, planned: ReturnType<typeof planQa>, written: Write | undefined, mapped: string[], max: number): ReturnType<typeof sealStage> {
+  if (planned.plan !== 'journey') return { stage: 'planned', reason: `plan is ${planned.plan}: nothing to run or seal`, help: ['No new journey needed: keep the existing proof'] };
+  const w = written ?? planWrite(planned, coveringOf(repo, cfg, mapped));
+  if (w.action !== 'none' || !w.journey) throw new UsageError(`qa --prove: no journey drives this change yet (${w.reason})`, `Write it first: done-done qa "${feature}" --write, commit it, then re-run with --prove`);
+  const r = spawnSync(process.execPath, [process.argv[1], '--json', 'verify', w.journey, '--outcome', feature, '--fix-tries', String(max), '--foreground'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 64 << 20 });
+  let run: any;
+  try { run = JSON.parse(r.stdout); } catch { throw new UsageError(`qa --prove: verify ${w.journey} gave no result${r.error ? `: ${r.error.message}` : ` (exit ${r.status}): ${r.stdout.trim().slice(0, 300) || 'see the message above'}`}`, `Read it: done-done verify ${w.journey} --outcome "${feature}"`); }
+  const fixes = Math.max(0, ...(run.steps ?? []).map((s: any) => Number(/^fix (\d+) of/.exec(s.stage ?? '')?.[1] ?? 0)));
+  const p: Proved = { journey: w.journey, max, fixes, result: run.result ?? run.status, run_id: run.run_id, reason: run.reason, receipt: run.receipt, fix_branch: run.fix?.branch };
+  return sealStage(p);
 }
 
 // Claude's opt-in Bash lifecycle hook compares HEAD before/after the exact tool call, not shell command text.
@@ -4595,12 +5309,16 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'verify') return await cmdVerify(rest);
     if (cmd === 'maintain') return await cmdMaintain(rest);
     if (cmd === 'design') return await cmdDesign(rest);
+    if (cmd === 'review') return await cmdReview(rest);
     if (cmd === 'look') return await cmdLook(rest);
+    if (cmd === 'inventory') return cmdInventory(rest);
+    if (cmd === 'tests') return await cmdTests(rest);
     if (cmd === 'lint') return cmdLint(rest);
     if (cmd === 'gate') return cmdGate(rest);
     if (cmd === 'affected') return cmdAffected(rest);
+    if (cmd === 'qa') return cmdQa(rest);
     if (cmd === 'after-commit') return await cmdAfterCommit(rest);
-    if (cmd === 'status') return cmdStatus(rest);
+    if (cmd === 'status' || cmd === 'report') return cmdStatus(rest, cmd);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);
     if (cmd === 'rerun') return await cmdRerun(rest);

@@ -77,7 +77,7 @@ function setup(projectYaml = JUDGED) {
   // The fixture never inherits the machine's git config or hooks: GIT_CONFIG_* env (it can set core.hooksPath) is dropped, and the global config is an empty file in the fixture.
   writeFileSync(join(dir, 'gitconfig'), '');
   const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
-  const env = { ...host, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   withStubJudge(env, dir);
   mkdirSync(join(repo, 'src'), { recursive: true });
   mkdirSync(join(repo, 'docs'));
@@ -117,6 +117,43 @@ function setup(projectYaml = JUDGED) {
   };
   return { dir, repo, env, sh, dd, ddin, head, shots };
 }
+
+test('sealed runs use the caller capture folder unless evidence.root overrides it', () => {
+  const t = setup('app: notes\n');
+  const caller = join(t.dir, 'caller');
+  mkdirSync(caller);
+  t.env.DONE_DONE_EVIDENCE_ROOT = caller;
+  const command = `node -e "require('fs').writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/result.txt', 'captured')"`;
+  const run = t.dd('run', '--', command);
+  assert.equal(run.code, 0, run.out);
+  const id = toon(run).run_id;
+  assert.equal(readFileSync(join(caller, id, 'result.txt'), 'utf8'), 'captured');
+  assert.equal(t.dd('status', '--run', id).code, 0, 'the caller can find the sealed run');
+  writeFileSync(join(t.repo, '.done-done.yaml'), 'app: notes\nevidence:\n  root: .proof\n');
+  const overridden = t.dd('run', '--', command);
+  assert.equal(overridden.code, 0, overridden.out);
+  assert.equal(readFileSync(join(t.repo, '.proof', toon(overridden).run_id, 'result.txt'), 'utf8'), 'captured');
+});
+
+test('tier filtering keeps local fixtures independent of CI and enforces CI and explicit tiers', () => {
+  const t = setup(JUDGED + '  local-only:\n    command: node make-shots.mjs ${RUN_ID}\n    tier: local\n');
+  assert.equal(t.dd('run', 'shots').code, 0, 'untagged local journey runs locally');
+  t.env.GITHUB_ACTIONS = 'true';
+  const untagged = t.dd('run', 'shots');
+  assert.equal(untagged.code, 2);
+  assert.match(untagged.out, /no journeys with tier ci/);
+  writeFileSync(join(t.repo, '.done-done.yaml'), readFileSync(join(t.repo, '.done-done.yaml'), 'utf8').replace('    core: true', '    tier: ci\n    core: true'));
+  t.sh('add', '.done-done.yaml');
+  t.sh('commit', '-qm', 'tag CI journey');
+  assert.equal(t.dd('run', 'shots').code, 0, 'CI journey runs in GitHub Actions');
+  const refused = t.dd('run', 'local-only');
+  assert.equal(refused.code, 2);
+  assert.match(refused.out, /has tier local, not ci/);
+  assert.equal(t.dd('run', '--tier', 'local', 'local-only').code, 0, 'explicit tier overrides CI default');
+  const missing = t.dd('run', '--tier', 'missing', 'shots');
+  assert.equal(missing.code, 2);
+  assert.match(missing.out, /no journeys with tier missing/);
+});
 
 test('approved design coverage: real CLI names a missing screen, then passes the complete contract', () => {
   const t = setup();
@@ -599,7 +636,9 @@ function bareRepo(dirName = 'repo') {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-init-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, dirName);
-  const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  writeFileSync(join(dir, 'gitconfig'), '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_EVIDENCE_ROOT: '', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');
@@ -730,7 +769,7 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
   assert.equal(d.global_config, `written ${globalYml}`);
   const globalText = readFileSync(globalYml, 'utf8');
   const g = parse(globalText);
-  assert.deepEqual(Object.keys(g), ['agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
+  assert.deepEqual(Object.keys(g), ['review_enabled', 'agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
   assert.deepEqual([g.agent, g.agent_config.claude, g.agent_config.opencode, g.agent_timeout], [undefined, { model: 'claude-haiku-5-5', effort: 'low' }, { model: 'opencode-go/muse-spark-1.3-contributor', effort: 'low' }, '30m'], 'no agent key until the user picks one, and the cheap defaults');
   for (const key of Object.keys(g)) assert.match(globalText, new RegExp(`# .*\\n${key}:`), `${key} has a comment`);
   assert.equal(g.agent_config.codex, undefined, 'codex has no cheap default, so init writes no codex model');
@@ -748,7 +787,7 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
 test('after-commit opt-in drives actual Bash hooks around mapped and uncovered fixture commits', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'dd-commit-e2e-'));
   try {
-    const r = spawnSync(process.execPath, [CLI, 'run', 'after-commit', '--json'], { cwd: dirname(dirname(CLI)), env: { ...process.env, DONE_DONE_HOME: join(tmp, 'home') }, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [CLI, 'run', 'after-commit', '--json'], { cwd: dirname(dirname(CLI)), env: { ...process.env, GITHUB_ACTIONS: 'false', DONE_DONE_HOME: join(tmp, 'home') }, encoding: 'utf8' });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     const record = JSON.parse(r.stdout);
     assert.equal(record.result, 'recorded');
@@ -838,7 +877,9 @@ function shapeRepo(kind, name) {
   const dir = mkdtempSync(join(tmpdir(), 'done-done-shape-'));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, name);
-  const env = { ...process.env, DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+  writeFileSync(join(dir, 'gitconfig'), '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, GITHUB_ACTIONS: 'false', GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', DONE_DONE_HOME: join(dir, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
   mkdirSync(repo, { recursive: true });
   if (kind === 'proof') {
     writeFileSync(join(repo, 'package.json'), JSON.stringify({ name, scripts: { start: 'node engine.js' } }));
@@ -1332,7 +1373,7 @@ test('verify goes on in a detached runner after the calling shell is killed, and
   const s = toon(r);
   assert.equal(s.run_id, run.run_id);
   assert.equal(s.result, 'pass');
-  assert.deepEqual(s.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']], 'the judge always runs');
+  assert.deepEqual(s.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['reviewing', 'skipped'], ['receipt', 'completed'], ['report', 'completed']], 'the judge always runs');
   assert.deepEqual(s.evidence, [`.proof/${run.run_id}/home.png`, `.proof/${run.run_id}/settings.png`]);
   assert.match(s.help[0], /done-done receipt --verify [0-9a-f]{40}$/);
   assert.ok(existsSync(join(repo, s.receipt)), 'the runner recorded a receipt');
@@ -1360,7 +1401,7 @@ test('a journey past its timeout is killed and the run ends inconclusive', async
   const s = toon(r);
   assert.equal(s.result, 'inconclusive');
   assert.equal(s.reason, 'drive: journey timed out after 2s');
-  assert.deepEqual(s.steps.map((x) => x.status), ['completed', 'failed', 'skipped', 'skipped', 'skipped', 'skipped', 'completed']);
+  assert.deepEqual(s.steps.map((x) => x.status), ['completed', 'failed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'completed']);
   const pgid = JSON.parse(readFileSync(join(env.DONE_DONE_HOME, 'runs', 'notes', s.run_id, 'run.json'), 'utf8')).runner.journey_pgid;
   assert.ok(await groupGone(pgid), 'the timed-out journey is gone');
 });
@@ -1766,7 +1807,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   const ok = verify(right.env, 'home and settings render');
   assert.equal(ok.code, 0, ok.out);
   const o = toon(ok);
-  assert.deepEqual(o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
+  assert.deepEqual(o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['reviewing', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
   const calls = right.calls();
   assert.equal(calls.length, 2, 'one tools-off call per capture, none to the author');
   assert.ok(calls.every((c) => c.agent === 'opencode' && c.argv.includes('opencode-go/muse-spark-1.3-contributor') && JSON.parse(c.permission)['*'] === 'deny'));
@@ -1800,7 +1841,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   assert.equal(bad.code, 4, bad.out);
   const b = toon(bad);
   assert.deepEqual([b.status, b.step, b.result], ['awaiting_approval', 'gate', undefined]);
-  assert.deepEqual(b.steps.map((x) => x.status), ['completed', 'completed', 'completed', 'failed', 'awaiting_approval', 'pending', 'pending']);
+  assert.deepEqual(b.steps.map((x) => x.status), ['completed', 'completed', 'completed', 'failed', 'awaiting_approval', 'pending', 'pending', 'pending']);
   assert.deepEqual([b.findings.length, b.findings[0].id, b.findings[0].severity, b.findings[0].action], [2, 'gate-1', 'error', 'ask-user']);
   assert.match(b.findings[0].what, /judge says wrong screen/);
   assert.ok(b.help.some((h) => h.includes(`done-done respond --run ${b.run_id} --action fix`)), bad.out);
@@ -1836,7 +1877,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   // A rerun of the judged run judges again (the cached wrong verdict), so it cannot pass with the judge left out.
   const re = spawnSync(process.execPath, [CLI, 'rerun', '--run', b.run_id], { cwd: t.repo, env: right.env, encoding: 'utf8' });
   assert.equal(re.status, 4, re.stdout + re.stderr);
-  assert.deepEqual(toon({ out: re.stdout }).steps.map((x) => [x.name, x.status]).slice(3, 6), [['judge', 'failed'], ['gate', 'awaiting_approval'], ['receipt', 'pending']]);
+  assert.deepEqual(toon({ out: re.stdout }).steps.map((x) => [x.name, x.status]).slice(3, 7), [['judge', 'failed'], ['gate', 'awaiting_approval'], ['reviewing', 'pending'], ['receipt', 'pending']]);
   assert.equal(t.dd('respond', '--run', toon({ out: re.stdout }).run_id, '--action', 'fix').code, 1);
   // The author's own agent and model may judge too: the user's choice runs, in a fresh session, and the log says how apart it is.
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: answerer:opencode\n');
@@ -1902,7 +1943,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   const ok = verify(right.env, 'the note Umer added shows in the list');
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual([ok.o.result, ok.o.journey, ok.o.feature, ok.o.author], ['pass', null, 'add-note', 'claude (model claude-haiku-5-5)']);
-  assert.deepEqual(ok.o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
+  assert.deepEqual(ok.o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['reviewing', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
   // The receipt keeps the feature the agent drove, so affected counts it as that feature's proof (no journey, no core: every feature).
   assert.equal(JSON.parse(readFileSync(join(t.repo, '.proof', '.done-done', 'receipts', `${t.head()}.json`), 'utf8')).runs[0].feature, 'add-note');
   const covered = t.dd('--json', 'affected');
@@ -2881,6 +2922,8 @@ test('verify with auto_fix fixes the product on a done-done branch, and never fi
   t.sh('commit', '-qm', 'a broken title');
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const args = process.argv.slice(2), prompt = readFileSync(args[args.indexOf('-f') + 1], 'utf8');
+if (prompt.includes('read-only reviewer')) { console.log(JSON.stringify({type:'text',part:{type:'text',text:JSON.stringify({findings:[]})}})); process.exit(0); }
 const extra = readFileSync(${JSON.stringify(join(e.PATH, 'extra'))}, 'utf8');
 appendFileSync(${JSON.stringify(join(e.PATH, 'calls'))}, process.cwd() + '\\n');
 writeFileSync('src/app.js', 'export const title = "Notes";\\n');
@@ -3547,4 +3590,65 @@ test('the project test suite is one proof step: a pass is sealed in the receipt 
   const detected = toon(dd('check', '--outcome', OUTCOME, ...files));
   assert.equal(detected.suite.command, 'npm test');
   assert.equal(detected.suite.exit, 0);
+});
+
+test('status shows fix attempt stage (n of N) in steps output and events', () => {
+  const t = setup('app: notes\nauto_fix:\n  verify: 2\njourneys:\n  smoke:\n    command: node journey.mjs\n');
+  const e = pathEnv(t.env, []);
+
+  // Journey that fails initially
+  writeFileSync(join(t.repo, 'journey.mjs'), `
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+const broken = readFileSync('state.txt', 'utf8').includes('broken');
+mkdirSync(process.env.DONE_DONE_EVIDENCE_ROOT, { recursive: true });
+writeFileSync(process.env.DONE_DONE_EVIDENCE_ROOT + '/screen.png', 'fake-png');
+if (broken) process.exit(1);
+  `);
+  writeFileSync(join(t.repo, 'state.txt'), 'broken\n');
+  writeFileSync(join(t.repo, 'steps.mjs'), '');
+  t.sh('add', '-A');
+  t.sh('commit', '-qm', 'initial');
+
+  // Stub agent that fixes on first attempt
+  writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}
+const { writeFileSync } = require('node:fs');
+writeFileSync('state.txt', 'fixed\\n');
+console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify({ summary: 'fixed state', blocker: '' }) } }));
+  `, { mode: 0o755 });
+
+  mkdirSync(t.env.DONE_DONE_HOME, { recursive: true });
+  writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode: { model: opencode-go/author }\n${judgeYaml(t.env)}`);
+
+  // Run verify with auto_fix
+  const r = doctorIn(t.repo, { ...e, DD_OUTCOME: 'journey passes', PATH: `${e.PATH}:${dirname(process.execPath)}` }, 'verify', 'smoke', '--outcome', 'journey passes', '--foreground');
+
+  const result = toon(r);
+
+  // Find the run directory
+  const runId = result.run_id;
+  const runDir = join(t.env.DONE_DONE_HOME, 'runs', 'notes', runId);
+
+  // Check events.jsonl for attempt info
+  const events = readFileSync(join(runDir, 'events.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(line => JSON.parse(line))
+    .filter(e => e.step === 'fix' || e.step === 'triage');
+
+  // Verify that fix events include attempt and max_attempts
+  const fixEvents = events.filter(e => e.step === 'fix');
+  assert.ok(fixEvents.length > 0, 'should have fix events');
+  assert.ok(fixEvents.some(e => e.attempt === 1 && e.max_attempts === 2), `fix events should include attempt info: ${JSON.stringify(fixEvents)}`);
+
+  // Check the run.json for step attempt info
+  const run = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'));
+  const fixSteps = run.steps.filter(s => s.name === 'fix');
+  assert.ok(fixSteps.length > 0, 'should have fix steps');
+  assert.ok(fixSteps.some(s => s.attempt === 1 && s.max_attempts === 2), `fix steps should include attempt info: ${JSON.stringify(fixSteps)}`);
+
+  // Check status output for stage field
+  const statusResult = toon(t.dd('status', '--run', runId));
+  const stepsWithStage = statusResult.steps.filter(s => s.stage);
+  assert.ok(stepsWithStage.length > 0, `status output should include stage field for fix/triage steps: ${JSON.stringify(statusResult.steps)}`);
+  assert.ok(stepsWithStage.some(s => s.stage.includes('1 of 2')), `stage should show "n of N" format: ${JSON.stringify(stepsWithStage)}`);
 });

@@ -12,7 +12,10 @@ let transcript = '';
 try {
   const repo = join(tmp, 'repo'), bin = join(tmp, 'bin'), home = join(tmp, 'home'), evidence = join(tmp, 'evidence');
   for (const p of [repo, bin, home]) mkdirSync(p);
-  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_CACHE_HOME: home, TMPDIR: tmp, DONE_DONE_HOME: join(tmp, 'dd'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', PATH: `${bin}:${process.env.PATH}` };
+  const gitConfig = join(tmp, 'gitconfig');
+  writeFileSync(gitConfig, '');
+  const host = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
+  const env = { ...host, HOME: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home, XDG_CACHE_HOME: home, TMPDIR: tmp, DONE_DONE_HOME: join(tmp, 'dd'), GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', PATH: `${bin}:${process.env.PATH}` };
   writeFileSync(join(bin, 'done-done'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"\n`, { mode: 0o755 });
   const git = (...args) => execFileSync('git', args, { cwd: repo, env, encoding: 'utf8' }).trim();
   const dd = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
@@ -22,13 +25,17 @@ try {
   writeFileSync(join(repo, skill, 'SKILL.md'), '# Demo verification\n');
   writeFileSync(join(repo, skill, 'features/README.md'), '- [Greeting](greeting.md)\n');
   writeFileSync(join(repo, skill, 'features/greeting.md'), '# Greeting\nSource: app.mjs\nDrive: done-done run greeting\n');
-  writeFileSync(join(repo, '.done-done.yaml'), `app: demo\nevidence:\n  root: ${JSON.stringify(evidence)}\njourneys:\n  core:\n    command: node drive.mjs core\n    core: true\n  greeting:\n    command: node drive.mjs greeting\n  unrelated:\n    command: node other.mjs\n`);
+  writeFileSync(join(repo, '.done-done.yaml'), `app: demo\nevidence:\n  root: ${JSON.stringify(evidence)}\njourneys:\n  core:\n    command: node core.mjs\n    core: true\n  greeting:\n    command: node drive.mjs greeting\n  unrelated:\n    command: node other.mjs\n`);
   writeFileSync(join(repo, 'app.mjs'), 'console.log("Hello Umer");\n');
   writeFileSync(join(repo, 'other.mjs'), 'throw new Error("unrelated journey must not run");\n');
   writeFileSync(join(repo, 'drive.mjs'), `import { execFileSync } from 'node:child_process'; import { writeFileSync } from 'node:fs'; import { join } from 'node:path';
 const output = execFileSync(process.execPath, ['app.mjs'], { encoding: 'utf8' });
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), output);
 writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: { version: 'fixture' }, start: 'Umer opens the greeting CLI', steps: ['node app.mjs'], result: output }));\n`);
+  // The core journey stands alone: drive.mjs reaches app.mjs, so a core journey that ran it would be reached by every app.mjs commit.
+  writeFileSync(join(repo, 'core.mjs'), `import { writeFileSync } from 'node:fs'; import { join } from 'node:path';
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), 'Hello Umer, again\\n');
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: { version: 'fixture' }, start: 'Umer opens the demo', steps: ['open the core screen'], result: 'Hello Umer, again' }));\n`);
   assert.equal(dd('init', '--hook', 'claude').status, 2, 'no agent is chosen');
   const settings = () => JSON.parse(readFileSync(join(repo, '.claude/settings.json'), 'utf8'));
   const session = settings().hooks.SessionStart;

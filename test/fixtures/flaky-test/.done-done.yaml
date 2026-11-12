@@ -1,0 +1,4 @@
+app: flaky-test
+journeys:
+  flaky-check:
+    command: sh flaky.sh

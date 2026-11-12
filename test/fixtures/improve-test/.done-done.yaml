@@ -1,0 +1,14 @@
+app: improve-test
+journeys:
+  real:
+    command: node tests/real.mjs
+    size: ci
+  slop:
+    command: node tests/slop.mjs
+    size: ci
+  slow-duplicate:
+    command: node tests/slow-duplicate.mjs
+    size: local
+  local-check:
+    command: node tests/local-check.mjs
+    size: local

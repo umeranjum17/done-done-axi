@@ -1,0 +1,138 @@
+{
+  "journeys/affected-audit.mjs": {
+    "owner": "affected-audit",
+    "sha256": "5a5aaa841c40685ab9d784acaa1125fcf0ce541971b56baa34d1da5d2543e40a"
+  },
+  "journeys/affected-proof.mjs": {
+    "owner": "affected-proof",
+    "sha256": "6dbacd932df2edeeaccc32ed87d0b0633a8b9adee9f8e07bae0abfccef09a20b"
+  },
+  "journeys/affected-select.mjs": {
+    "owner": "affected-select",
+    "sha256": "1374a7e882f3f71a117630c6edb34373566309e2166869ecc726759b467a0420"
+  },
+  "journeys/after-commit.mjs": {
+    "owner": "after-commit",
+    "sha256": "33f497fa6b7cb4c392b31c6657771b674102f22616c0629fed22d9592cef2424"
+  },
+  "journeys/agents-live.mjs": {
+    "owner": "agents-live",
+    "sha256": "dbf6cb92dcb6b5ab04e21cef9c6045c90c129b8471bc3a1c84afa93bec8d41ec"
+  },
+  "journeys/apply-plan.mjs": {
+    "owner": "test-apply",
+    "sha256": "bffccfe8ac0f890b7ee2f49d8ec0603ff4a0d7d7d07272e6580a35175c8ce1bc"
+  },
+  "journeys/approved-design.mjs": {
+    "owner": "approved-design",
+    "sha256": "86d412b2e2edbc798dd0e60a4ba93b2b66ea9a23260ce19ff2a51551be4362cf"
+  },
+  "journeys/create-maintain.mjs": {
+    "owner": "create-maintain",
+    "sha256": "6619515132537c78673bcc553a0165d17481a4925d898445db1fd8639bde068d"
+  },
+  "journeys/e2e.mjs": {
+    "owner": "e2e",
+    "sha256": "f6cdc10ef05d5722556192c75d1f1282bed86c2c0c464e47ef17a627b0753b7d"
+  },
+  "journeys/flaky-quarantine.mjs": {
+    "owner": "flaky-quarantine",
+    "sha256": "8c5100e6f4afb651f1304f25e1910350fbb33dcdaa22d75ad91fbc9435140da8"
+  },
+  "journeys/improve-plan.mjs": {
+    "owner": "test-improve",
+    "sha256": "d359a626f0b2c178bbc86185217ba0848166cdbbd9b3c315a93a91c1779a66ed"
+  },
+  "journeys/init-first-release.mjs": {
+    "owner": "init-first-release",
+    "sha256": "e29dab9ecf99e627b809fb7bd2d8fb564eb08fe9d0769f82799c70c46ff874dc"
+  },
+  "journeys/inventory-ownership.mjs": {
+    "owner": "inventory-ownership",
+    "sha256": "555453c042bcd2dd873751ecb5ec6c4fa2f0a96a7a515c9aedb6cc68796051d5"
+  },
+  "journeys/journey-add.mjs": {
+    "owner": "journey-add",
+    "sha256": "b44ee77400fdb60ed3068a2eeef1dc410f6ab09052dc681e976a4bf624e864e3"
+  },
+  "journeys/lint-generated.mjs": {
+    "owner": "lint-generated",
+    "sha256": "1c88c2aa748235212168874ffcd93b777c5f3bfa172c70f487eea9a55923fe06"
+  },
+  "journeys/lint-journey-warn.mjs": {
+    "owner": "lint-journey-warn",
+    "sha256": "c7bce3e4a0e27a9843ccde54ac7c98aa632ec8b2e89ef4ab2b0b1e9fd3a704b7"
+  },
+  "journeys/minimum-scope.mjs": {
+    "owner": "minimum-scope",
+    "sha256": "9a49dbabc50e97617ceb71f0407fb1ce155dea005c2675c1a07a0181702badec"
+  },
+  "journeys/qa-plan.mjs": {
+    "owner": "qa-plan",
+    "sha256": "f5aa4e21832631662676241bc701955264cefa2e46724992c55a6688b080c72c"
+  },
+  "journeys/qa-prove.mjs": {
+    "owner": "qa-prove",
+    "sha256": "ebb665ca134f80b0a3d9c5518331d4977255ce79a7bd9200076acb9a08548721"
+  },
+  "journeys/qa-write.mjs": {
+    "owner": "qa-write",
+    "sha256": "da5be40d1a42df38077c5ce3e85572ceadf03905653d6b430943c2e61dc04c97"
+  },
+  "journeys/redesign.mjs": {
+    "owner": "redesign",
+    "sha256": "f378f70a6449c3cbc3a8e9f9adbb3ece8298cc0294c18783c55f1313344b3260"
+  },
+  "journeys/registered-script.mjs": {
+    "owner": "registered-script",
+    "sha256": "afad560817e203ed699db04850781ca2f5617880c7abe696df5660aa2955894d"
+  },
+  "journeys/requirements-scope.mjs": {
+    "owner": "requirements-scope",
+    "sha256": "d3f3c16e5e4c7e7ec311332a7aec64d5c2756ca05120c3188cdab83415ba3d94"
+  },
+  "journeys/review-fix.mjs": {
+    "owner": "review-fix",
+    "sha256": "e31df224b132916f948f818097d091c5fdbac9479f4341b991f3e6a4fa5e419d"
+  },
+  "journeys/review.mjs": {
+    "owner": "review",
+    "sha256": "238d32335d40b5376d24d7c90c57d987d0c4c8ef3e500f989c7da0f3018bf3cc"
+  },
+  "journeys/shared-parts.mjs": {
+    "owner": "shared-parts",
+    "sha256": "5373d8fc2e15e8c622d4adc1a4ad435f4e8a1a4dbcaaed383a98fc19345ae234"
+  },
+  "journeys/size-bounds.mjs": {
+    "owner": "size-bounds",
+    "sha256": "b067db112c5fb539707af4dbe6156d8d91b73c67a4152146dc4186998a2d6f86"
+  },
+  "journeys/tier-ci.mjs": {
+    "owner": "tier-ci",
+    "sha256": "7e6d7229d8f93efc75308578b0064711a8aa8864afbaa9af8757d12e287c1e7b"
+  },
+  "journeys/upgrade.mjs": {
+    "owner": "upgrade",
+    "sha256": "7a94751b9a109323b5f71dcd870eea2f0bb1f35b366f968395d7c8abd4fe47ab"
+  },
+  "journeys/value-marks.mjs": {
+    "owner": "test-value",
+    "sha256": "ef7a52468c2bfa26f11e6194731f455cd10aea5c688dab6b74c71cec255cc21a"
+  },
+  "journeys/verify-review.mjs": {
+    "owner": "verify-review",
+    "sha256": "42c59487cae766d13853a7ff18a78d397e37cd69ce6cbd0935b56308bb802ac7"
+  },
+  "test/cli.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "ac8bab3ea067a0440b7ba7314125c57ae91b0c09f2b0540c2dc9b6dffd208a4d"
+  },
+  "test/conformance.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "5cfc9f70f9fac2030cd319d560be3f3c173fb35444c7575fa17e742553a01a97"
+  },
+  "test/evals.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "f0892bd012f8718f2b18931d5309bad4cf3ebcb70ca965340374b61aad8bfd85"
+  }
+}

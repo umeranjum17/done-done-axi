@@ -1,0 +1,8 @@
+app: value-test
+journeys:
+  real:
+    command: node tests/real.mjs
+  slop:
+    command: node tests/slop.mjs
+  slow-duplicate:
+    command: node tests/slow-duplicate.mjs

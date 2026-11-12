@@ -573,6 +573,8 @@ async function fix<S>(run: MaintainRun, dir: string, cfg: Config, h: Harness<S>,
   return inWorktree(repo, wt, async (base) => {
     for (let k = 1; k <= tries; k++) {
       let step = h.begin('triage');
+      (step as any).attempt = k;
+      (step as any).max_attempts = tries;
       const asks = await triageDrift(cfg, choice, wt, open, sources, join(dir, 'agents', `triage-${k}.json`));
       judged.push({ attempt: k, ask_user: asks });
       h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, rounds: judged });
@@ -583,6 +585,8 @@ async function fix<S>(run: MaintainRun, dir: string, cfg: Config, h: Harness<S>,
       }
 
       step = h.begin('fix');
+      (step as any).attempt = k;
+      (step as any).max_attempts = tries;
       const round: Record<string, unknown> = { attempt: k, findings: open.map((f) => f.id) };
       rounds.push(round);
       const blocked = (reason: string): Pass => {
