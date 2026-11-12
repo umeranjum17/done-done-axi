@@ -29,6 +29,7 @@ import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, 
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange } from './affected.js';
+import { affectedProof, affectedShape, extendReceipt, noReview, parseFiles, undriven, type AffectedProof } from './affected-proof.js';
 import { addPairs, auditSelection, featureFor, type JourneyFailure } from './audit.js';
 import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
 import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
@@ -186,6 +187,8 @@ const FLAGS: Record<string, string> = {
   '--fix-tries <n>': 'with verify: the fix attempts this run may make instead of auto_fix.verify (0 reports only)',
   '--journeys <list>': 'with verify: the closed list of journeys this run drives (one in this version), so the receipt records minimum scope, the journeys not run, and the affected ones it omits',
   '--named-by <who>': 'with --journeys: who named the list (default caller); the receipt records it',
+  '--affected-by <files>': 'with verify: repo files separated by commas that changed; only the journeys they need run (`affected`, local tier when unsure), the receipt extends the prior one and no review runs again',
+  '--extends <head>': 'with verify --affected-by: the head of the prior receipt to extend (default: the newest receipt before HEAD)',
   '--prove': 'with qa: run the journey that covers the feature through verify, judge it, fix up to --max times and seal a receipt for the commit (stage sealed, or fail)',
   '--max <n>': 'with qa --prove: the most fix attempts (default 2)',
   '--foreground': 'run every step in this process instead of a detached runner (for scripts)',
@@ -280,10 +283,11 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
     usage: [
       ['done-done verify [<journey>] --outcome "<what a user can now do>" [--claim-id <id>]', 'drive the journey in a run that outlives this command, check its evidence, judge each capture and record a receipt'],
       ['done-done verify --journeys <journey> [--named-by <who>] --outcome "<claim>"', 'minimum journey scope: drive only the journey the caller names; the receipt records the list, who named it, and the journeys it did not run (those `affected` selected too)'],
+      ['done-done verify --affected-by <files> [--extends <head>] --outcome "<claim>"', 'drive only the journeys the named files affect (the whole local tier for a file no journey covers) and record a receipt that extends the prior one: its head, the files, the journeys and no review again; writes no journey, starts no reviewer'],
       ['done-done verify --outcome "<claim>" [--feature <name>]', 'with no journey, the author agent drives a verify skill feature and the judge the user set judges its captures'],
       ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process'],
     ],
-    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
+    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--affected-by <files>', '--extends <head>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
     more: [RUNS_TEXT],
   },
   journey: {
@@ -1444,6 +1448,7 @@ type Receipt = {
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
   review?: { state: 'approved' | 'skipped'; reason?: string; head?: string; result?: ReviewResult };
   scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
+  affected?: AffectedProof; // verify --affected-by: the prior receipt this one extends, the files, the journeys and no review again
 };
 
 const receiptsDir = (cfg: Config) => join(cfg.evidence.root, '.done-done', 'receipts');
@@ -1467,6 +1472,17 @@ function writeReceipt(cfg: Config, rec: Receipt): string {
   return path;
 }
 
+// The extended receipt already written for `head` by an earlier journey of a selection (src/affected-proof.ts), read raw because
+// receiptFault refuses it until every selected journey has run; undefined when there is none.
+function earlierReceipt(cfg: Config, head: string): Receipt | undefined {
+  try {
+    const rec: Receipt = JSON.parse(readFileSync(join(receiptsDir(cfg), `${head}.json`), 'utf8'));
+    return affectedShape(rec.affected) ? rec : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Why a parsed receipt is not a well-formed passing one (a judge block that names its judge and passes only captures the receipt cites,
 // and capture runs that are not all code-only), or null.
 function receiptFault(rec: Receipt, short: string): string | null {
@@ -1485,6 +1501,8 @@ function receiptFault(rec: Receipt, short: string): string | null {
   }
   if (rec.review !== undefined && (rec.review.state === 'skipped' ? !rec.review.reason?.trim() : rec.review.state !== 'approved' || rec.review.head !== rec.head || rec.review.result?.head !== rec.head || !Array.isArray(rec.review.result?.reviewers) || rec.review.result.reviewers.length !== 2 || rec.review.result.reviewers.some((r) => r.state !== 'completed') || !Array.isArray(rec.review.result.findings) || rec.review.result.findings.length !== 0)) return `receipt for ${short} has a malformed review record`;
   if (rec.scope !== undefined && !scopeShape(rec.scope)) return `receipt for ${short} has a malformed journey scope`;
+  if (rec.affected !== undefined && !affectedShape(rec.affected)) return `receipt for ${short} has a malformed affected-journey record`;
+  if (rec.affected && undriven(rec.affected).length) return `receipt for ${short} is incomplete: the affected journeys ${undriven(rec.affected).join(', ')} have not run`;
   if (rec.suite !== undefined && !suiteShape(rec.suite)) return `receipt for ${short} has a malformed test-suite record`;
   if (rec.evals !== undefined && !/^pass \S+$/.test(String(rec.evals))) return `receipt for ${short} has a malformed evals line`;
   const code = runsFault(rec.runs);
@@ -1496,6 +1514,21 @@ function receiptFault(rec: Receipt, short: string): string | null {
 // The warning a well-formed receipt still carries: its runs were recorded before step records.
 const receiptWarning = (rec: Receipt): string | null =>
   [stepsFault(rec.runs).warning, rec.suite ? null : 'it was written before the test-suite step and records no suite result; re-run done-done receipt so it does'].filter(Boolean).join('; ') || null;
+
+// Why the prior receipt an extended receipt links is gone: its file is missing, changed since, or no longer a well-formed pass. Or null.
+function priorFault(cfg: Config, a: AffectedProof): string | null {
+  const path = join(receiptsDir(cfg), `${a.extends.head}.json`);
+  const short = a.extends.head.slice(0, 12);
+  if (!existsSync(path)) return `this receipt extends the receipt for ${short}, which is no longer in ${receiptsDir(cfg)}`;
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== a.extends.sha256) return `this receipt extends the receipt for ${short}, whose file changed since`;
+  try {
+    const fault = receiptFault(JSON.parse(bytes.toString('utf8')), short);
+    return fault && `this receipt extends the receipt for ${short}, which is not valid: ${fault}`;
+  } catch {
+    return `this receipt extends the receipt for ${short}, which cannot be read`;
+  }
+}
 
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
@@ -1542,7 +1575,9 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
     }
   }
   if (bad.length) return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.review && { review: rec.review }), ...(rec.scope && { scope: rec.scope }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+  const gone = rec.affected && priorFault(cfg, rec.affected);
+  if (gone) return fail(gone);
+  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.review && { review: rec.review }), ...(rec.scope && { scope: rec.scope }), ...(rec.affected && { affected: rec.affected }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 
 async function cmdReceipt(argv: string[]): Promise<number> {
@@ -1570,14 +1605,15 @@ function assertCleanForReceipt(repo: string): void {
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review']): { code: number; result: Record<string, unknown> } {
+function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-  const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }) };
+  let rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(extended && { affected: extended.affected }) };
+  if (extended) rec = extendReceipt(earlierReceipt(cfg, rec.head), rec, extended.journey);
   const path = writeReceipt(cfg, rec);
-  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 
@@ -1685,6 +1721,7 @@ type Run = {
   fix?: { branch?: string; commit: string; files?: string[]; attempts?: number; record?: string }; // a maintain or verify fix (auto_fix)
   inputs?: { head: string; journey: string; skill: string };
   scope?: Scope; // verify --journeys: the minimum journey list the caller named
+  affected?: AffectedProof; // verify --affected-by: what this run extends (its journey is one of `journeys`)
   // Primitive 17 (input guard): the watched inputs hashed before and after the drive.
   guarded?: { patterns: string[]; before: GuardFile[]; after: GuardFile[] };
   // What respond needs to write the receipt once the caller answers the gate, and the answer.
@@ -2263,7 +2300,8 @@ async function runSteps(dir: string): Promise<void> {
 
     // Review belongs to this proof run. A review fix returns to the same drive, checks and judge.
     let proof: Receipt['review'];
-    if (!cfg.review_enabled) proof = { state: 'skipped', reason: 'review disabled in global config' };
+    if (run.affected) proof = noReview(run.affected);
+    else if (!cfg.review_enabled) proof = { state: 'skipped', reason: 'review disabled in global config' };
     else {
       const base = run.review?.base ?? reviewBase(run.repo);
       const current = p.checked!.head.commit;
@@ -2335,7 +2373,7 @@ async function runSteps(dir: string): Promise<void> {
     if (proof.state === 'skipped') run.review = { state: 'skipped', base: '', head: p.checked!.head.commit, fixes: 0, reason: proof.reason };
     if (proof.head && proof.head !== p.checked!.head.commit) return finish('fail', 'review: reviewed head differs from judged head');
     begin('receipt');
-    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) }, proof);
+    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) }, proof, run.affected && run.journey ? { affected: run.affected, journey: run.journey } : undefined);
     log('receipt', receipt.result);
     run.receipt = receipt.result.receipt as string | undefined;
     set(step!, receipt.code === PASS ? 'completed' : 'failed', { exit: receipt.code });
@@ -2536,7 +2574,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
     reapJourney(dir, run);
   }
   const code = runCode(run, status);
-  const drive = run.journey ?? (run.feature ? `--feature ${arg(run.feature)}` : '');
+  const drive = run.affected ? `--affected-by ${arg(run.affected.files.join(','))} --extends ${run.affected.extends.head}` : run.journey ?? (run.feature ? `--feature ${arg(run.feature)}` : '');
   const again = run.kind === 'maintain' ? 'done-done maintain' : `done-done verify ${drive ? `${drive} ` : ''}--outcome ${arg(run.claim!)}${run.claim_id ? ` --claim-id ${arg(run.claim_id)}` : ''}`;
   const findings = cap(run.findings ?? []);
   const ev = cap(rec ? evidenceOf(run.repo, cfg, rec) : []);
@@ -2547,6 +2585,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
   Object.assign(result, {
     ...(run.kind === 'verify' && { claim: run.claim, journey: run.journey }),
     ...(run.scope && { scope: run.scope }),
+    ...(run.affected && { affected: run.affected }),
     ...(run.kind === 'verify' && run.journey === null && { feature: run.feature ?? 'picked by the agent', author: run.author && `${run.author.agent} (model ${run.author.model || 'its own default'})` }),
     repo: run.repo, ...(rec && { head: rec.commit }),
     steps: run.steps.map((s) => {
@@ -2656,7 +2695,7 @@ async function preflightVerify(cfg: Config, agentDrives: boolean, tries = cfg.au
 async function cmdVerify(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
+    options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'affected-by': { type: 'string' }, extends: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
     allowPositionals: true,
   });
   if (!values.outcome?.trim()) throw new UsageError('verify needs --outcome "<what a user can now do>"');
@@ -2665,11 +2704,17 @@ async function cmdVerify(argv: string[]): Promise<number> {
   if (positionals.length > 1) throw new UsageError('verify takes at most one journey name');
   if (values.journeys !== undefined && (positionals.length || values.feature !== undefined)) throw new UsageError('pass --journeys <list> or a journey or --feature, not several: the list is the journeys this run drives');
   if (values['named-by'] !== undefined && values.journeys === undefined) throw new UsageError('--named-by says who named the --journeys list, so it needs --journeys <list>');
+  if (values['affected-by'] !== undefined && (positionals.length || values.feature !== undefined || values.journeys !== undefined || fixTries !== undefined)) throw new UsageError('pass --affected-by <files> alone: it picks the journeys, and a fix would change the head the receipt extends');
+  if (values.extends !== undefined && values['affected-by'] === undefined) throw new UsageError('--extends names the prior receipt that --affected-by extends, so it needs --affected-by <files>');
   if (positionals.length && values.feature !== undefined) throw new UsageError('pass a journey or --feature, not both: a journey drives by its command, --feature by the author agent');
   if ([values.wait, values['no-wait'], values.foreground].filter(Boolean).length > 1) throw new UsageError('pass only one of --wait, --no-wait and --foreground');
   const repo = repoRoot();
   const cfg = loadConfig(repo);
   const names = Object.keys(cfg.journeys);
+  if (values['claim-id']?.trim() === '') throw new UsageError('--claim-id needs a non-empty id');
+  const branch = git(repo, 'branch', '--show-current');
+  if (!values['claim-id'] && !branch) throw new UsageError('HEAD is detached, so no branch names this claim; pass --claim-id <id>');
+  if (values['affected-by'] !== undefined) return verifyAffected(repo, cfg, branch, { ...values, outcome: values.outcome, 'affected-by': values['affected-by'] });
   // A named journey, or the only one, drives by its command; with --feature or no journey at all, the author agent drives.
   let list: string[] = [];
   if (values.journeys !== undefined) {
@@ -2683,9 +2728,6 @@ async function cmdVerify(argv: string[]): Promise<number> {
   const journey = list[0] ?? positionals[0] ?? (names.length === 1 && values.feature === undefined ? names[0] : null);
   if (journey === null && names.length > 1 && values.feature === undefined) throw new UsageError(`verify needs a journey name or --feature; .done-done.yaml defines: ${names.join(', ')}`, `Run: done-done verify <${names.join('|')}> --outcome "<what a user can now do>"`);
   if (journey !== null && !cfg.journeys[journey]) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${names.join(', ') || 'none'}`);
-  if (values['claim-id']?.trim() === '') throw new UsageError('--claim-id needs a non-empty id');
-  const branch = git(repo, 'branch', '--show-current');
-  if (!values['claim-id'] && !branch) throw new UsageError('HEAD is detached, so no branch names this claim; pass --claim-id <id>');
   // The scope is settled here: the affected journeys the list leaves out are read at the commit the run starts on.
   let scope: Scope | undefined;
   if (list.length) {
@@ -2700,18 +2742,74 @@ async function cmdVerify(argv: string[]): Promise<number> {
   // verify always runs the judge the user set, the author's own agent and model included; the judge is settled here, so a
   // run never fails later for one it never had.
   await preflightVerify(cfg, journey === null, fixTries);
+  const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey, drive, fixTries, scope });
+  return launch(dir, cfg, 'verify', values);
+}
+
+// A pending verify run of `journey` (null: the author agent drives), saved and logged; its folder.
+function newVerifyRun(repo: string, cfg: Config, o: { claim: string; claimId?: string; branch: string; journey: string | null; drive?: { author: { agent: string; model: string }; feature?: string }; fixTries?: number; scope?: Scope; affected?: AffectedProof }): string {
   const id = newRunId(git(repo, 'rev-parse', 'HEAD'));
   const dir = join(runsRoot(cfg.app), id);
   mkdirSync(join(dir, 'logs'), { recursive: true });
   const created = now();
   const run: Run = {
-    schema: 2, run_id: id, kind: 'verify', app: cfg.app, repo, journey, ...drive, claim: values.outcome, claim_id: values['claim-id'] ?? null, branch, status: 'pending',
-    steps: verifySteps(fixTries ?? cfg.auto_fix.verify ?? 0).map((name) => ({ name, status: 'pending' })), created, updated: created, ...(fixTries !== undefined && { fix_tries: fixTries }),
-    inputs: inputsOf(repo, cfg, journey, drive?.author), ...(scope && { scope }),
+    schema: 2, run_id: id, kind: 'verify', app: cfg.app, repo, journey: o.journey, ...o.drive, claim: o.claim, claim_id: o.claimId ?? null, branch: o.branch, status: 'pending',
+    steps: verifySteps(o.fixTries ?? cfg.auto_fix.verify ?? 0).map((name) => ({ name, status: 'pending' })), created, updated: created, ...(o.fixTries !== undefined && { fix_tries: o.fixTries }),
+    inputs: inputsOf(repo, cfg, o.journey, o.drive?.author), ...(o.scope && { scope: o.scope }), ...(o.affected && { affected: o.affected }),
   };
   saveRun(dir, run);
   logEvent(dir, { status: 'pending' });
-  return launch(dir, cfg, 'verify', values);
+  return dir;
+}
+
+// The prior receipt `verify --affected-by` extends: the one `--extends` names, else the newest receipted ancestor of HEAD.
+// A rebased commit has none of its own as an ancestor, so the caller names the receipt of its head before the rebase.
+function priorReceipt(repo: string, cfg: Config, arg?: string): { head: string; sha256: string; review?: string } {
+  const receipts = receiptsByHead(cfg);
+  const now = head(repo).commit;
+  let prior: string | undefined;
+  if (arg === undefined) prior = nearestReceipt(repo, [...receipts.keys()], now);
+  else {
+    try {
+      prior = git(repo, 'rev-parse', '--verify', `${arg}^{commit}`);
+    } catch {
+      throw new UsageError(`--extends: ${arg} is not a commit in this checkout`, 'Pass the head the prior receipt was written for: done-done verify --affected-by <files> --extends <head> --outcome "<claim>"');
+    }
+  }
+  if (!prior) throw new UsageError('--affected-by extends a prior receipt, and no commit before HEAD has one', 'Name it: done-done verify --affected-by <files> --extends <head of the prior receipt> --outcome "<claim>"');
+  if (prior === now) throw new UsageError('--extends names the receipt for HEAD itself, so there is nothing to extend', 'Name the receipt of the head before the rebase or the change');
+  const rec = receipts.get(prior);
+  if (!rec) throw new UsageError(`no valid receipt for ${prior.slice(0, 12)} in ${receiptsDir(cfg)}, so there is nothing to extend`, 'Record one for that head first: done-done receipt --from <file|->');
+  return { head: prior, sha256: sha256(readFileSync(join(receiptsDir(cfg), `${prior}.json`))), review: rec.review?.state };
+}
+
+// `verify --affected-by <files>`: only the journeys the named files need run (src/affected.ts: a file no journey covers, or a global one,
+// runs the whole local tier), one verify run each in turn. The receipt extends the prior one, records the files and the journeys, and
+// runs no review again; it is complete, and so valid, only once every selected journey has passed. Writes no journey, starts no reviewer.
+async function verifyAffected(repo: string, cfg: Config, branch: string, values: { outcome: string; 'affected-by': string; extends?: string; 'claim-id'?: string; 'no-wait'?: boolean; foreground?: boolean; wait?: boolean }): Promise<number> {
+  let files: string[];
+  try {
+    files = parseFiles(values['affected-by']);
+  } catch (e) {
+    throw new UsageError((e as Error).message, 'Run: done-done verify --affected-by <file>,<file> --outcome "<what a user can now do>"');
+  }
+  const prior = priorReceipt(repo, cfg, values.extends);
+  const m = mapDiff(repo, cfg, files, git(repo, 'ls-files', '-z').split('\0').filter(Boolean));
+  // A feature no journey drives belongs to the author agent, whose drive is its own verify run.
+  if (m.features.length) throw new UsageError(`these files need the verify skill feature ${m.features.map((f) => f.name).join(', ')}, which no journey drives, so --affected-by would prove less than they need`, `Drive it on its own: done-done verify --feature ${m.features[0].name} --outcome "<what a user can now do>"`);
+  const journeys = m.journeys.map((j) => j.name);
+  if (!journeys.length) throw new UsageError(`these files select no journey to run; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`, 'Record a journey that drives the product: done-done init --journey <name> -- <command>');
+  if (journeys.length > 1 && values['no-wait']) throw new UsageError(`these files select ${journeys.length} journeys (${journeys.join(', ')}), which run one after another, so --no-wait cannot start them`, 'Re-run with --wait or --foreground');
+  const proof = affectedProof({ prior, files, journeys });
+  refuseParked(cfg, repo, values['claim-id'] ?? branch);
+  await preflightVerify(cfg, false, 0);
+  for (let i = 0; ; i++) {
+    const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey: journeys[i], fixTries: 0, affected: proof });
+    const { gone } = await startRunner(dir, values);
+    const run = loadRun(dir);
+    // The run that ends the selection, or the first that does not pass, is the one shown.
+    if (i === journeys.length - 1 || run.status !== 'completed' || run.result !== 'pass') return showRun(dir, cfg, 'verify', gone);
+  }
 }
 
 // Run the steps in this process (--foreground), or in a detached runner with no pipe back to this process, so the
@@ -2879,7 +2977,7 @@ async function cmdRerun(argv: string[]): Promise<number> {
     return s && reused(name) && s.status === 'completed' ? { ...s } : { name, status: 'pending' as StepState };
   });
   const created = now();
-  const run: Run = { schema: 2, run_id: id, kind: src.kind, app: cfg.app, repo: src.repo, journey, ...drive, claim: src.claim, claim_id: src.claim_id, branch: src.branch, ...(src.fix_tries !== undefined && { fix_tries: src.fix_tries }), status: 'pending', inputs, steps, created, updated: created, ...(driveReuse && src.record && { record: src.record }), ...(driveReuse && src.guarded && { guarded: src.guarded }) };
+  const run: Run = { schema: 2, run_id: id, kind: src.kind, app: cfg.app, repo: src.repo, journey, ...drive, claim: src.claim, claim_id: src.claim_id, branch: src.branch, ...(src.fix_tries !== undefined && { fix_tries: src.fix_tries }), ...(src.affected && { affected: src.affected }), status: 'pending', inputs, steps, created, updated: created, ...(driveReuse && src.record && { record: src.record }), ...(driveReuse && src.guarded && { guarded: src.guarded }) };
   saveRun(dir, run);
   for (const s of steps) {
     const f = join(root, srcId, 'logs', `${s.name}.log`);
@@ -4851,6 +4949,13 @@ function defaultBranch(repo: string): string {
 
 const isAncestor = (repo: string, a: string, b: string) => spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: repo, stdio: 'ignore' }).status === 0;
 
+// The newest of the receipted commits that are ancestors of `at` (not `at` itself), if any.
+// ponytail: one git call per receipt to find the ones before HEAD; index receipts by commit when a repo keeps thousands.
+function nearestReceipt(repo: string, receipted: string[], at: string): string | undefined {
+  const older = receipted.filter((h) => h !== at && isAncestor(repo, h, at));
+  return older.find((h) => older.every((o) => isAncestor(repo, o, h)));
+}
+
 // The journeys and features `changed` needs (src/affected.ts), from the verify skill at the working tree.
 function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[], noBase?: string) {
   const featDir = join(repo, cfg.skill, 'features');
@@ -4876,9 +4981,7 @@ function affectedOf(repo: string, cfg: Config, baseArg?: string) {
       throw new UsageError(`affected: ${baseArg} is not a commit in this checkout`, 'Pass a branch, tag or commit: done-done affected [<base>]');
     }
   } else {
-    // ponytail: one git call per receipt to find the ones before HEAD; index receipts by commit when a repo keeps thousands.
-    const older = [...receipts.keys()].filter((h) => h !== now.commit && isAncestor(repo, h, now.commit));
-    const nearest = older.find((h) => older.every((o) => isAncestor(repo, o, h)));
+    const nearest = nearestReceipt(repo, [...receipts.keys()], now.commit);
     const ref = nearest ? '' : defaultBranch(repo);
     const mb = ref ? spawnSync('git', ['merge-base', ref, 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim() : '';
     if (nearest) base = { commit: nearest, from: `the last receipt, for ${nearest.slice(0, 12)}` };

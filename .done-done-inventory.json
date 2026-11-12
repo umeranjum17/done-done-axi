@@ -3,6 +3,10 @@
     "owner": "affected-audit",
     "sha256": "5a5aaa841c40685ab9d784acaa1125fcf0ce541971b56baa34d1da5d2543e40a"
   },
+  "journeys/affected-proof.mjs": {
+    "owner": "affected-proof",
+    "sha256": "6dbacd932df2edeeaccc32ed87d0b0633a8b9adee9f8e07bae0abfccef09a20b"
+  },
   "journeys/affected-select.mjs": {
     "owner": "affected-select",
     "sha256": "1374a7e882f3f71a117630c6edb34373566309e2166869ecc726759b467a0420"
