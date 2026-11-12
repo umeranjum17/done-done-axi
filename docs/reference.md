@@ -229,6 +229,38 @@ instance:
 
 done-done picks a free local port it owns (a port that is already taken is never used) and passes `DONE_DONE_PORT` and `DONE_DONE_BASE_URL` to the instance, the journey and the agent drive, so a recipe uses `$DONE_DONE_BASE_URL` instead of a hard-coded port. For the app alone, HOME, XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_CACHE_HOME and TMPDIR point under the run's scratch folder; the journey keeps your own HOME, XDG and TMPDIR, and the agent drive keeps its own HOME and XDG. Readiness is HTTP 2xx for `ready.url` or exit 0 for `ready.command` (each probe is killed at the remaining timeout, so a hung command cannot hang the run); past `ready_timeout` the run fails and the instance is killed. The app's output goes to `instance.log` in the run folder, never with the evidence. The group is killed when its journey or agent drive ends, or on the next read after a dead runner. `done-done run --open` does not start the app; its caller starts and stops its own. No `instance` block keeps today's behaviour.
 
+### Live tier
+
+A journey entry marked `tier: live` is a **live check**: a bounded probe of a real home that proves nothing and needs no agent. `done-done run --tier live` runs only those entries, one after another, each killed with everything it started at its own `timeout`, with no agent and no judge:
+
+```yaml
+journeys:
+  gh-answers:
+    command: sh tests/live/gh-answers.sh
+    tier: live
+    timeout: 10s
+```
+
+`timeout` is required on a live entry (a duration such as `10s`; without one the config is refused, exit 2). The command runs in the repo with your own environment, so it reaches the real home; it gets no evidence folder or run id, and `${RUN_ID}` is not replaced. Its own output goes to stderr. The run prints one row for each entry and ends inside `bound_seconds`, the sum of the timeouts:
+
+```
+command: run
+tier: live
+result: red
+green: 1
+red: 2
+seconds: 1.02
+bound_seconds: 21
+rows[3]{name,result,seconds,reason}:
+  home-answers,green,0.01,""
+  lock-fresh,red,0.01,"exit 3: the lock is older than its lease"
+  load-ok,red,1.01,"timed out after 1s: sampling the load"
+```
+
+A row is `green` (exit 0 inside its timeout) or `red`; a red row's `reason` is the exit code or `timed out after <timeout>`, then the last line the entry printed. `result` is `green` when every row is, else `red`, and the exit is 0 or 1. A red row is a result for whatever runs the tier (a fleet tick, an alert), never a failed landing: nothing is recorded, no evidence folder, run record or receipt.
+
+`done-done run --tier live <name>` runs one entry, so a scheduler can give each its own period; scheduling itself is the caller's. A repo with no live entry, an unknown name, a journey of another tier, and `--open`, `--night` or `-- <command>` with `--tier live` are usage errors (exit 2). Live entries are not journeys a proof can drive: loading the config moves them out of `journeys`, so `verify`, `affected`, `after-commit`, `qa`, `tests` and the landing path never see one, and `run <name>` without `--tier live` and `verify <name>` refuse one by name (exit 2). `spends` is not read: a live entry costs what its command costs.
+
 ### Capture matrix
 
 One verify run captures every theme x width x form-factor cell the repo asks for:
@@ -966,7 +998,8 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `journeys.<name>.core` | false; `true` marks the core user journey, see [Core journey and release path](#core-journey-and-release-path) |
 | `journeys.<name>.upgrade` | false; `true` marks the upgrade-in-place journey, see [Core journey and release path](#core-journey-and-release-path) |
 | `secrets.patterns`, `secrets.allow` | `{}` and `[]`; extra `<name>: <regex>` secret shapes and known-safe regexes, see [Secrets in the evidence](#secrets-in-the-evidence) |
-| `journeys.<name>.timeout` | `30m`; a positive duration such as `90s` or `30m` (up to about 24 days), used by `verify` |
+| `journeys.<name>.timeout` | `30m`; a positive duration such as `90s` or `30m` (up to about 24 days), used by `verify`; the bound of a `tier: live` entry, which must set it |
+| `journeys.<name>.tier` | none; a tier name: `ci` (what `GITHUB_ACTIONS=true` runs), `local` (what `affected` falls back to) or `live`, a bounded check of a real home that `run --tier live` alone runs, see [Live tier](#live-tier) |
 | `instance` | none; the app under test started per run, see [Run-instance harness](#run-instance-harness) |
 | `matrix` | none, so each journey runs once; `theme`, `width`, `form` and `skip` set the [capture matrix](#capture-matrix) |
 | `dom` | none; page-check records per capture, see [DOM assertions](#dom-assertions) |

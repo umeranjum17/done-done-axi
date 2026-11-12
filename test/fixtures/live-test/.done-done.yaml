@@ -1,0 +1,19 @@
+app: live-test
+journeys:
+  home-answers:
+    command: echo "the home answered"
+    tier: live
+    timeout: 10s
+  lock-fresh:
+    command: sh probes/lock.sh
+    tier: live
+    timeout: 10s
+  load-ok:
+    command: echo "sampling the load"; sleep 30
+    tier: live
+    timeout: 1s
+  proof:
+    command: touch proof-ran
+    tier: local
+  untiered:
+    command: touch untiered-ran

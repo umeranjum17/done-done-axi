@@ -27,9 +27,9 @@ export function sizeFault(journeys) {
 export function nightFault(name, j, night) {
     return j.size === 'large' && !night ? `journey ${name} is large (night-only): nothing ran` : null;
 }
-// Run a shell command; past its size bound the whole process group is killed and the run is slow. No size: no bound.
+// Run a shell command; past its bound (timeoutMs, else its size's) the whole process group is killed and the run is slow. No bound: none.
 export function runBounded(command, opts) {
-    const limit = isSize(opts.size) ? SIZES[opts.size] : null;
+    const limit = opts.timeoutMs ?? (isSize(opts.size) ? SIZES[opts.size] : null);
     return new Promise((done) => {
         const start = Date.now();
         let slow = false;

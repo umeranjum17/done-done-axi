@@ -122,6 +122,8 @@ done-done journey improve greet-umer-prints-hello \
 
 `add` writes the script, its config entry and its feature in the verify skill; `enhance` deepens one journey; `improve` makes one change to one journey. Each exercise runs once on uncommitted files, which is a trial, not proof: read the script, commit it, then `done-done run <name>`. The saved script needs no agent or model, so CI can replay it; generation runs only on your machine ([worked transcript](docs/manual-cli.md)).
 
+A journey marked `tier: live` with a `timeout` is a live check of a real home, not proof: `done-done run --tier live` runs only those, each bounded by its own timeout and with no agent, and prints one green or red row for each ([live tier](docs/reference.md#live-tier)).
+
 ## Inside Firstmate, or another agent fleet
 
 done-done works the same with or without Firstmate: the skill and CLI behave identically inside or outside a Firstmate home. [Firstmate](https://github.com/kunchenguid/firstmate) hands tasks to agent workers and merges their work, and [`integrations/firstmate/`](integrations/firstmate/) ships the two files those workers need:

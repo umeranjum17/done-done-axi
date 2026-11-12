@@ -33,9 +33,9 @@ export function nightFault(name: string, j: Sized, night: boolean): string | nul
 
 export type Bounded = { code: number | null; ms: number; slow: boolean };
 
-// Run a shell command; past its size bound the whole process group is killed and the run is slow. No size: no bound.
-export function runBounded(command: string, opts: { cwd: string; env: NodeJS.ProcessEnv; size?: string; onData?: (b: Buffer) => void }): Promise<Bounded> {
-  const limit = isSize(opts.size) ? SIZES[opts.size] : null;
+// Run a shell command; past its bound (timeoutMs, else its size's) the whole process group is killed and the run is slow. No bound: none.
+export function runBounded(command: string, opts: { cwd: string; env: NodeJS.ProcessEnv; size?: string; timeoutMs?: number; onData?: (b: Buffer) => void }): Promise<Bounded> {
+  const limit = opts.timeoutMs ?? (isSize(opts.size) ? SIZES[opts.size] : null);
   return new Promise((done) => {
     const start = Date.now();
     let slow = false;

@@ -6,6 +6,10 @@ import { checkMatrix } from './matrix.js';
 import { parseDom, parseLook } from './dom.js';
 import { parseEvals } from './evals.js';
 import { isSize } from './size.js';
+// The tier of a journey entry that probes a real home and proves nothing: `done-done run --tier live` runs it, bounded by its own
+// timeout, and nothing else does. loadConfig moves these entries out of `journeys` into `live`, so no verify, affected or
+// landing path can see one.
+export const LIVE_TIER = 'live';
 export class UsageError extends Error {
     help;
     // The exact next command, when the error has one.
@@ -197,9 +201,9 @@ function apply(target, text, file, scope) {
                                                             : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
                                                                 : spec.type === 'matrix' ? !checkMatrix(value)
                                                                     : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string'));
+                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
         const want = {
-            journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
+            journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name; live needs a timeout>, timeout: <duration such as 30s: the bound of a verify run, and of a live check>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
             matrix: 'a mapping with optional theme (a list of names), width (a list of CSS pixel widths) and form (a list of names), plus skip (a list of partial cells, each with a reason)',
             agent: `one of ${AGENTS.join(', ')}, or acp:<target>`,
@@ -409,6 +413,7 @@ function defaultConfig(repo) {
         app: basename(repo),
         skill: '',
         journeys: {},
+        live: {},
         inputs: [],
         instance: null,
         matrix: null,
@@ -439,6 +444,12 @@ export function loadConfig(repo, projectText) {
     apply(cfg, readOptional(globalFile), globalFile, 'global');
     const projectFile = join(repo, '.done-done.yaml');
     apply(cfg, projectText ?? readOptional(projectFile), projectFile, 'repo');
+    // A live entry is a probe, not proof: it leaves `journeys` here, so nothing that proves a change can select it.
+    for (const [name, j] of Object.entries(cfg.journeys))
+        if (j.tier === LIVE_TIER) {
+            cfg.live[name] = { command: j.command, timeout: j.timeout };
+            delete cfg.journeys[name];
+        }
     // The model pool needs both its helper command and the helper's own pool config; it replaces the Claude account command.
     if (cfg.judge.pool_config) {
         cfg.judge.pool_config = tilde(cfg.judge.pool_config);
