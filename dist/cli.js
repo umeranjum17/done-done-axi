@@ -1542,6 +1542,8 @@ function receiptFault(rec, short) {
         if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256)))))
             return `receipt for ${short} has a malformed interaction-checklist verdict`;
     }
+    if (rec.review !== undefined && (rec.review.state === 'skipped' ? !rec.review.reason?.trim() : rec.review.state !== 'approved' || rec.review.head !== rec.head || rec.review.result?.head !== rec.head || !Array.isArray(rec.review.result?.reviewers) || rec.review.result.reviewers.length !== 2 || rec.review.result.reviewers.some((r) => r.state !== 'completed') || !Array.isArray(rec.review.result.findings) || rec.review.result.findings.length !== 0))
+        return `receipt for ${short} has a malformed review record`;
     if (rec.scope !== undefined && !scopeShape(rec.scope))
         return `receipt for ${short} has a malformed journey scope`;
     if (rec.suite !== undefined && !suiteShape(rec.suite))
@@ -1611,7 +1613,7 @@ function verifyReceipt(repo, cfg, headArg) {
     }
     if (bad.length)
         return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.scope && { scope: rec.scope }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+    return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.review && { review: rec.review }), ...(rec.scope && { scope: rec.scope }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 async function cmdReceipt(argv) {
     const vi = argv.indexOf('--verify');
@@ -1640,14 +1642,14 @@ function assertCleanForReceipt(repo) {
         throw new UsageError('receipt: tracked files have uncommitted changes, so no receipt was written; commit or revert them, then re-run receipt', 'Commit the tracked changes, then: done-done receipt --from <file|->');
 }
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo, cfg, r) {
+function recordReceipt(repo, cfg, r, reviewProof) {
     if (r.code !== PASS || !r.judgeBlock)
         return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
     assertCleanForReceipt(repo);
     // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
     if (!r.cited.length)
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }) };
+    const rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }) };
     const path = writeReceipt(cfg, rec);
     const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
@@ -1753,7 +1755,7 @@ const HEARTBEAT_MS = 5_000;
 // A run that never recorded its runner's pid this long after it was created has no runner.
 const STALE_MS = 60_000;
 const runsRoot = (app) => join(home(), 'runs', app);
-const verifySteps = (tries) => ['resolve', 'drive', 'check', 'judge', ...(tries ? ['triage', 'fix'] : []), 'gate', 'receipt', 'report'];
+const verifySteps = (tries) => ['resolve', 'drive', 'check', 'judge', ...(tries ? ['triage', 'fix'] : []), 'gate', 'reviewing', 'receipt', 'report'];
 // Commands an agent drive must not run: they answer a gate, write a receipt or start a run that can write one.
 const DRIVE_REFUSED = ['respond', 'eval', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit', 'journey'];
 // One agent drive may launch the app, drive it and save captures; past this it is killed with everything it started.
@@ -2327,8 +2329,8 @@ async function runSteps(dir) {
             return { checked, asks: [], fixable: [] };
         };
         const h = { begin, set, log, spawned };
-        let p = await pass(run.repo);
-        let fixed = false;
+        let p = run.review?.checked ? { checked: run.review.checked, asks: [], fixable: [] } : await pass(run.repo);
+        let fixed = !!(run.review?.checked && run.fix?.branch);
         // auto_fix.verify: the judge sorts the product failures first (an ask parks the run at the gate); then a checkout with
         // uncommitted tracked changes is never fixed, since the fix starts from the committed head.
         if (tries && p.end && p.fixable.length && journey?.spends)
@@ -2354,6 +2356,8 @@ async function runSteps(dir) {
                     return finish('blocked', `fix: ${f.blocked}`);
                 p = f;
                 fixed = true;
+                if (run.fix?.record)
+                    run.record = run.fix.record;
             }
         }
         if (p.asks.length) {
@@ -2373,8 +2377,106 @@ async function runSteps(dir) {
         }
         if (p.end)
             return finish(p.end.result, p.end.reason);
+        // Review belongs to this proof run. A review fix returns to the same drive, checks and judge.
+        let proof;
+        if (!cfg.review_enabled)
+            proof = { state: 'skipped', reason: 'review disabled in global config' };
+        else {
+            const base = run.review?.base ?? reviewBase(run.repo);
+            const current = p.checked.head.commit;
+            const mergeBase = git(run.repo, 'merge-base', base, current);
+            if (!git(run.repo, 'diff', '--name-only', mergeBase, current))
+                proof = { state: 'skipped', reason: 'no diff' };
+            else {
+                let fixes = run.review?.fixes ?? 0;
+                for (;;) {
+                    begin('reviewing');
+                    const rcfg = reviewConfig(run.repo, base);
+                    const reviewDirPath = join(dir, 'review');
+                    mkdirSync(join(reviewDirPath, 'agents'), { recursive: true });
+                    run.review = { ...run.review, state: 'requested', base, head: p.checked.head.commit, fixes, checked: p.checked };
+                    saveRun(dir, run);
+                    let result;
+                    try {
+                        result = await review(run.repo, selectAgent(rcfg), base, join(reviewDirPath, `round-${fixes}`), true, run.review.answer && run.review.question ? { question: run.review.question, answer: run.review.answer } : undefined, run.review.head);
+                        const errors = result.reviewers.filter((r) => r.state === 'failed');
+                        if (errors.length)
+                            throw new Error(errors.map((r) => `${r.name}: ${r.error}`).join('; '));
+                    }
+                    catch (e) {
+                        run.review.state = 'stalled';
+                        run.review.reason = errorText(e);
+                        run.status = 'awaiting_approval';
+                        set(step, 'awaiting_approval');
+                        return;
+                    }
+                    run.review.result = result;
+                    run.review.head = result.head;
+                    if (!result.findings.length) {
+                        run.review.state = 'approved';
+                        set(step, 'completed');
+                        proof = { state: 'approved', head: result.head, result };
+                        break;
+                    }
+                    const question = result.findings.find((f) => f.action === 'to-ask');
+                    if (question) {
+                        run.review.state = 'to-ask';
+                        run.review.question = question.question || question.what;
+                        run.status = 'awaiting_approval';
+                        set(step, 'awaiting_approval');
+                        return;
+                    }
+                    if (fixes >= 1) {
+                        run.review.state = 'spent';
+                        return finish('fail', 'review: fix limit reached');
+                    }
+                    run.review.state = 'to-fix';
+                    saveRun(dir, run);
+                    const loop = { run_id: run.run_id, repo: run.repo, base, head: result.head, state: 'to-fix', fixes, limit: 1, route: { agent: selectAgent(rcfg).agent, model: selectAgent(rcfg).model }, result };
+                    if (fixed) {
+                        const wt = join(dir, 'review-fix');
+                        await inWorktree(run.repo, wt, async () => {
+                            const own = [cfg.evidence.root, home()].map((path) => under(run.repo, path)).filter((path) => path !== null);
+                            const ignored = git(run.repo, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory', ...pathspec(own)).split('\0').filter(Boolean);
+                            for (const path of ignored)
+                                cpSync(join(run.repo, path), join(wt, path), { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
+                            loop.repo = wt;
+                            await reviewFix(loop, reviewDirPath, rcfg, false);
+                            p = await pass(wt, `review-fix${loop.fixes}`);
+                            git(run.repo, 'branch', '-f', run.fix.branch, loop.head);
+                            run.fix.commit = loop.head;
+                        }, loop.head);
+                    }
+                    else {
+                        await reviewFix(loop, reviewDirPath, rcfg, false);
+                        p = await pass(run.repo, `review-fix${loop.fixes}`);
+                    }
+                    fixes = loop.fixes;
+                    run.review.fixes = fixes;
+                    run.review.head = loop.head;
+                    saveRun(dir, run);
+                    run.record = join(recordsDir(cfg), `${run.run_id}-review-fix${fixes}.json`);
+                    if (p.end)
+                        return finish(p.end.result, p.end.reason);
+                    if (p.asks.length) {
+                        begin('gate');
+                        const findings = p.asks.map((f, i) => ({ id: `gate-${i + 1}`, severity: f.level === 'fail' ? 'error' : 'warning', what: f.why, action: 'ask-user' }));
+                        run.gate = { findings, cited: p.checked.cited, head: { commit: p.checked.head.commit, tree: p.checked.head.tree }, ...(p.checked.judgeBlock && { judge: p.checked.judgeBlock }) };
+                        run.status = 'awaiting_approval';
+                        set(step, 'awaiting_approval', { findings });
+                        return;
+                    }
+                }
+            }
+        }
+        if (run.review)
+            delete run.review.checked;
+        if (proof.state === 'skipped')
+            run.review = { state: 'skipped', base: '', head: p.checked.head.commit, fixes: 0, reason: proof.reason };
+        if (proof.head && proof.head !== p.checked.head.commit)
+            return finish('fail', 'review: reviewed head differs from judged head');
         begin('receipt');
-        const receipt = recordReceipt(run.repo, cfg, { ...p.checked, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) });
+        const receipt = recordReceipt(run.repo, cfg, { ...p.checked, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) }, proof);
         log('receipt', receipt.result);
         run.receipt = receipt.result.receipt;
         set(step, receipt.code === PASS ? 'completed' : 'failed', { exit: receipt.code });
@@ -2610,6 +2712,12 @@ function showRun(dir, cfg, command, gone = false) {
     });
     if (status === 'awaiting_approval' && run.gate)
         result.findings = run.gate.findings;
+    if (run.review) {
+        const { checked: _checked, ...visible } = run.review;
+        result.review = visible;
+        if (run.review.state === 'stalled')
+            result.wait = { owner: 'outside', reason: 'quota' };
+    }
     if (run.response)
         result.response = run.response;
     if (run.spend)
@@ -2640,28 +2748,30 @@ function showRun(dir, cfg, command, gone = false) {
     result.run = shown(run.repo, dir);
     const id = run.run_id;
     result.help =
-        status === 'awaiting_approval' && run.gate?.spend ? [
-            `Ask the user whether to spend ${run.gate.spend} on this run; never decide it for them. Their yes runs the journey:`,
-            `done-done respond --run ${id} --action approve --reason "<who approved the spend>"`,
-            `Their no: done-done respond --run ${id} --action skip --reason "<why they said no>"   (ends fail, nothing spent)`,
-        ]
-            : status === 'awaiting_approval' ? [
-                'The judge did not pass this run, and nothing moves a run past its judge. Read the findings and look at the captures (evidence above), then end it:',
-                `done-done respond --run ${id} --action fix   (ends fail; fix the product, or the verify skill's recipe (done-done maintain checks it against the source), commit, then: done-done rerun --run ${id})`,
-            ]
-                : code === WAITING ? [`The run goes on without this command; read it later: done-done status --run ${run.run_id}`]
-                    : run.kind === 'verify' && /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${id}`, `Fix the product by hand, commit, then run again: ${again}`]
-                        : run.result === 'changed' ? [`Review the fix on its own branch (your branch is untouched): git show ${run.fix.branch}`, `Take it: git merge ${run.fix.branch}, or drop it: git branch -D ${run.fix.branch}`]
-                            : run.kind === 'maintain' && status === 'completed' ? (run.result === 'clean' ? [`The verify skill matches the source; read the readers' recipes: done-done logs --step reconcile --run ${run.run_id}`]
-                                : run.result === 'drift' ? [`Fix the findings in ${cfg.skill} (--full lists them all), commit, then run again: ${again}`, `Or let done-done's agent fix them on a branch: set auto_fix: { maintain: 2 } in .done-done.yaml, then run again: ${again}`]
-                                    : /^ask-user:/.test(run.reason ?? '') ? ['Ask the user about each ask-user finding: is the product or the skill wrong? Never decide it for them', `Product wrong: fix the product (maintain never edits product code). Skill wrong: fix ${cfg.skill}, commit, then run again: ${again}`]
-                                        : /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${run.run_id}`, `Fix the findings in ${cfg.skill} by hand, commit, then run again: ${again}`]
-                                            : /^locate: no verify skill/.test(run.reason ?? '') ? ['Create the verify skill: done-done init']
-                                                : /^locate:/.test(run.reason ?? '') ? [`Make ${cfg.skill} a real folder inside the repository (not a link), commit, then run again: ${again}`]
-                                                    : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, `Fix the cause, then run again: ${again}`])
-                                : code === PASS ? [`Verify this receipt (merge gate): done-done receipt --verify ${rec.commit}`]
-                                    : status === 'cancelled' ? [...(run.kind === 'maintain' ? [] : [`Start again from the failed step: done-done rerun --run ${run.run_id}`]), `List past runs: done-done history`]
-                                        : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, ...(run.kind === 'maintain' ? [] : [`Fix the cause, commit, then run again from the failed step: done-done rerun --run ${run.run_id}`]), `Or start a new run: ${again}`];
+        status === 'awaiting_approval' && run.review?.state === 'stalled' ? [`Review stalled: ${run.review.reason}; retry the same run when the engine is available: done-done rerun --run ${id}`]
+            : status === 'awaiting_approval' && run.review?.state === 'to-ask' ? [`Answer the review question: done-done respond --run ${id} --answer \"<answer>\"`]
+                : status === 'awaiting_approval' && run.gate?.spend ? [
+                    `Ask the user whether to spend ${run.gate.spend} on this run; never decide it for them. Their yes runs the journey:`,
+                    `done-done respond --run ${id} --action approve --reason "<who approved the spend>"`,
+                    `Their no: done-done respond --run ${id} --action skip --reason "<why they said no>"   (ends fail, nothing spent)`,
+                ]
+                    : status === 'awaiting_approval' ? [
+                        'The judge did not pass this run, and nothing moves a run past its judge. Read the findings and look at the captures (evidence above), then end it:',
+                        `done-done respond --run ${id} --action fix   (ends fail; fix the product, or the verify skill's recipe (done-done maintain checks it against the source), commit, then: done-done rerun --run ${id})`,
+                    ]
+                        : code === WAITING ? [`The run goes on without this command; read it later: done-done status --run ${run.run_id}`]
+                            : run.kind === 'verify' && /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${id}`, `Fix the product by hand, commit, then run again: ${again}`]
+                                : run.result === 'changed' ? [`Review the fix on its own branch (your branch is untouched): git show ${run.fix.branch}`, `Take it: git merge ${run.fix.branch}, or drop it: git branch -D ${run.fix.branch}`]
+                                    : run.kind === 'maintain' && status === 'completed' ? (run.result === 'clean' ? [`The verify skill matches the source; read the readers' recipes: done-done logs --step reconcile --run ${run.run_id}`]
+                                        : run.result === 'drift' ? [`Fix the findings in ${cfg.skill} (--full lists them all), commit, then run again: ${again}`, `Or let done-done's agent fix them on a branch: set auto_fix: { maintain: 2 } in .done-done.yaml, then run again: ${again}`]
+                                            : /^ask-user:/.test(run.reason ?? '') ? ['Ask the user about each ask-user finding: is the product or the skill wrong? Never decide it for them', `Product wrong: fix the product (maintain never edits product code). Skill wrong: fix ${cfg.skill}, commit, then run again: ${again}`]
+                                                : /^fix:/.test(run.reason ?? '') ? [`Read what each fix attempt did: done-done logs --step fix --run ${run.run_id}`, `Fix the findings in ${cfg.skill} by hand, commit, then run again: ${again}`]
+                                                    : /^locate: no verify skill/.test(run.reason ?? '') ? ['Create the verify skill: done-done init']
+                                                        : /^locate:/.test(run.reason ?? '') ? [`Make ${cfg.skill} a real folder inside the repository (not a link), commit, then run again: ${again}`]
+                                                            : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, `Fix the cause, then run again: ${again}`])
+                                        : code === PASS ? [`Verify this receipt (merge gate): done-done receipt --verify ${rec.commit}`]
+                                            : status === 'cancelled' ? [...(run.kind === 'maintain' ? [] : [`Start again from the failed step: done-done rerun --run ${run.run_id}`]), `List past runs: done-done history`]
+                                                : [`Read the step logs in ${shown(run.repo, join(dir, 'logs'))}`, ...(run.kind === 'maintain' ? [] : [`Fix the cause, commit, then run again from the failed step: done-done rerun --run ${run.run_id}`]), `Or start a new run: ${again}`];
     emit(result);
     return code;
 }
@@ -2933,6 +3043,18 @@ async function cmdRerun(argv) {
     if (src.kind === 'maintain')
         throw new UsageError(`run ${srcId} is a maintain run, which cannot be rerun`, 'Start a new one: done-done maintain');
     const open = shownStatus(src);
+    if (src.review?.state === 'stalled' && src.status === 'awaiting_approval') {
+        if (git(repo, 'rev-parse', src.fix?.branch ?? 'HEAD') !== src.review.head)
+            throw new UsageError('reviewed HEAD changed while stalled');
+        src.status = 'pending';
+        src.runner = undefined;
+        const reviewing = src.steps.find((s) => s.name === 'reviewing');
+        if (reviewing)
+            reviewing.status = 'pending';
+        saveRun(join(root, srcId), src);
+        rmSync(join(root, srcId, 'runner.lock'), { force: true });
+        return launch(join(root, srcId), cfg, 'rerun', values);
+    }
     if (open === 'pending' || open === 'running')
         throw new UsageError(`run ${srcId} is still ${open}, so it cannot be rerun while its runner lives`, `Read it: done-done status --run ${srcId}; stop it first: done-done abort --run ${srcId}`);
     const group = src.runner?.journey_pgid ?? src.runner?.instance_pgid;
@@ -3135,6 +3257,23 @@ async function cmdRespond(argv) {
         finally {
             rmSync(join(review, 'respond.lock'), { force: true });
         }
+    }
+    if (values.run && values.answer?.trim()) {
+        const repo = repoRoot(), cfg = loadConfig(repo), root = runsRoot(cfg.app);
+        const id = pickId(root, repo, 'respond', cfg, values.run), dir = join(root, id), run = loadRun(dir);
+        if (run.status !== 'awaiting_approval' || run.review?.state !== 'to-ask')
+            throw new UsageError('run is not waiting for a review answer');
+        if (git(repo, 'rev-parse', run.fix?.branch ?? 'HEAD') !== run.review.head)
+            throw new UsageError('reviewed HEAD changed while waiting');
+        run.review.answer = values.answer.trim();
+        run.status = 'pending';
+        run.runner = undefined;
+        const reviewing = run.steps.find((s) => s.name === 'reviewing');
+        if (reviewing)
+            reviewing.status = 'pending';
+        saveRun(dir, run);
+        rmSync(join(dir, 'runner.lock'), { force: true });
+        return launch(dir, cfg, 'respond', {});
     }
     const action = values.action;
     if (action !== 'approve' && action !== 'skip' && action !== 'fix')
@@ -4810,7 +4949,7 @@ async function reviewRound(run, dir, cfg, outsideAnswer) {
     }
     saveReview(dir, run);
 }
-async function reviewFix(run, dir, cfg) {
+async function reviewFix(run, dir, cfg, rereview = true) {
     if (git(run.repo, 'status', '--porcelain'))
         throw new Error('review fix needs a clean checkout; commit or remove your changes first');
     if (git(run.repo, 'rev-parse', 'HEAD') !== run.head)
@@ -4833,7 +4972,8 @@ async function reviewFix(run, dir, cfg) {
     run.state = 'to-fix';
     delete run.question;
     saveReview(dir, run);
-    await reviewRound(run, dir, cfg);
+    if (rereview)
+        await reviewRound(run, dir, cfg);
 }
 async function cmdReview(argv) {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true });

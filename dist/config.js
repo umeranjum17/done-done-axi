@@ -62,6 +62,7 @@ const MAX_CAPTURES = 10;
 const KEYS = {
     agent: { scope: 'any', type: 'agent' },
     auto_fix: { scope: 'any', type: 'auto_fix' },
+    review_enabled: { scope: 'global', type: 'boolean' },
     agent_config: { scope: 'global', type: 'agent_config' },
     agent_args_override: { scope: 'global', type: 'args' },
     agent_path_override: { scope: 'global', type: 'paths' },
@@ -404,6 +405,7 @@ function defaultConfig(repo) {
         acpx_path: 'acpx',
         agent_timeout: AGENT_TIMEOUT,
         auto_fix: {},
+        review_enabled: true,
         app: basename(repo),
         skill: '',
         journeys: {},
@@ -473,6 +475,9 @@ export function globalConfigText() {
     const agents = Object.entries(CHEAP).map(([a, c]) => `  ${a}:\n    model: ${c.model}\n${c.effort ? `    effort: ${c.effort}\n` : ''}`).join('');
     return `# done-done global config. \`done-done init\` writes it once; \`init --agent\` then sets agent and its model in place.
 # A repo's .done-done.yaml may set agent (and the repo keys); every key here except agent is global-only.
+
+# Set false to skip review in every verify receipt (the reason is recorded).
+review_enabled: true
 
 # The coding agent done-done starts: one of ${AGENTS.join(', ')}, or acp:<target>. done-done never picks one: while none is set
 # it asks you in a terminal, or stops with the command that sets it: done-done init --agent <agent> --model <model>.

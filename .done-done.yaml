@@ -64,6 +64,8 @@ journeys:
     command: node journeys/review.mjs
   review-fix:
     command: node journeys/review-fix.mjs
+  verify-review:
+    command: node journeys/verify-review.mjs
   registered-script:
     command: node journeys/registered-script.mjs
 

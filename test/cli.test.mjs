@@ -747,7 +747,7 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
   assert.equal(d.global_config, `written ${globalYml}`);
   const globalText = readFileSync(globalYml, 'utf8');
   const g = parse(globalText);
-  assert.deepEqual(Object.keys(g), ['agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
+  assert.deepEqual(Object.keys(g), ['review_enabled', 'agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
   assert.deepEqual([g.agent, g.agent_config.claude, g.agent_config.opencode, g.agent_timeout], [undefined, { model: 'claude-haiku-5-5', effort: 'low' }, { model: 'opencode-go/muse-spark-1.3-contributor', effort: 'low' }, '30m'], 'no agent key until the user picks one, and the cheap defaults');
   for (const key of Object.keys(g)) assert.match(globalText, new RegExp(`# .*\\n${key}:`), `${key} has a comment`);
   assert.equal(g.agent_config.codex, undefined, 'codex has no cheap default, so init writes no codex model');
@@ -1349,7 +1349,7 @@ test('verify goes on in a detached runner after the calling shell is killed, and
   const s = toon(r);
   assert.equal(s.run_id, run.run_id);
   assert.equal(s.result, 'pass');
-  assert.deepEqual(s.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']], 'the judge always runs');
+  assert.deepEqual(s.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['reviewing', 'skipped'], ['receipt', 'completed'], ['report', 'completed']], 'the judge always runs');
   assert.deepEqual(s.evidence, [`.proof/${run.run_id}/home.png`, `.proof/${run.run_id}/settings.png`]);
   assert.match(s.help[0], /done-done receipt --verify [0-9a-f]{40}$/);
   assert.ok(existsSync(join(repo, s.receipt)), 'the runner recorded a receipt');
@@ -1377,7 +1377,7 @@ test('a journey past its timeout is killed and the run ends inconclusive', async
   const s = toon(r);
   assert.equal(s.result, 'inconclusive');
   assert.equal(s.reason, 'drive: journey timed out after 2s');
-  assert.deepEqual(s.steps.map((x) => x.status), ['completed', 'failed', 'skipped', 'skipped', 'skipped', 'skipped', 'completed']);
+  assert.deepEqual(s.steps.map((x) => x.status), ['completed', 'failed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'completed']);
   const pgid = JSON.parse(readFileSync(join(env.DONE_DONE_HOME, 'runs', 'notes', s.run_id, 'run.json'), 'utf8')).runner.journey_pgid;
   assert.ok(await groupGone(pgid), 'the timed-out journey is gone');
 });
@@ -1783,7 +1783,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   const ok = verify(right.env, 'home and settings render');
   assert.equal(ok.code, 0, ok.out);
   const o = toon(ok);
-  assert.deepEqual(o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
+  assert.deepEqual(o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['reviewing', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
   const calls = right.calls();
   assert.equal(calls.length, 2, 'one tools-off call per capture, none to the author');
   assert.ok(calls.every((c) => c.agent === 'opencode' && c.argv.includes('opencode-go/muse-spark-1.3-contributor') && JSON.parse(c.permission)['*'] === 'deny'));
@@ -1817,7 +1817,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   assert.equal(bad.code, 4, bad.out);
   const b = toon(bad);
   assert.deepEqual([b.status, b.step, b.result], ['awaiting_approval', 'gate', undefined]);
-  assert.deepEqual(b.steps.map((x) => x.status), ['completed', 'completed', 'completed', 'failed', 'awaiting_approval', 'pending', 'pending']);
+  assert.deepEqual(b.steps.map((x) => x.status), ['completed', 'completed', 'completed', 'failed', 'awaiting_approval', 'pending', 'pending', 'pending']);
   assert.deepEqual([b.findings.length, b.findings[0].id, b.findings[0].severity, b.findings[0].action], [2, 'gate-1', 'error', 'ask-user']);
   assert.match(b.findings[0].what, /judge says wrong screen/);
   assert.ok(b.help.some((h) => h.includes(`done-done respond --run ${b.run_id} --action fix`)), bad.out);
@@ -1853,7 +1853,7 @@ test('verify judges by default with the judge the user set: opencode judges a cl
   // A rerun of the judged run judges again (the cached wrong verdict), so it cannot pass with the judge left out.
   const re = spawnSync(process.execPath, [CLI, 'rerun', '--run', b.run_id], { cwd: t.repo, env: right.env, encoding: 'utf8' });
   assert.equal(re.status, 4, re.stdout + re.stderr);
-  assert.deepEqual(toon({ out: re.stdout }).steps.map((x) => [x.name, x.status]).slice(3, 6), [['judge', 'failed'], ['gate', 'awaiting_approval'], ['receipt', 'pending']]);
+  assert.deepEqual(toon({ out: re.stdout }).steps.map((x) => [x.name, x.status]).slice(3, 7), [['judge', 'failed'], ['gate', 'awaiting_approval'], ['reviewing', 'pending'], ['receipt', 'pending']]);
   assert.equal(t.dd('respond', '--run', toon({ out: re.stdout }).run_id, '--action', 'fix').code, 1);
   // The author's own agent and model may judge too: the user's choice runs, in a fresh session, and the log says how apart it is.
   writeFileSync(join(t.env.DONE_DONE_HOME, 'config.yaml'), 'agent: opencode\njudge:\n  route: answerer:opencode\n');
@@ -1919,7 +1919,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, structure
   const ok = verify(right.env, 'the note Umer added shows in the list');
   assert.equal(ok.code, 0, ok.out);
   assert.deepEqual([ok.o.result, ok.o.journey, ok.o.feature, ok.o.author], ['pass', null, 'add-note', 'claude (model claude-haiku-5-5)']);
-  assert.deepEqual(ok.o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
+  assert.deepEqual(ok.o.steps.map((x) => [x.name, x.status]), [['resolve', 'completed'], ['drive', 'completed'], ['check', 'completed'], ['judge', 'completed'], ['gate', 'skipped'], ['reviewing', 'skipped'], ['receipt', 'completed'], ['report', 'completed']]);
   // The receipt keeps the feature the agent drove, so affected counts it as that feature's proof (no journey, no core: every feature).
   assert.equal(JSON.parse(readFileSync(join(t.repo, '.proof', '.done-done', 'receipts', `${t.head()}.json`), 'utf8')).runs[0].feature, 'add-note');
   const covered = t.dd('--json', 'affected');
@@ -2898,6 +2898,8 @@ test('verify with auto_fix fixes the product on a done-done branch, and never fi
   t.sh('commit', '-qm', 'a broken title');
   writeFileSync(join(e.PATH, 'opencode'), `#!${process.execPath}
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const args = process.argv.slice(2), prompt = readFileSync(args[args.indexOf('-f') + 1], 'utf8');
+if (prompt.includes('read-only reviewer')) { console.log(JSON.stringify({type:'text',part:{type:'text',text:JSON.stringify({findings:[]})}})); process.exit(0); }
 const extra = readFileSync(${JSON.stringify(join(e.PATH, 'extra'))}, 'utf8');
 appendFileSync(${JSON.stringify(join(e.PATH, 'calls'))}, process.cwd() + '\\n');
 writeFileSync('src/app.js', 'export const title = "Notes";\\n');

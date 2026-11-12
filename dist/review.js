@@ -66,14 +66,14 @@ function docsText(repo, head, changed) {
     }
     return { text, omitted: read.length - used };
 }
-export async function review(repo, agent, base, dir, allowEmpty = false, outsideAnswer) {
+export async function review(repo, agent, base, dir, allowEmpty = false, outsideAnswer, target = 'HEAD') {
     const started = Date.now();
     if (!agent.path)
         throw new Error(`review: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`);
     const why = toollessReason(agent.agent);
     if (why)
         throw new Error(`review: ${why}; use claude, codex, opencode, pi or acp`);
-    const head = git(repo, 'rev-parse', 'HEAD').trim();
+    const head = git(repo, 'rev-parse', target).trim();
     const mergeBase = git(repo, 'merge-base', base, head).trim();
     const changed = git(repo, '-c', 'core.quotepath=off', 'diff', '--name-only', mergeBase, head).split('\n').filter(Boolean);
     if (!changed.length) {

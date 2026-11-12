@@ -35,6 +35,7 @@ export type Config = {
   agent_path_override: Record<string, string>; // a binary per agent instead of the one on PATH
   acpx_path: string; // the acpx bridge for acp:<target> agents
   agent_timeout: string; // how long one agent call may run, e.g. 30m
+  review_enabled: boolean; // global rollback for the verify review step
   auto_fix: Record<string, number>; // per step, as no-mistakes: how many times done-done's agent may fix its findings; 0 (the default) reports only
   app: string;
   skill: string;
@@ -118,6 +119,7 @@ const MAX_CAPTURES = 10;
 const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' }> = {
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
+  review_enabled: { scope: 'global', type: 'boolean' },
   agent_config: { scope: 'global', type: 'agent_config' },
   agent_args_override: { scope: 'global', type: 'args' },
   agent_path_override: { scope: 'global', type: 'paths' },
@@ -411,6 +413,7 @@ function defaultConfig(repo: string): Config {
     acpx_path: 'acpx',
     agent_timeout: AGENT_TIMEOUT,
     auto_fix: {},
+    review_enabled: true,
     app: basename(repo),
     skill: '',
     journeys: {},
@@ -478,6 +481,9 @@ export function globalConfigText(): string {
   const agents = Object.entries(CHEAP).map(([a, c]) => `  ${a}:\n    model: ${c.model}\n${c.effort ? `    effort: ${c.effort}\n` : ''}`).join('');
   return `# done-done global config. \`done-done init\` writes it once; \`init --agent\` then sets agent and its model in place.
 # A repo's .done-done.yaml may set agent (and the repo keys); every key here except agent is global-only.
+
+# Set false to skip review in every verify receipt (the reason is recorded).
+review_enabled: true
 
 # The coding agent done-done starts: one of ${AGENTS.join(', ')}, or acp:<target>. done-done never picks one: while none is set
 # it asks you in a terminal, or stops with the command that sets it: done-done init --agent <agent> --model <model>.

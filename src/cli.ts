@@ -1442,6 +1442,7 @@ type Receipt = {
   judge: JudgeBlock;
   evals?: string; // `pass <run id>`: the full eval run at this head (only when evals.enabled)
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
+  review?: { state: 'approved' | 'skipped'; reason?: string; head?: string; result?: ReviewResult };
   scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
 };
 
@@ -1482,6 +1483,7 @@ function receiptFault(rec: Receipt, short: string): string | null {
     const rows = j.interaction_checklist;
     if (!Array.isArray(rows) || rows.length !== Object.keys(INTERACTIONS).length || new Set(rows.map(r => r?.id)).size !== rows.length || !rows.every(r => r && Object.hasOwn(INTERACTIONS, r.id) && typeof r.reason === 'string' && r.reason.trim() && Array.isArray(r.captures) && (r.status === 'not_applicable' ? !r.captures.length : r.status === 'pass' && r.captures.length && r.captures.every(c => c && rec.files.some(f => f.path === c.path && f.sha256 === c.sha256))))) return `receipt for ${short} has a malformed interaction-checklist verdict`;
   }
+  if (rec.review !== undefined && (rec.review.state === 'skipped' ? !rec.review.reason?.trim() : rec.review.state !== 'approved' || rec.review.head !== rec.head || rec.review.result?.head !== rec.head || !Array.isArray(rec.review.result?.reviewers) || rec.review.result.reviewers.length !== 2 || rec.review.result.reviewers.some((r) => r.state !== 'completed') || !Array.isArray(rec.review.result.findings) || rec.review.result.findings.length !== 0)) return `receipt for ${short} has a malformed review record`;
   if (rec.scope !== undefined && !scopeShape(rec.scope)) return `receipt for ${short} has a malformed journey scope`;
   if (rec.suite !== undefined && !suiteShape(rec.suite)) return `receipt for ${short} has a malformed test-suite record`;
   if (rec.evals !== undefined && !/^pass \S+$/.test(String(rec.evals))) return `receipt for ${short} has a malformed evals line`;
@@ -1540,7 +1542,7 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
     }
   }
   if (bad.length) return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
-  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.scope && { scope: rec.scope }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
+  return { code: PASS, result: { command: 'receipt', result: 'pass', head: commit, tree: rec.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), files: rec.files.length, at: rec.at, schema: rec.schema, judge: j, ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.review && { review: rec.review }), ...(rec.scope && { scope: rec.scope }), ...(receiptWarning(rec) && { warnings: [receiptWarning(rec)] }), help: ['This receipt is valid for this head.'] } };
 }
 
 async function cmdReceipt(argv: string[]): Promise<number> {
@@ -1568,12 +1570,12 @@ function assertCleanForReceipt(repo: string): void {
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo: string, cfg: Config, r: CheckOutcome): { code: number; result: Record<string, unknown> } {
+function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review']): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-  const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }) };
+  const rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }) };
   const path = writeReceipt(cfg, rec);
   const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
@@ -1678,6 +1680,7 @@ type Run = {
   runner?: { pid: number; started: string; heartbeat: string; journey_pgid?: number; instance_pgid?: number }; steps: Step[];
   result?: 'pass' | 'fail' | 'inconclusive' | MaintainResult; reason?: string; findings?: MaintainFinding[]; unverified?: string[]; git_status?: string;
   record?: string; receipt?: string; created: string; updated: string;
+  review?: { state: 'requested' | 'stalled' | 'to-ask' | 'approved' | 'skipped' | 'to-fix' | 'spent'; base: string; head: string; fixes: number; result?: ReviewResult; reason?: string; question?: string; answer?: string; checked?: CheckOutcome };
   fix_tries?: number; // verify --fix-tries: the fix attempts this run may make, in place of auto_fix.verify (qa --run caps its loop here)
   fix?: { branch?: string; commit: string; files?: string[]; attempts?: number; record?: string }; // a maintain or verify fix (auto_fix)
   inputs?: { head: string; journey: string; skill: string };
@@ -1697,7 +1700,7 @@ const HEARTBEAT_MS = 5_000;
 // A run that never recorded its runner's pid this long after it was created has no runner.
 const STALE_MS = 60_000;
 const runsRoot = (app: string) => join(home(), 'runs', app);
-const verifySteps = (tries: number) => ['resolve', 'drive', 'check', 'judge', ...(tries ? ['triage', 'fix'] : []), 'gate', 'receipt', 'report'];
+const verifySteps = (tries: number) => ['resolve', 'drive', 'check', 'judge', ...(tries ? ['triage', 'fix'] : []), 'gate', 'reviewing', 'receipt', 'report'];
 // Commands an agent drive must not run: they answer a gate, write a receipt or start a run that can write one.
 const DRIVE_REFUSED = ['respond', 'eval', 'receipt', 'verify', 'rerun', 'maintain', 'after-commit', 'journey'];
 // One agent drive may launch the app, drive it and save captures; past this it is killed with everything it started.
@@ -2219,8 +2222,8 @@ async function runSteps(dir: string): Promise<void> {
     return { checked, asks: [], fixable: [] };
     };
     const h: Harness = { begin, set, log, spawned };
-    let p = await pass(run.repo);
-    let fixed = false;
+    let p: VerifyPass = run.review?.checked ? { checked: run.review.checked, asks: [], fixable: [] } : await pass(run.repo);
+    let fixed = !!(run.review?.checked && run.fix?.branch);
     // auto_fix.verify: the judge sorts the product failures first (an ask parks the run at the gate); then a checkout with
     // uncommitted tracked changes is never fixed, since the fix starts from the committed head.
     if (tries && p.end && p.fixable.length && journey?.spends) p.end = { ...p.end, reason: `${p.end.reason}; auto_fix.verify does not re-run a spends journey` };
@@ -2237,6 +2240,7 @@ async function runSteps(dir: string): Promise<void> {
         if ('blocked' in f) return finish('blocked', `fix: ${f.blocked}`);
         p = f;
         fixed = true;
+        if (run.fix?.record) run.record = run.fix.record;
       }
     }
 
@@ -2257,8 +2261,81 @@ async function runSteps(dir: string): Promise<void> {
     }
     if (p.end) return finish(p.end.result, p.end.reason);
 
+    // Review belongs to this proof run. A review fix returns to the same drive, checks and judge.
+    let proof: Receipt['review'];
+    if (!cfg.review_enabled) proof = { state: 'skipped', reason: 'review disabled in global config' };
+    else {
+      const base = run.review?.base ?? reviewBase(run.repo);
+      const current = p.checked!.head.commit;
+      const mergeBase = git(run.repo, 'merge-base', base, current);
+      if (!git(run.repo, 'diff', '--name-only', mergeBase, current)) proof = { state: 'skipped', reason: 'no diff' };
+      else {
+        let fixes = run.review?.fixes ?? 0;
+        for (;;) {
+          begin('reviewing');
+          const rcfg = reviewConfig(run.repo, base);
+          const reviewDirPath = join(dir, 'review');
+          mkdirSync(join(reviewDirPath, 'agents'), { recursive: true });
+          run.review = { ...run.review, state: 'requested', base, head: p.checked!.head.commit, fixes, checked: p.checked };
+          saveRun(dir, run);
+          let result: ReviewResult;
+          try {
+            result = await review(run.repo, selectAgent(rcfg), base, join(reviewDirPath, `round-${fixes}`), true,
+              run.review.answer && run.review.question ? { question: run.review.question, answer: run.review.answer } : undefined, run.review.head);
+            const errors = result.reviewers.filter((r) => r.state === 'failed');
+            if (errors.length) throw new Error(errors.map((r) => `${r.name}: ${r.error}`).join('; '));
+          } catch (e) {
+            run.review.state = 'stalled'; run.review.reason = errorText(e);
+            run.status = 'awaiting_approval';
+            set(step!, 'awaiting_approval');
+            return;
+          }
+          run.review.result = result; run.review.head = result.head;
+          if (!result.findings.length) {
+            run.review.state = 'approved'; set(step!, 'completed');
+            proof = { state: 'approved', head: result.head, result }; break;
+          }
+          const question = result.findings.find((f) => f.action === 'to-ask');
+          if (question) {
+            run.review.state = 'to-ask'; run.review.question = question.question || question.what;
+            run.status = 'awaiting_approval'; set(step!, 'awaiting_approval'); return;
+          }
+          if (fixes >= 1) { run.review.state = 'spent'; return finish('fail', 'review: fix limit reached'); }
+          run.review.state = 'to-fix'; saveRun(dir, run);
+          const loop: ReviewLoop = { run_id: run.run_id, repo: run.repo, base, head: result.head, state: 'to-fix', fixes, limit: 1, route: { agent: selectAgent(rcfg).agent, model: selectAgent(rcfg).model }, result };
+          if (fixed) {
+            const wt = join(dir, 'review-fix');
+            await inWorktree(run.repo, wt, async () => {
+              const own = [cfg.evidence.root, home()].map((path) => under(run.repo, path)).filter((path) => path !== null);
+              const ignored = git(run.repo, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory', ...pathspec(own)).split('\0').filter(Boolean);
+              for (const path of ignored) cpSync(join(run.repo, path), join(wt, path), { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
+              loop.repo = wt;
+              await reviewFix(loop, reviewDirPath, rcfg, false);
+              p = await pass(wt, `review-fix${loop.fixes}`);
+              git(run.repo, 'branch', '-f', run.fix!.branch!, loop.head);
+              run.fix!.commit = loop.head;
+            }, loop.head);
+          } else {
+            await reviewFix(loop, reviewDirPath, rcfg, false);
+            p = await pass(run.repo, `review-fix${loop.fixes}`);
+          }
+          fixes = loop.fixes; run.review.fixes = fixes; run.review.head = loop.head; saveRun(dir, run);
+          run.record = join(recordsDir(cfg), `${run.run_id}-review-fix${fixes}.json`);
+          if (p.end) return finish(p.end.result, p.end.reason);
+          if (p.asks.length) {
+            begin('gate');
+            const findings: GateFinding[] = p.asks.map((f, i) => ({ id: `gate-${i + 1}`, severity: f.level === 'fail' ? 'error' : 'warning', what: f.why, action: 'ask-user' }));
+            run.gate = { findings, cited: p.checked!.cited, head: { commit: p.checked!.head.commit, tree: p.checked!.head.tree }, ...(p.checked!.judgeBlock && { judge: p.checked!.judgeBlock }) };
+            run.status = 'awaiting_approval'; set(step!, 'awaiting_approval', { findings }); return;
+          }
+        }
+      }
+    }
+    if (run.review) delete run.review.checked;
+    if (proof.state === 'skipped') run.review = { state: 'skipped', base: '', head: p.checked!.head.commit, fixes: 0, reason: proof.reason };
+    if (proof.head && proof.head !== p.checked!.head.commit) return finish('fail', 'review: reviewed head differs from judged head');
     begin('receipt');
-    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) });
+    const receipt = recordReceipt(run.repo, cfg, { ...p.checked!, ...(run.journey === null && existsSync(join(run.repo, cfg.skill)) && { skill: basename(cfg.skill) }), ...(run.scope && { scope: run.scope }) }, proof);
     log('receipt', receipt.result);
     run.receipt = receipt.result.receipt as string | undefined;
     set(step!, receipt.code === PASS ? 'completed' : 'failed', { exit: receipt.code });
@@ -2482,6 +2559,7 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
     }),
   });
   if (status === 'awaiting_approval' && run.gate) result.findings = run.gate.findings;
+  if (run.review) { const { checked: _checked, ...visible } = run.review; result.review = visible; if (run.review.state === 'stalled') result.wait = { owner: 'outside', reason: 'quota' }; }
   if (run.response) result.response = run.response;
   if (run.spend) result.spend = run.spend;
   if (run.signoff) result.signoff = run.signoff;
@@ -2499,7 +2577,9 @@ function showRun(dir: string, cfg: Config, command: string, gone = false): numbe
   result.run = shown(run.repo, dir);
   const id = run.run_id;
   result.help =
-    status === 'awaiting_approval' && run.gate?.spend ? [
+    status === 'awaiting_approval' && run.review?.state === 'stalled' ? [`Review stalled: ${run.review.reason}; retry the same run when the engine is available: done-done rerun --run ${id}`]
+    : status === 'awaiting_approval' && run.review?.state === 'to-ask' ? [`Answer the review question: done-done respond --run ${id} --answer \"<answer>\"`]
+    : status === 'awaiting_approval' && run.gate?.spend ? [
       `Ask the user whether to spend ${run.gate.spend} on this run; never decide it for them. Their yes runs the journey:`,
       `done-done respond --run ${id} --action approve --reason "<who approved the spend>"`,
       `Their no: done-done respond --run ${id} --action skip --reason "<why they said no>"   (ends fail, nothing spent)`,
@@ -2766,6 +2846,15 @@ async function cmdRerun(argv: string[]): Promise<number> {
   const src = loadRun(join(root, srcId));
   if (src.kind === 'maintain') throw new UsageError(`run ${srcId} is a maintain run, which cannot be rerun`, 'Start a new one: done-done maintain');
   const open = shownStatus(src);
+  if (src.review?.state === 'stalled' && src.status === 'awaiting_approval') {
+    if (git(repo, 'rev-parse', src.fix?.branch ?? 'HEAD') !== src.review.head) throw new UsageError('reviewed HEAD changed while stalled');
+    src.status = 'pending'; src.runner = undefined;
+    const reviewing = src.steps.find((s) => s.name === 'reviewing');
+    if (reviewing) reviewing.status = 'pending';
+    saveRun(join(root, srcId), src);
+    rmSync(join(root, srcId, 'runner.lock'), { force: true });
+    return launch(join(root, srcId), cfg, 'rerun', values);
+  }
   if (open === 'pending' || open === 'running') throw new UsageError(`run ${srcId} is still ${open}, so it cannot be rerun while its runner lives`, `Read it: done-done status --run ${srcId}; stop it first: done-done abort --run ${srcId}`);
   const group = src.runner?.journey_pgid ?? src.runner?.instance_pgid;
   if (['pending', 'running'].includes(src.status) && group && alive(-group)) throw new UsageError(`the journey of run ${srcId} is still running, so it cannot be rerun yet`, `Read it: done-done status --run ${srcId}`);
@@ -2924,6 +3013,16 @@ async function cmdRespond(argv: string[]): Promise<number> {
       } catch (e) { run.state = 'failed'; run.error = errorText(e); saveReview(review, run); }
       return showReview(run, 'respond');
     } finally { rmSync(join(review, 'respond.lock'), { force: true }); }
+  }
+  if (values.run && values.answer?.trim()) {
+    const repo = repoRoot(), cfg = loadConfig(repo), root = runsRoot(cfg.app);
+    const id = pickId(root, repo, 'respond', cfg, values.run), dir = join(root, id), run = loadRun(dir);
+    if (run.status !== 'awaiting_approval' || run.review?.state !== 'to-ask') throw new UsageError('run is not waiting for a review answer');
+    if (git(repo, 'rev-parse', run.fix?.branch ?? 'HEAD') !== run.review.head) throw new UsageError('reviewed HEAD changed while waiting');
+    run.review.answer = values.answer.trim(); run.status = 'pending'; run.runner = undefined;
+    const reviewing = run.steps.find((s) => s.name === 'reviewing'); if (reviewing) reviewing.status = 'pending';
+    saveRun(dir, run); rmSync(join(dir, 'runner.lock'), { force: true });
+    return launch(dir, cfg, 'respond', {});
   }
   const action = values.action;
   if (action !== 'approve' && action !== 'skip' && action !== 'fix') throw new UsageError('respond needs --action approve, skip or fix', 'Run: done-done respond --run <run-id> --action <approve|skip|fix> [--reason "<why>"]');
@@ -4428,7 +4527,7 @@ async function reviewRound(run: ReviewLoop, dir: string, cfg: Config, outsideAns
   }
   saveReview(dir, run);
 }
-async function reviewFix(run: ReviewLoop, dir: string, cfg: Config): Promise<void> {
+async function reviewFix(run: ReviewLoop, dir: string, cfg: Config, rereview = true): Promise<void> {
   if (git(run.repo, 'status', '--porcelain')) throw new Error('review fix needs a clean checkout; commit or remove your changes first');
   if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
   const agent = selectAgent(cfg);
@@ -4441,7 +4540,7 @@ async function reviewFix(run: ReviewLoop, dir: string, cfg: Config): Promise<voi
   git(run.repo, 'add', '-A');
   git(run.repo, 'commit', '-m', 'fix: address review findings');
   run.fixes++; run.head = git(run.repo, 'rev-parse', 'HEAD'); run.state = 'to-fix'; delete run.question; saveReview(dir, run);
-  await reviewRound(run, dir, cfg);
+  if (rereview) await reviewRound(run, dir, cfg);
 }
 async function cmdReview(argv: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: argv, allowPositionals: true });
