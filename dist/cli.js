@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason } from './agents.js';
-import { AGENTS, CHEAP, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, loadConfig, parseDuration, tilde, UsageError } from './config.js';
+import { AGENTS, CHEAP, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, judge, judgeable, judgeEnv, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { review, reviewBase, TRUSTED_KEYS } from './review.js';
@@ -22,6 +22,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, scoresOf, totals } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { runLive } from './live.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
@@ -58,6 +59,8 @@ const JOURNEYS_TEXT = `journeys (.done-done.yaml): the command runs with DONE_DO
   Python console scripts, a Rust [[bin]], goreleaser, a systemd service), since a fresh install alone is no release proof
   spends (journeys.<name>.spends): what a run spends, e.g. "one live generation"; verify parks the journey until the user approves that run (respond --action approve)
   timeout (journeys.<name>.timeout): how long a verify run may drive the journey, e.g. 90s or 30m (default 30m); past it the journey is killed and the run is inconclusive
+  live (journeys.<name>.tier: live, with a timeout): a bounded check of a real home, not proof: done-done run --tier live runs only these, one after another, each killed at its timeout,
+  with no agent and no judge, and prints one row each (name, green or red, seconds); a red row exits 1 and is a result, not a failed landing; verify, affected and the landing path never run one
   matrix (.done-done.yaml): with theme, width or form axes the journey runs once per required cell with DONE_DONE_THEME, DONE_DONE_WIDTH, DONE_DONE_FORM and DONE_DONE_CELL (the capture name suffix) set; name each capture with its suffix, so every cell is captured or skipped with a reason`;
 // A claim about how the product looks or what it outputs needs a comparison with the approved result.
 const DESIGN_CLAIM = /\b(design(ed|s)?|redesign(ed)?|mock(up)?s?|prototype|approved)\b/i;
@@ -165,7 +168,7 @@ const FLAGS = {
     '--close <run-id>': 'seal an open run and record the files in its folder',
     '--owner <name>': 'the journey or suite that owns a test file recorded in the inventory',
     '--night': 'allow a large (night-only) journey to run',
-    '--tier <name>': 'run only journeys with this tier; in CI (GITHUB_ACTIONS=true) defaults to ci',
+    '--tier <name>': 'run only journeys with this tier; in CI (GITHUB_ACTIONS=true) defaults to ci; live runs the live checks alone (see JOURNEYS)',
     '--outcome "<claim>"': 'the outcome the evidence files prove; the files follow as arguments',
     '--from <file | - | PR URL>': 'read the claim from the newest "## Checks" block of a file, stdin or a PR body',
     '--trusted-ref <ref>': 'read .done-done.yaml from this git ref instead of the working tree (for scripts)',
@@ -252,6 +255,7 @@ const COMMANDS = {
             ['done-done run --open [<journey>]', 'open a run for a hand- or agent-driven proof; prints its id and folder'],
             ['done-done run --close <run-id>', 'seal an open run'],
             ['done-done run --tier <name>', 'run only journeys with this tier (defaults to ci in CI)'],
+            ['done-done run --tier live [<check>]', 'run the live checks (tier live): each bounded by its own timeout, no agent, one row each (green or red, seconds); a red row exits 1'],
             ['done-done run <journey> --night', 'run a large journey (night-only; refused without --night)'],
         ],
         flags: ['-- <command...>', '--open', '--close <run-id>', '--tier <name>', '--night'],
@@ -735,6 +739,37 @@ function closeRun(repo, cfg, rec, log) {
     }
     return { code: reason ? FAIL : PASS, result, reason };
 }
+// What a name that is a live check (not a journey a proof can drive) is told instead of a bare "unknown journey".
+const liveNote = (cfg, name) => (Object.hasOwn(cfg.live, name) ? ` (it is a live check, which proves nothing: done-done run --tier live ${name})` : '');
+// `run --tier live`: the live checks of .done-done.yaml, or the one named, each bounded by its own timeout. No evidence, run record,
+// agent or judge: one row for each, and a red row exits 1 as a result, never as a failed landing. clash: what the caller also passed.
+async function cmdRunLive(repo, cfg, only, clash) {
+    if (clash)
+        throw new UsageError(`--tier live runs the live checks of .done-done.yaml and takes no ${clash}`, 'Run: done-done run --tier live');
+    const names = Object.keys(cfg.live);
+    if (!names.length)
+        throw new UsageError(`no journeys with tier live; available journeys: ${Object.keys(cfg.journeys).join(', ') || 'none'}`, 'Add a journey with tier: live and a timeout (such as 30s) to .done-done.yaml');
+    if (only && !cfg.live[only]) {
+        const j = cfg.journeys[only];
+        if (!j)
+            throw new UsageError(`unknown live check ${only}; the live checks are: ${names.join(', ')}`);
+        throw new UsageError(`journey ${only} has tier ${j.tier ?? '(none)'}, not live`);
+    }
+    const report = await runLive(only ? { [only]: cfg.live[only] } : cfg.live, { cwd: repo, env: process.env, onData: (b) => process.stderr.write(b) });
+    const red = report.rows.filter((r) => r.result === 'red').length;
+    emit({
+        command: 'run',
+        tier: LIVE_TIER,
+        result: red ? 'red' : 'green',
+        green: report.rows.length - red,
+        red,
+        seconds: report.seconds,
+        bound_seconds: report.bound,
+        rows: report.rows,
+        ...(red && { help: ['A red live check is a result for the fleet to act on, not a failed landing; fix what it names, then re-run: done-done run --tier live <check>'] }),
+    });
+    return red ? FAIL : PASS;
+}
 async function cmdRun(argv) {
     const literal = argv.find((a) => /\$\{?DONE_DONE_EVIDENCE_ROOT\b/.test(a));
     if (literal)
@@ -762,6 +797,10 @@ async function cmdRun(argv) {
     const journey = positionals[0] ?? null;
     if (positionals.length > 1)
         throw new UsageError('run takes at most one journey name');
+    if (tier === LIVE_TIER)
+        return cmdRunLive(repo, cfg, journey, values.open ? '--open' : dash >= 0 ? 'command after --' : values.night ? '--night' : null);
+    if (journey && cfg.live[journey])
+        throw new UsageError(`journey ${journey} is a live check (tier live), not proof: nothing ran`, `Run it as a live check: done-done run --tier live ${journey}`);
     // Filter journeys by tier if specified
     const availableJourneys = tier
         ? Object.fromEntries(Object.entries(cfg.journeys).filter(([_, j]) => j.tier === tier))
@@ -2920,7 +2959,7 @@ async function cmdVerify(argv) {
     if (journey === null && names.length > 1 && values.feature === undefined)
         throw new UsageError(`verify needs a journey name or --feature; .done-done.yaml defines: ${names.join(', ')}`, `Run: done-done verify <${names.join('|')}> --outcome "<what a user can now do>"`);
     if (journey !== null && !cfg.journeys[journey])
-        throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${names.join(', ') || 'none'}`);
+        throw new UsageError(`unknown journey ${journey}${liveNote(cfg, journey)}; .done-done.yaml defines: ${names.join(', ') || 'none'}`);
     // The scope is settled here: the affected journeys the list leaves out are read at the commit the run starts on.
     let scope;
     if (list.length) {
@@ -5292,7 +5331,7 @@ async function cmdTests(argv) {
     const cfg = loadConfig(repo);
     const named = positionals[1];
     if (named && !cfg.journeys[named])
-        throw new UsageError(`unknown journey ${named}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
+        throw new UsageError(`unknown journey ${named}${liveNote(cfg, named)}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
     const picked = [];
     const skipped = [];
     for (const [name, j] of Object.entries(cfg.journeys)) {

@@ -63,6 +63,10 @@
     "owner": "lint-journey-warn",
     "sha256": "c7bce3e4a0e27a9843ccde54ac7c98aa632ec8b2e89ef4ab2b0b1e9fd3a704b7"
   },
+  "journeys/live-tier.mjs": {
+    "owner": "live-tier",
+    "sha256": "4d189697f064ff15e56a421c5b361013a1d35cedb1bf96aa1ec3495f84e8df9d"
+  },
   "journeys/minimum-scope.mjs": {
     "owner": "minimum-scope",
     "sha256": "9a49dbabc50e97617ceb71f0407fb1ce155dea005c2675c1a07a0181702badec"

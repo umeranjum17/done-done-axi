@@ -6,7 +6,7 @@
 //   duplicate  catches exactly what a faster (or earlier-named, on a tie) test catches
 //   failing    fails on the clean copy, so it says nothing about faults
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isTestFile } from './inventory.js';
@@ -19,10 +19,10 @@ const OPERATORS = [
     [/ >= /, ' < '], [/ <= /, ' > '], [/ && /, ' || '], [/ \|\| /, ' && '], [/\btrue\b/, 'false'], [/\bfalse\b/, 'true'],
 ];
 const comment = (line) => /^\s*(\/\/|\*|\/\*|#)/.test(line);
-// The repo's non-test source files that git does not ignore.
+// The repo's non-test source files that git does not ignore; a symlink is never one, so planting a fault cannot write through it.
 function sourceFiles(repo) {
     return execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 }).split('\0')
-        .filter((p) => p && SOURCE.test(p) && !isTestFile(p) && !/(^|\/)(fixtures|dist|node_modules)\//.test(p) && existsSync(join(repo, p))).sort();
+        .filter((p) => p && SOURCE.test(p) && !isTestFile(p) && !/(^|\/)(fixtures|dist|node_modules)\//.test(p) && existsSync(join(repo, p)) && !lstatSync(join(repo, p)).isSymbolicLink()).sort();
 }
 // Every fault the source offers (one per line and operator), thinned evenly to at most `max` so the same repo plants the same faults.
 export function listFaults(repo, sources, max) {
@@ -44,13 +44,18 @@ export function listFaults(repo, sources, max) {
 }
 export const sourcesOf = (repo, only) => (only.length ? only : sourceFiles(repo));
 // A scratch copy of the work copy, made from git's file list; node_modules is shared by link, so the copy stays small.
+// A tracked symlink is copied as the same link, never followed: one to a folder (or to its own parent) would otherwise recurse.
 function scratchCopy(repo, root, label) {
     const dir = join(root, label);
     mkdirSync(dir);
     const files = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 }).split('\0').filter((p) => p && existsSync(join(repo, p)));
     for (const f of files) {
         mkdirSync(dirname(join(dir, f)), { recursive: true });
-        cpSync(join(repo, f), join(dir, f));
+        const from = join(repo, f), to = join(dir, f);
+        if (lstatSync(from).isSymbolicLink())
+            symlinkSync(readlinkSync(from), to);
+        else
+            cpSync(from, to);
     }
     if (existsSync(join(repo, 'node_modules')))
         symlinkSync(join(repo, 'node_modules'), join(dir, 'node_modules'));

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Test improvement plan proof (Q13): `tests improve --plan-only` on the improve-test fixture proposes keep for the real test,
 // drop for the slop test and the slower duplicate, move for a real test sized local that fits ci, names the untested
-// isBig line as a gap, and leaves git status clean. Runs the built CLI.
+// isBig line as a gap, and leaves git status clean. The fixture also tracks a directory symlink to its own parent: the scratch copies
+// carry it as a link, so the plan is unchanged. Runs the built CLI.
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { env } from 'node:process';
@@ -18,6 +19,8 @@ const home = mkdtempSync(join(tmpdir(), 'improve-home-'));
 let log = '';
 try {
   cpSync('test/fixtures/improve-test', dir, { recursive: true });
+  mkdirSync(join(dir, 'skills'));
+  symlinkSync('..', join(dir, 'skills', 'parent-link'));
   const gitConfig = join(home, 'gitconfig');
   writeFileSync(gitConfig, '');
   const host = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('GIT_CONFIG')));
@@ -47,7 +50,7 @@ try {
   writeFileSync(join(evidence, 'test-improve.log'), log);
   writeFileSync(join(evidence, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync('package.json', 'utf8')).version },
-    start: 'improve-test fixture: math.mjs with add, isEven and an untested isBig; tests real, slop, slow-duplicate (ci/ci/local) and local-check (local, but fast)',
+    start: 'improve-test fixture plus a tracked directory symlink to its parent: math.mjs with add, isEven and an untested isBig; tests real, slop, slow-duplicate (ci/ci/local) and local-check (local, but fast)',
     steps: ['Commit the fixture and check git status is clean', 'Run done-done tests improve --plan-only', 'Read each row and the gaps', 'Check git status again'],
     result: 'stage proposed: real keep, slop drop, slow-duplicate drop (duplicate of real), local-check move to ci, gap at src/math.mjs:3, and git status stays clean',
   }, null, 2));
