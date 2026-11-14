@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
+import { checkDeadline } from './deadline.js';
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
@@ -1078,7 +1079,10 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     const atCwd = resolve(name);
     return existsSync(atCwd) ? atCwd : atRoot;
   };
+  const deadline = checkDeadline(cfg.check.timeout);
   for (const name of files) {
+    deadline.judging(`the evidence line's file ${name}`);
+    deadline.tick();
     const path = cite(name);
     let bytes: Buffer;
     try {
@@ -1140,7 +1144,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
       if (rec.base) heads.push([c, inRoot, rec]);
     }
     const kept: string[] = [];
-    const stale = staleness(repo, cfg, rec.commit, now.commit, rec, kept);
+    const stale = staleness(repo, cfg, rec.commit, now.commit, rec, kept, deadline.tick);
     for (const w of kept) if (!warnings.includes(w)) warnings.push(w);
     if (stale) findings.push({ level: 'fail', why: `${name}: ${stale} (run ${rec.run_id})` });
     if (rec.dirty && !cfg.evidence.allow_dirty) findings.push({ level: 'fail', why: `${name}: captured from a tree with uncommitted changes (run ${rec.run_id}); commit them, then capture again` });
@@ -1654,7 +1658,7 @@ function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?:
 }
 
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
-function staleness(repo: string, cfg: Config, from: string, to: string, run?: RunRecord, warnings: string[] = []): string {
+function staleness(repo: string, cfg: Config, from: string, to: string, run?: RunRecord, warnings: string[] = [], tick?: () => void): string {
   if (from === to) return '';
   let changed: string[];
   try {
@@ -1667,7 +1671,7 @@ function staleness(repo: string, cfg: Config, from: string, to: string, run?: Ru
   // A head change that touches no journey or feature the run covered leaves its proof valid; both commits are reported.
   const needs = outside.filter((p) => !p.startsWith(`${GATE_DIR}/`));
   if (run && (run.journey || run.feature) && needs.length) {
-    const m = mapDiff(repo, cfg, needs, git(repo, 'ls-files', '-z').split('\0').filter(Boolean));
+    const m = mapDiff(repo, cfg, needs, git(repo, 'ls-files', '-z').split('\0').filter(Boolean), undefined, tick);
     if (!m.journeys.some((j) => j.name === run.journey) && !m.features.some((f) => f.name === run.feature)) {
       warnings.push(`run ${run.run_id} is for commit ${from.slice(0, 12)} and HEAD is ${to.slice(0, 12)}: its ${run.journey ? `journey ${run.journey}` : `feature ${run.feature}`} is untouched by the ${needs.length} changed file${needs.length === 1 ? '' : 's'} (done-done affected)`);
       return '';
@@ -4993,11 +4997,11 @@ function nearestReceipt(repo: string, receipted: string[], at: string): string |
 }
 
 // The journeys and features `changed` needs (src/affected.ts), from the verify skill at the working tree.
-function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[], noBase?: string) {
+function mapDiff(repo: string, cfg: Config, changed: string[], tracked: string[], noBase?: string, tick?: () => void) {
   const featDir = join(repo, cfg.skill, 'features');
   const features = Object.fromEntries(skillFeatures(repo, cfg).map((n) => [n, repoText(join(featDir, `${n}.md`)) ?? '']));
   const coreLine = featureMap(repo, cfg).split('\n').find((l) => /^\s*[-*] /.test(l) && l.includes(MARK.core));
-  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase, globalPaths: cfg.affected.global_paths, read: (p) => repoText(join(repo, p)) });
+  return mapChange({ changed, tracked, journeys: cfg.journeys, skill: cfg.skill, features, coreFeature: coreLine?.match(/\]\(([^)#]+)\.md\)/)?.[1], noBase, globalPaths: cfg.affected.global_paths, read: (p) => repoText(join(repo, p)), tick });
 }
 
 // ignore_paths and committed gate receipts need no journey.

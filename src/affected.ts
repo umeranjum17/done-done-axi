@@ -1,5 +1,5 @@
 import { matchesGlob, posix } from 'node:path';
-import { reach } from './deps.js';
+import { reacher } from './deps.js';
 import { codeOnly } from './proof.js';
 
 // `done-done affected`: which journeys a diff needs, from the verify skill's feature map and the paths it cites. Model-free:
@@ -44,11 +44,14 @@ const covers = (r: Refs, p: string) => r.files.has(p) || r.dirs.some((d) => p.st
 
 // The journeys and features `changed` needs. features: each feature file's text by name; skill: the skill folder; coreFeature:
 // the feature the feature map marks (core journey), for the fallback; noBase: why there is no diff to read, if so.
-export function mapChange(o: { changed: string[]; tracked: string[]; journeys: Journeys; skill: string; features: Record<string, string>; coreFeature?: string; noBase?: string; globalPaths?: string[]; read?: (path: string) => string | undefined }): Mapping {
+export function mapChange(o: { changed: string[]; tracked: string[]; journeys: Journeys; skill: string; features: Record<string, string>; coreFeature?: string; noBase?: string; globalPaths?: string[]; read?: (path: string) => string | undefined;
+  // Runs once per file followed: the caller's time limit, which throws when it is spent.
+  tick?: () => void }): Mapping {
   // A code-only journey is no proof, so the change never needs one.
   const real = Object.keys(o.journeys).filter((n) => !codeOnly(o.journeys[n].command));
   const jRefs = new Map(real.map((n) => [n, refs(o.journeys[n].command, o.tracked)]));
-  const reached = new Map(real.map((n) => [n, reach([...jRefs.get(n)!.files], o.tracked, o.read ?? (() => undefined))]));
+  const reachFrom = reacher(o.tracked, o.read ?? (() => undefined), o.tick);
+  const reached = new Map(real.map((n) => [n, reachFrom([...jRefs.get(n)!.files])]));
   const featDir = posix.join(o.skill, 'features');
   const fRefs = new Map(Object.entries(o.features).map(([n, text]) => [n, refs(text, o.tracked, featDir)]));
   // The journeys each feature names: `run <journey>` or `verify <journey>`, or a file its command runs that the feature cites too.

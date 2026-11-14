@@ -3449,6 +3449,58 @@ test('a sealed proof survives a head change that touches no journey it covered, 
   assert.match(stale.out, /evidence is for commit/);
 });
 
+// A repo with many journeys that all run one script web: each journey must not pay for the whole web again (the check once
+// ran for minutes, then for ever, on a repo of this shape). Neutral fixture: journeys fan0..fanN run lib/m0.sh, and every
+// lib/mN.sh sources the next and names a score of others.
+function fanOutRepo(journeys, files) {
+  const t = setup('app: notes\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n  other:\n    command: node other.mjs\n    core: true\n' +
+    Array.from({ length: journeys }, (_, j) => `  fan${j}:\n    command: bash lib/m0.sh\n`).join(''));
+  mkdirSync(join(t.repo, 'lib'));
+  for (let i = 0; i < files; i++) {
+    const names = Array.from({ length: 25 }, (_, k) => `# see lib/m${(i * 7 + k * 13) % files}.sh`).join('\n');
+    writeFileSync(join(t.repo, 'lib', `m${i}.sh`), `#!/bin/bash\n. lib/m${(i + 1) % files}.sh\n${names}\n`);
+  }
+  writeFileSync(join(t.repo, 'other.mjs'), '// the core journey\n');
+  t.sh('add', '-A');
+  t.sh('commit', '-qm', 'add the journeys');
+  return t;
+}
+const claimOf = (t, files) => {
+  const checks = join(t.dir, 'checks.md');
+  writeFileSync(checks, `## Checks\noutcome: home and settings render\nrepro: n/a: no bug\nproof: no verify skill - \`done-done run shots\`\nevidence: ${files.join(', ')}\n`);
+  return checks;
+};
+
+test('a check on a repo of many journeys over one script web returns with the right verdict, not after minutes', () => {
+  const t = fanOutRepo(400, 1000);
+  const { files } = t.shots();
+  const checks = claimOf(t, files);
+  writeFileSync(join(t.repo, 'src', 'app.js'), 'export const app = 2;\n');
+  t.sh('commit', '-qam', 'change code no journey runs');
+  // The old walk cost about 30 seconds here, the shared walk well under one; a stuck check shows as a null status.
+  const r = spawnSync(process.execPath, [CLI, 'check', '--from', checks], { cwd: t.repo, env: t.env, encoding: 'utf8', timeout: 15_000 });
+  assert.equal(r.status, 0, `${r.signal ?? ''} ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /is untouched/, 'the proof survives a change no journey of it reaches');
+});
+
+test('check stops at check.timeout with an error naming the evidence line it was judging, and a non-zero exit', () => {
+  // Eight scripts of a megabyte each, one sourcing the next: following them takes seconds, far past a one-second limit.
+  const t = setup('app: notes\ncheck:\n  timeout: 1s\nevidence:\n  root: .proof\n  ignore_paths: ["docs/**"]\njourneys:\n  shots:\n    command: node make-shots.mjs ${RUN_ID}\n  other:\n    command: bash lib/h0.sh\n    core: true\n');
+  mkdirSync(join(t.repo, 'lib'));
+  for (let i = 0; i < 8; i++) writeFileSync(join(t.repo, 'lib', `h${i}.sh`), `. lib/h${i + 1}.sh\n${'"lib/a/b/c/d/../../../h0.sh" '.repeat(35_000)}\n`);
+  t.sh('add', '-A');
+  t.sh('commit', '-qm', 'add the slow scripts');
+  const { files } = t.shots();
+  const checks = claimOf(t, files);
+  writeFileSync(join(t.repo, 'src', 'app.js'), 'export const app = 2;\n');
+  t.sh('commit', '-qam', 'change code no journey runs');
+  const r = t.dd('check', '--from', checks);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /check: stopped after 1s \(check\.timeout\) while judging the evidence line's file \.proof\/\S+\/home\.png/, 'it names the file of the line');
+  writeFileSync(join(t.repo, '.done-done.yaml'), readFileSync(join(t.repo, '.done-done.yaml'), 'utf8').replace('timeout: 1s', 'timeout: soon'));
+  assert.match(t.dd('check', '--from', checks).out, /check\.timeout/, 'a bad limit is named, not ignored');
+});
+
 // check-only proof: a run at an earlier commit, then a docs-only commit. The check passes on that evidence, and it must leave a run record at HEAD.
 test('a passing check seals the evidence no run holds at HEAD: one record, no duplicate, none on a fail or a dirty tree', () => {
   const t = setup();

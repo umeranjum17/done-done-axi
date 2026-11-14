@@ -45,6 +45,8 @@ journeys:
     command: node journeys/qa-plan.mjs
   size-bounds:
     command: node journeys/size-bounds.mjs
+  check-fan-out:
+    command: node journeys/check-fan-out.mjs
   affected-select:
     command: node journeys/affected-select.mjs
   qa-write:

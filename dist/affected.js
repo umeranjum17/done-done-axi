@@ -1,5 +1,5 @@
 import { matchesGlob, posix } from 'node:path';
-import { reach } from './deps.js';
+import { reacher } from './deps.js';
 import { codeOnly } from './proof.js';
 // The tracked files and folders a text names. Paths are read relative to the repo, then to `from` (a feature file's folder,
 // for its markdown links); a folder counts only when written with a slash (src/), so a prose word never names one.
@@ -38,7 +38,8 @@ export function mapChange(o) {
     // A code-only journey is no proof, so the change never needs one.
     const real = Object.keys(o.journeys).filter((n) => !codeOnly(o.journeys[n].command));
     const jRefs = new Map(real.map((n) => [n, refs(o.journeys[n].command, o.tracked)]));
-    const reached = new Map(real.map((n) => [n, reach([...jRefs.get(n).files], o.tracked, o.read ?? (() => undefined))]));
+    const reachFrom = reacher(o.tracked, o.read ?? (() => undefined), o.tick);
+    const reached = new Map(real.map((n) => [n, reachFrom([...jRefs.get(n).files])]));
     const featDir = posix.join(o.skill, 'features');
     const fRefs = new Map(Object.entries(o.features).map(([n, text]) => [n, refs(text, o.tracked, featDir)]));
     // The journeys each feature names: `run <journey>` or `verify <journey>`, or a file its command runs that the feature cites too.
