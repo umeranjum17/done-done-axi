@@ -99,6 +99,7 @@ const KEYS = {
     'affected.global_paths': { scope: 'repo', type: 'string[]' },
     'signoff.post': { scope: 'repo', type: 'boolean' },
     'signoff.board': { scope: 'repo', type: 'string' },
+    'check.timeout': { scope: 'any', type: 'duration' },
     'suite.command': { scope: 'repo', type: 'string' },
     'suite.timeout': { scope: 'any', type: 'duration' },
     'judge.model': { scope: 'global', type: 'string' },
@@ -111,7 +112,7 @@ const KEYS = {
     'judge.pool_config': { scope: 'global', type: 'string' },
     'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite']);
+const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
@@ -430,6 +431,7 @@ function defaultConfig(repo) {
         affected: { global_paths: [] },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
+        check: { timeout: '5m' },
         suite: { command: '', timeout: '30m' },
         judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
         trusted: false,

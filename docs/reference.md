@@ -1020,6 +1020,7 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `checks.moved_from` | `false`; `true` lets `lint` subtract lines a PR moves from another repo of the same owner, see [Lint check](#lint-check) |
 | `signoff.post` | `false`; `true` lets every `signoff` post its message to the sign-off board, see [Send a run to sign-off](#send-a-run-to-sign-off) |
 | `signoff.board` | none; the board file to post to, else the nearest `.sign-off/` board sign-off-axi finds |
+| `check.timeout` | `5m`; how long `check`'s plain checks (the cited files, their runs and what changed since) may run before `check` stops with an error that names the evidence line it was judging (also valid in the global file) |
 | `suite.command` | none; the project's own test suite command, run as one proof step, see [Project test suite](#project-test-suite); unset, done-done detects it |
 | `suite.timeout` | `30m`; how long the suite may run before it fails the proof (also valid in the global file) |
 | `agent` | as in the global file; set here, it wins |
