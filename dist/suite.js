@@ -2,7 +2,7 @@
 // refuses a code-only command as product evidence, and the suite result is never cited as such.
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { join } from 'node:path';
 import { parseDuration } from './config.js';
 export const SUITE_ENV = 'DONE_DONE_SUITE';
 export const SUITE_NONE = 'no test suite in this project';
@@ -45,12 +45,6 @@ export function suiteCommand(repo, configured) {
         return 'dotnet test';
     return null;
 }
-// The log as a receipt records it: repo-relative with POSIX separators, so a committed receipt is the same on every machine. A log
-// outside the repo (an evidence root elsewhere) has no repo-relative form and stays absolute.
-const recorded = (repo, p) => {
-    const r = relative(repo, p);
-    return r && r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r) ? r.split(sep).join('/') : p;
-};
 // Run the suite at the repo's current commit, bounded by `timeout`; its output goes to <evidence root>/.done-done/suite/<commit>.log.
 export async function runSuite(repo, evidenceRoot, commit, command, timeout) {
     const dir = join(evidenceRoot, '.done-done', 'suite');
@@ -70,7 +64,7 @@ export async function runSuite(repo, evidenceRoot, commit, command, timeout) {
         child.on('close', (code) => { clearTimeout(timer); kill(); done(code); });
     });
     closeSync(fd);
-    return { command, exit, duration_ms: Date.now() - started, log: recorded(repo, log), ...(timedOut ? { timed_out: true } : {}) };
+    return { command, exit, duration_ms: Date.now() - started, log, ...(timedOut ? { timed_out: true } : {}) };
 }
 // Why a suite record fails the proof, or null.
 export const suiteFault = (s, timeout) => s.command === null || (s.exit === 0 && !s.timed_out) ? null : s.timed_out ? `test suite \`${s.command}\` timed out after ${timeout} (suite.timeout)` : `test suite \`${s.command}\` failed with exit ${s.exit ?? 'none'}`;

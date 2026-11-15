@@ -1269,6 +1269,9 @@ async function runCheck(argv, run) {
         const why = suiteFault(suite, cfg.suite.timeout);
         if (why)
             findings.push({ level: 'fail', why: `${why}; log ${suite.log}` });
+        // The receipt names the log the way it names a capture, so a committed receipt carries no machine path.
+        if (suite.log)
+            suite = { ...suite, log: receiptPath(repo, cfg, suite.log) };
     }
     // A failed plain check is no verdict: the judge is not asked, so the check stops with every cause and no result.
     const failed = findings.filter((f) => f.level === 'fail');
