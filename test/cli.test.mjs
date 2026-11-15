@@ -4,7 +4,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
@@ -90,7 +90,7 @@ function setup(projectYaml = JUDGED) {
   writeFileSync(join(repo, 'steps.mjs'), STEPS_MJS);
   writeFileSync(
     join(repo, 'make-shots.mjs'),
-    `import './steps.mjs';\nimport { copyFileSync, mkdirSync } from 'node:fs';\nconst out = '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/home.png');\ncopyFileSync(${JSON.stringify(join(dir, 'screen2.png'))}, out + '/settings.png');\n`,
+    `import './steps.mjs';\nimport { copyFileSync, mkdirSync } from 'node:fs';\nconst out = process.env.DONE_DONE_EVIDENCE_ROOT || '.proof/' + process.argv[2];\nmkdirSync(out, { recursive: true });\ncopyFileSync(${JSON.stringify(join(dir, 'screen.png'))}, out + '/home.png');\ncopyFileSync(${JSON.stringify(join(dir, 'screen2.png'))}, out + '/settings.png');\n`,
   );
   const sh = (...a) => execFileSync('git', a, { cwd: repo, env, stdio: 'pipe' });
   sh('init', '-q', '-b', 'main');
@@ -3612,6 +3612,23 @@ test('the project test suite is one proof step: a pass is sealed in the receipt 
   const old = dd('receipt', '--verify', head());
   assert.equal(old.code, 0, old.out);
   assert.match(toon(old).warnings[0], /before the test-suite step.*re-run done-done receipt/);
+
+  // An evidence root outside the repo: the receipt names the log under `<evidence root>/`, like a capture, and still verifies.
+  const outside = mkdtempSync(join(tmpdir(), 'dd-suite-root-'));
+  configure(suiteYaml('echo suite-outside').replace('root: .proof', `root: ${outside}`));
+  env.DD_OUTCOME = OUTCOME;
+  const awayRun = dd('run', 'shots');
+  assert.equal(awayRun.code, 0, awayRun.out);
+  files = [`${outside}/${toon(awayRun).run_id}/home.png`, `${outside}/${toon(awayRun).run_id}/settings.png`];
+  const away = dd('receipt', '--outcome', OUTCOME, ...files);
+  assert.equal(away.code, 0, away.out);
+  const awayText = readFileSync(resolve(repo, toon(away).receipt), 'utf8');
+  assert.ok(!awayText.includes(outside), 'the receipt holds no absolute evidence-root path');
+  const awayRec = JSON.parse(awayText);
+  assert.equal(awayRec.suite.log, `<evidence root>/.done-done/suite/${head()}.log`);
+  assert.match(readFileSync(join(outside, '.done-done', 'suite', `${head()}.log`), 'utf8'), /suite-outside/);
+  assert.equal(dd('receipt', '--verify', head()).code, 0);
+  rmSync(outside, { recursive: true, force: true });
 
   // A suite that fails, or runs past suite.timeout, fails the proof and names the suite command; no receipt is written.
   configure(suiteYaml('echo broken; exit 3'));
