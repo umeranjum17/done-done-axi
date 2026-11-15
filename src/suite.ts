@@ -2,7 +2,7 @@
 // refuses a code-only command as product evidence, and the suite result is never cited as such.
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { parseDuration } from './config.js';
 
 // What a receipt records about the suite at its head: command null means the project has none.
@@ -36,6 +36,13 @@ export function suiteCommand(repo: string, configured: string): string | null {
   return null;
 }
 
+// The log as a receipt records it: repo-relative with POSIX separators, so a committed receipt is the same on every machine. A log
+// outside the repo (an evidence root elsewhere) has no repo-relative form and stays absolute.
+const recorded = (repo: string, p: string): string => {
+  const r = relative(repo, p);
+  return r && r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r) ? r.split(sep).join('/') : p;
+};
+
 // Run the suite at the repo's current commit, bounded by `timeout`; its output goes to <evidence root>/.done-done/suite/<commit>.log.
 export async function runSuite(repo: string, evidenceRoot: string, commit: string, command: string, timeout: string): Promise<SuiteRecord & { log: string; exit: number | null; duration_ms: number }> {
   const dir = join(evidenceRoot, '.done-done', 'suite');
@@ -52,7 +59,7 @@ export async function runSuite(repo: string, evidenceRoot: string, commit: strin
     child.on('close', (code) => { clearTimeout(timer); kill(); done(code); });
   });
   closeSync(fd);
-  return { command, exit, duration_ms: Date.now() - started, log, ...(timedOut ? { timed_out: true } : {}) };
+  return { command, exit, duration_ms: Date.now() - started, log: recorded(repo, log), ...(timedOut ? { timed_out: true } : {}) };
 }
 
 // Why a suite record fails the proof, or null.
