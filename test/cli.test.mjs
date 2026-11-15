@@ -4,7 +4,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32, deflateSync } from 'node:zlib';
@@ -3598,8 +3598,10 @@ test('the project test suite is one proof step: a pass is sealed in the receipt 
   const recPath = join(repo, toon(ok).receipt);
   const rec = JSON.parse(readFileSync(recPath, 'utf8'));
   assert.deepEqual([rec.suite.command, rec.suite.exit, typeof rec.suite.duration_ms], ['echo suite-ran-fine', 0, 'number']);
-  assert.match(readFileSync(rec.suite.log, 'utf8'), /suite-ran-fine/);
-  assert.ok(rec.suite.log.startsWith(join(repo, '.proof', '.done-done', 'suite')), 'the log is under the evidence root');
+  // The committed receipt names the log repo-relative with POSIX separators, never an absolute machine path.
+  assert.ok(!isAbsolute(rec.suite.log), `the receipt records an absolute suite log path: ${rec.suite.log}`);
+  assert.equal(rec.suite.log, `.proof/.done-done/suite/${head()}.log`);
+  assert.match(readFileSync(join(repo, rec.suite.log), 'utf8'), /suite-ran-fine/);
   assert.ok(!rec.files.some((f) => f.path.includes('suite')), 'the suite log is never cited as product evidence');
   assert.equal(toon(dd('receipt', '--verify', head())).suite.command, 'echo suite-ran-fine');
   assert.match(proof(toon(dd('verify', 'shots', '--outcome', OUTCOME)).run_id), /; test suite `echo suite-ran-fine`: passed in [\d.]+s$/);
