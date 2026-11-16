@@ -23,3 +23,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [Affected file proof](affected-proof.md): `done-done run affected-proof`; `done-done verify --affected-by <files> --extends <head>` runs only the journeys the named files affect (the whole local tier for a file no journey covers), and the receipt links the prior receipt, the files, the journeys and that no review ran again
 - [Registered test-script updates](registered-script.md): run `done-done run registered-script`
 - [Live tier](live-tier.md): `done-done run live-tier`; `done-done run --tier live` runs only the `tier: live` entries, each bounded by its own timeout with no agent, one green or red row each (seconds), a red row exits 1 as a result and never a failed landing, and verify, affected and the landing path never run one
+- [Verify drives base_ref beside the head, and a failing base_install names its cause](base-ref-verify.md): run `done-done run base-ref-verify`

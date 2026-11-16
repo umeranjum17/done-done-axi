@@ -27,6 +27,10 @@
     "owner": "approved-design",
     "sha256": "86d412b2e2edbc798dd0e60a4ba93b2b66ea9a23260ce19ff2a51551be4362cf"
   },
+  "journeys/base-ref-verify.mjs": {
+    "owner": "base-ref-verify",
+    "sha256": "16e8a5f705fe94776a913ad248f499d447015e6507c8500c4935da2fa961757d"
+  },
   "journeys/create-maintain.mjs": {
     "owner": "create-maintain",
     "sha256": "6619515132537c78673bcc553a0165d17481a4925d898445db1fd8639bde068d"

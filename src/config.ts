@@ -65,6 +65,7 @@ export type Config = {
   interaction_checklist: InteractionEvidence | null; // opt-in; omitted items are flagged
   // Primitive 4 (base-ref-before): verify drives this ref too and pairs its captures with the head's; '' (the default) is off.
   base_ref: string;
+  base_install: string;
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
@@ -148,6 +149,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   approved_requirements: { scope: 'repo', type: 'approved_requirements' },
   interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
   base_ref: { scope: 'repo', type: 'string' },
+  base_install: { scope: 'repo', type: 'string' },
   'evidence.root': { scope: 'repo', type: 'string' },
   'evidence.allow_dirty': { scope: 'repo', type: 'boolean' },
   'evidence.ignore_paths': { scope: 'repo', type: 'string[]' },
@@ -438,6 +440,7 @@ function defaultConfig(repo: string): Config {
     approved_redesign: [],
     interaction_checklist: null,
     base_ref: '',
+    base_install: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
     affected: { global_paths: [] },

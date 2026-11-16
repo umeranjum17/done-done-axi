@@ -2085,6 +2085,26 @@ async function driveBase(run, cfg, dir, rec, fix, drive) {
         base.commit = git(run.repo, 'rev-parse', '--verify', '--end-of-options', `${cfg.base_ref}^{commit}`);
         mkdirSync(evidence, { recursive: true });
         const error = await inWorktree(run.repo, wt, async () => {
+            const has = (file) => existsSync(join(wt, file));
+            const install = cfg.base_install || (!has('package.json') ? ''
+                : has('package-lock.json') ? 'npm ci'
+                    : has('pnpm-lock.yaml') ? 'pnpm install --frozen-lockfile'
+                        : has('yarn.lock') ? 'yarn install --frozen-lockfile'
+                            : has('bun.lock') || has('bun.lockb') ? 'bun install --frozen-lockfile'
+                                : 'npm install');
+            if (install) {
+                const child = spawn(install, { cwd: wt, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+                run.runner.journey_pgid = child.pid;
+                let output = '';
+                child.stdout.on('data', (data) => { output = (output + data).slice(-8192); });
+                child.stderr.on('data', (data) => { output = (output + data).slice(-8192); });
+                const failure = await new Promise((done) => {
+                    child.on('error', (e) => done(e.message));
+                    child.on('close', (code) => done(code === 0 ? '' : `exit ${code ?? 'unknown'}${output.trim() ? `: ${output.trim()}` : ''}`));
+                });
+                if (failure)
+                    return `base install (${install}) failed: ${failure}`;
+            }
             if (!cfg.instance)
                 return drive(wt, evidence, {});
             const inst = await startInstance(wt, cfg.instance, rec.run_id, join(dir, `${fix}base-tmp`), process.env, join(dir, 'logs', `${fix}base-instance.log`));
