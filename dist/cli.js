@@ -3748,8 +3748,8 @@ const slug = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$
 const clause = (s) => s.trim().replace(/\.+$/, '');
 // A cited path as the tracked file list spells it: no leading ./ and no :line suffix.
 const cited = (s) => s.trim().replace(/^\.\//, '').replace(/:\d+(-\d+)?$/, '');
-// ponytail: the agent sees at most CONTEXT_CHARS of file text, each file cut at FILE_CHARS, ranked by path only
-// (manifests, proof scripts, source); the prompt names what was left out. Rank by content when a repo needs more.
+// ponytail: the agent sees at most CONTEXT_CHARS of file text, each file cut at FILE_CHARS: the files the task names
+// first, then by path only (manifests, proof scripts, source); the prompt names what was left out.
 const CONTEXT_CHARS = 150_000;
 const FILE_CHARS = 20_000;
 const LISTED = 500;
@@ -3772,19 +3772,32 @@ function repoText(p) {
         return undefined;
     }
 }
+// The tracked files a text names: a token that is exactly a tracked path, with or without a ./ prefix or a :line
+// suffix. Prose that is no path in this repo matches nothing, and a named folder is no file.
+function namedFiles(text, tracked) {
+    const out = [];
+    for (const raw of text.split(/[^A-Za-z0-9_./@+-]+/)) {
+        const token = raw.replace(/^\.\//, '').replace(/:\d+(-\d+)?$/, '').replace(/\.+$/, '');
+        if (token && tracked.has(token) && !out.includes(token))
+            out.push(token);
+    }
+    return out;
+}
 // The repo as the agent sees it: the tracked file list (without the skill folder) and the text of the files that
-// say how the app starts and how the repo proves it.
-function repoContext(repo, skill) {
+// say how the app starts and how the repo proves it, plus every file the task itself names whatever the cap leaves
+// out: a request that names its own source must be given it, and no path ranking sees a doc or data file coming.
+function repoContext(repo, skill, task = '') {
     const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] });
     const own = `${skill.replace(/\\/g, '/').replace(/\/+$/, '')}/`;
     const files = listed.split('\0').filter((f) => f && !f.startsWith(own));
     const rank = (f) => (MANIFEST.test(f) ? 0 : DATA_FILE.test(f) ? 3 : PROOF.test(f) || /(^|\/)bin\//.test(f) || DOCKERFILE.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
     const shown = (f) => !SECRET.test(f) && rank(f) < 3;
+    const focus = namedFiles(task, new Set(files)).filter((f) => !SECRET.test(f));
     let total = 0;
     const parts = [];
     const read = new Set();
     const left = [];
-    for (const f of files.filter(shown).sort((a, b) => rank(a) - rank(b))) {
+    for (const f of [...focus, ...files.filter((f) => shown(f) && !focus.includes(f)).sort((a, b) => rank(a) - rank(b))]) {
         const body = total < CONTEXT_CHARS ? repoText(join(repo, f)) : undefined;
         const kept = body === undefined ? undefined : body.length > FILE_CHARS ? `${body.slice(0, FILE_CHARS)}\n[truncated after ${FILE_CHARS} characters]` : body;
         if (kept === undefined || total + kept.length > CONTEXT_CHARS) {
@@ -3984,7 +3997,10 @@ async function cmdJourney(argv) {
     if (toolless && toollessReason(agent.agent))
         throw new UsageError(toollessReason(agent.agent), 'Use an agent supported by init: done-done init --agent <agent> --model <model>');
     const before = repoState(repo);
-    const context = repoContext(repo, cfg.skill);
+    // The task's own files reach the generator whatever the cap leaves out: the request's paths, and for a named journey
+    // its existing script and feature doc, which name the handles that journey already drives.
+    const task = named ? [request, repoText(priorScript) ?? '', repoText(priorFeature) ?? ''].join('\n') : request;
+    const context = repoContext(repo, cfg.skill, task);
     const fields = ['name', 'title', 'source', 'script', 'checks', 'spends', 'blocker'];
     const schema = { type: 'object', properties: Object.fromEntries(fields.map(k => [k, STR])), required: fields, additionalProperties: false };
     const record = join(home(), 'agents', `journey-${action}-${randomBytes(8).toString('hex')}.json`);
