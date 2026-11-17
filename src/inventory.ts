@@ -6,24 +6,31 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { loadConfig } from './config.js';
 
 export const INVENTORY_FILE = '.done-done-inventory.json';
 type Entry = { owner: string; sha256: string };
 export type Inventory = Record<string, Entry>;
 export type Finding = { path: string; problem: 'unowned' | 'edited'; owner?: string };
 
-// A test file is code in a test/tests/__tests__/journeys folder or named *.test.* / *.spec.*; test fixtures are data, not tests.
-const CODE = /\.(c|m)?(j|t)sx?$/;
+// A test file is JS/TS code in a test/tests/__tests__/journeys folder or named *.test.* / *.spec.*, or a Bash file named
+// *.test.sh / *.spec.sh. Other .sh helpers are not tests: they join the inventory only when a journey command runs them.
+// Test fixtures are data, not tests.
+const CODE = /\.(?:(c|m)?(j|t)sx?)$/;
 export const isTestFile = (p: string): boolean =>
-  CODE.test(p) && !/(^|\/)fixtures\//.test(p) && (/(^|\/)(test|tests|__tests__|journeys)\//.test(p) || /\.(test|spec)\.[^/]+$/.test(p));
+  !/(^|\/)fixtures\//.test(p) &&
+  ((CODE.test(p) && (/(^|\/)(test|tests|__tests__|journeys)\//.test(p) || /\.(test|spec)\.[^/]+$/.test(p))) || /\.(test|spec)\.sh$/.test(p));
 
-// The test script a journey command runs: `node [flags] <path>.mjs` where the path is a test file (`node journeys/x.mjs`,
-// `node --test test/x.test.mjs`); null for any other command. `journey enhance|improve` rewrite this file in place.
+// The test script a journey command runs: Node ESM or Bash, including commands that redirect their captures.
+// `journey enhance|improve` rewrite this file in place and preserve the command, including its redirections.
 export function entryScript(command: string): string | null {
   const [exe, ...rest] = command.trim().split(/\s+/);
-  if (exe !== 'node') return null;
+  if (exe !== 'node' && exe !== 'bash') return null;
   const path = rest.find((t) => !t.startsWith('-'));
-  return path && /\.mjs$/.test(path) && !path.includes('..') && !path.startsWith('/') && isTestFile(path.replace(/^\.\//, '')) ? path.replace(/^\.\//, '') : null;
+  const extension = exe === 'bash' ? /\.sh$/ : /\.mjs$/;
+  const rel = path?.replace(/^\.\//, '');
+  if (!rel || !extension.test(rel) || rel.includes('..') || rel.startsWith('/')) return null;
+  return exe === 'bash' || isTestFile(rel) ? rel : null;
 }
 
 const hash = (repo: string, p: string) => createHash('sha256').update(readFileSync(join(repo, p))).digest('hex');
@@ -45,14 +52,22 @@ function save(repo: string, inv: Inventory): void {
   renameSync(`${file}.tmp`, file);
 }
 
+const journeyScripts = (repo: string): Set<string> => {
+  try { return new Set(Object.values(loadConfig(repo).journeys).map(j => entryScript(j.command)).filter((p): p is string => p !== null)); }
+  catch { return new Set(); } // Inventory remains usable when journey configuration is unavailable.
+};
+
 // Every test file the checkout holds that git does not ignore, tracked or not.
-const testFiles = (repo: string): string[] =>
-  execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 }).split('\0').filter((p) => p && isTestFile(p) && existsSync(join(repo, p)));
+// Plus every inventoried file, so a journey-run helper script is still caught when its bytes change by hand.
+const testFiles = (repo: string, inv: Inventory): string[] => {
+  const entries = journeyScripts(repo);
+  return execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 }).split('\0').filter((p) => p && (isTestFile(p) || entries.has(p) || p in inv) && existsSync(join(repo, p)));
+};
 
 // What is wrong with the repo's test files. A deleted owned file is a retired test, not a finding.
 export function findings(repo: string, inv: Inventory): Finding[] {
   const out: Finding[] = [];
-  for (const p of testFiles(repo).sort()) {
+  for (const p of testFiles(repo, inv).sort()) {
     const e = inv[p];
     if (!e) out.push({ path: p, problem: 'unowned' });
     else if (e.sha256 !== hash(repo, p)) out.push({ path: p, problem: 'edited', owner: e.owner });
@@ -74,8 +89,9 @@ export function inventoryFault(repo: string): string | null {
 // Record a file's current bytes under its owner (a new file needs one). The caller decides whether a run is in progress.
 export function record(repo: string, paths: string[], owner?: string): string[] {
   const inv = loadInventory(repo) ?? {};
+  const entries = journeyScripts(repo);
   for (const p of paths) {
-    if (!isTestFile(p)) throw new Error(`${p} is not a test file (code in test/, tests/, __tests__/ or journeys/, or *.test.* / *.spec.*)`);
+    if (!isTestFile(p) && !entries.has(p)) throw new Error(`${p} is not a test file (code in test/, tests/, __tests__/ or journeys/, *.test.* / *.spec.*, or a Bash script a journey runs)`);
     if (!existsSync(join(repo, p))) throw new Error(`${p} does not exist`);
     const who = owner ?? inv[p]?.owner;
     if (!who) throw new Error(`${p} has no owner yet: pass --owner <journey or suite name>`);

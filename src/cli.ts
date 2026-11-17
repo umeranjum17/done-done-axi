@@ -3656,6 +3656,11 @@ async function cmdJourney(argv: string[]): Promise<number> {
   if (named && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(name)) throw new UsageError(`${action} needs a lowercase kebab-case journey name`);
   // A journey whose command runs a registered test script is rewritten in place and keeps its command; any other journey gets journeys/<name>.mjs.
   const entry = named ? entryScript(cfg.journeys[name].command) : null, scriptRel = entry ?? `journeys/${name}.mjs`;
+  const bash = entry?.endsWith('.sh') ?? false;
+  const language = bash ? 'Bash' : 'JavaScript';
+  const scriptContract = bash
+    ? `a complete Bash script for ${entry}. Keep its Bash language, existing fixture helpers and command, including evidence redirections; never return a Node wrapper`
+    : 'a complete Node ESM capture script';
   const priorScript = join(repo, scriptRel), priorFeature = join(dirname(index), `${name}.md`);
   if (named) {
     for (const p of [priorScript, priorFeature]) safePath(p);
@@ -3677,10 +3682,10 @@ Existing journey: ${JSON.stringify(cfg.journeys[name])}
 Existing script:\n${repoText(priorScript)}\nExisting feature:\n${repoText(priorFeature)}` : `Add ONE journey for this user request: ${JSON.stringify(request)}.`;
   const a = await askAgent({ ...agent, cwd: repo, tools: toolless ? 'none' : 'read', record, schema, prompt: `${goal}
 Read only; never edit files, run commands or drive the app during generation. Use only the real handles in the supplied repository source. Never open secret-looking files or include secret values. Return blocker with the real cause if this cannot be driven safely; leave blocker empty otherwise.
-Return name (lowercase kebab-case), title, source (one tracked non-secret file shown below), script (a complete Node ESM capture script), checks (the concrete assertions and expected user-visible result), spends (empty unless it uses a paid service or sends/posts externally), blocker. Empty spends/blocker means a zero-character JSON string, not a string containing quote characters. Generation cost itself is not a journey spend.
-Return script as source text, not JSON.stringify(source). After the JSON response is decoded, JavaScript statements must have actual newline separators, not literal backslash-n sequences. Do not double-escape the source.
-The script runs from the repo root as node journeys/<name>.mjs. Drive the REAL app the way a user does, not tests, typechecks, lint or builds. Use isolated temporary state and clean up only what the script started. Use Umer for demo data. No installed app state or real accounts. Reuse existing proof handles where possible.
-The saved script MUST be deterministic and self-contained: no agents, model calls, done-done verify, generation or Firstmate dependency at runtime. Use node:assert/strict to check actual output/side effects; a failed check must exit nonzero. Write captures of the actual resulting state into process.env.DONE_DONE_EVIDENCE_ROOT, never invented output. Write steps.json there (${STEPS_SHAPE}) from the actual drive. Honour DONE_DONE_BASE_URL and matrix env when configured; screenshot/page-check records for visual flows. Do not embed absolute checkout paths.
+Return name (lowercase kebab-case), title, source (one tracked non-secret file shown below), script (${scriptContract}), checks (the concrete assertions and expected user-visible result), spends (empty unless it uses a paid service or sends/posts externally), blocker. Empty spends/blocker means a zero-character JSON string, not a string containing quote characters. Generation cost itself is not a journey spend.
+Return script as source text, not JSON.stringify(source). After the JSON response is decoded, statements must have actual newline separators, not literal backslash-n sequences. Do not double-escape the source.
+The script runs from the repo root ${entry ? `through the existing command: ${cfg.journeys[name].command}` : 'as node journeys/<name>.mjs'}. Drive the REAL app the way a user does, not typechecks, lint or builds${entry ? '; preserve the registered test and its existing real-product fixture checks' : ' or tests'}. Use isolated temporary state and clean up only what the script started. Use Umer for demo data. No installed app state or real accounts. Reuse existing proof handles where possible.
+The saved script MUST be deterministic and self-contained: no agents, model calls, done-done verify, generation${entry ? '' : ' or Firstmate dependency'} at runtime. ${bash ? 'Use Bash assertions and the existing fixture helpers' : 'Use node:assert/strict'} to check actual output/side effects; a failed check must exit nonzero. Write captures of the actual resulting state into ${bash ? '$DONE_DONE_EVIDENCE_ROOT (the existing command may redirect stdout/stderr there)' : 'process.env.DONE_DONE_EVIDENCE_ROOT'}, never invented output. Write steps.json there (${STEPS_SHAPE}) from the actual drive. Honour DONE_DONE_BASE_URL and matrix env when configured; screenshot/page-check records for visual flows. Do not embed absolute checkout paths.
 Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature map:\n${repoText(index)}\n\n${context.text}` });
   if (repoState(repo) !== before) throw new UsageError('the repo changed during generation; no recipe was written; review the changes before retrying');
   if (!a.ok) throw new UsageError(`${agent.agent} did not generate a journey: ${a.error}; record ${a.record ?? record}`);
@@ -3689,14 +3694,15 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   if (s.blocker.trim()) throw new UsageError(`journey ${action} blocked: ${s.blocker}`);
   if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(s.name) || s.name === 'readme') throw new UsageError('the agent returned an invalid journey name');
   if (named ? s.name !== name : Object.hasOwn(cfg.journeys, s.name)) throw new UsageError(named ? 'the agent renamed the journey; nothing written' : `journey ${s.name} already exists; nothing written`);
-  if (!s.title.trim() || !s.checks.trim() || !s.script.includes('DONE_DONE_EVIDENCE_ROOT')) throw new UsageError('the agent returned no title, checks or capture script; nothing written');
+  if (!s.title.trim() || !s.checks.trim()) throw new UsageError(`the agent returned no title or checks; nothing written; record ${a.record ?? record}`);
+  if (!s.script.trim() || !(s.script.includes('DONE_DONE_EVIDENCE_ROOT') || (bash && cfg.journeys[name].command.includes('DONE_DONE_EVIDENCE_ROOT')))) throw new UsageError(`the agent returned no capture script using DONE_DONE_EVIDENCE_ROOT; nothing written; record ${a.record ?? record}`);
   if (absoluteInside(s.script, repo)) throw new UsageError('the agent embedded an absolute checkout path; nothing written');
   if (!context.files.has(s.source) || SECRET.test(s.source) || (toolless && !context.read.has(s.source))) throw new UsageError(`the agent cited an unavailable source: ${s.source}; nothing written`);
   // Parse, never execute, before touching any project file.
   try {
-    execFileSync(process.execPath, ['--check', '--input-type=module'], { input: s.script, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync(bash ? 'bash' : process.execPath, bash ? ['--noprofile', '--norc', '-n'] : ['--check', '--input-type=module'], { input: s.script, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (e) {
-    throw new UsageError(`the agent returned invalid JavaScript; nothing written: ${String((e as { stderr?: string }).stderr || (e as Error).message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
+    throw new UsageError(`the agent returned invalid ${language}; nothing written: ${String((e as { stderr?: string }).stderr || (e as Error).message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
   }
   const script = join(repo, named ? scriptRel : `journeys/${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
   for (const p of [script, feature]) {
@@ -3715,7 +3721,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   }
   const nextConfig = doc.toString({ lineWidth: 0 });
   loadConfig(repo, nextConfig);
-  const featureText = `# ${s.title}\n\nRequest: ${request}\n\nSource: \`${s.source}\`, \`journeys/${s.name}.mjs\`.\n\n## Drive and capture\n\nRun \`done-done run ${s.name}\`. The committed script drives the app, checks the result and writes captures and steps.json into $DONE_DONE_EVIDENCE_ROOT.\n\n## Checks\n\n${s.checks}\n`;
+  const featureText = `# ${s.title}\n\nRequest: ${request}\n\nSource: \`${s.source}\`, \`${relative(repo, script)}\`.\n\n## Drive and capture\n\nRun \`done-done run ${s.name}\`. The committed script drives the app, checks the result and writes captures and steps.json into $DONE_DONE_EVIDENCE_ROOT.\n\n## Checks\n\n${s.checks}\n`;
   const nextFeature = named && existsSync(feature) ? `${readFileSync(feature, 'utf8').trimEnd()}\n\n## ${label} coverage\n\n${improve ? 'Instruction' : 'Focus'}: ${request}\n\nSource: \`${s.source}\`.\n\n${s.checks}\n` : featureText;
   const nextIndex = named && originalIndex.includes(`](${s.name}.md)`) ? originalIndex : `${originalIndex.trimEnd()}\n- [${s.title}](${s.name}.md): run \`done-done run ${s.name}\`\n`;
   const files = new Map([[script, `${s.script.trim()}\n`], [feature, nextFeature], [index, nextIndex], [config, nextConfig]]);

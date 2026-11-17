@@ -93,7 +93,7 @@
   },
   "journeys/registered-script.mjs": {
     "owner": "registered-script",
-    "sha256": "afad560817e203ed699db04850781ca2f5617880c7abe696df5660aa2955894d"
+    "sha256": "bb29625c7b3791a9564db5c439b95ae500338284d78bbd354540212018a1bf8c"
   },
   "journeys/requirements-scope.mjs": {
     "owner": "requirements-scope",
