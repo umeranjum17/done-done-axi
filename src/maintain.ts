@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Question } from '@byokit/decide';
-import { type AgentAnswer, askAgent, type JudgeChoice, notStartable, selectAgent, selectJudge, toollessReason } from './agents.js';
+import { type AgentAnswer, canStart, askAgent, type JudgeChoice, notStartable, selectAgent, selectJudge, toollessReason } from './agents.js';
 import { type Config } from './config.js';
-import { askJudge, backend } from './judge.js';
+import { onJudgeRoutes, askJudge, backend } from './judge.js';
 
 // `done-done maintain`, part 1 and read only: locate the verify skill, check its feature index in plain code, send one
 // fresh read-only reader per feature file through the configured agent, then reconcile: plain code checks every cited
@@ -441,7 +441,7 @@ Recently changed files (git log since ${CHURN_SINCE}, most recent first${churnAl
 
 // Why the agent the user set cannot read the source for maintain, or '' when it can.
 export function readerProblem(agent: ReturnType<typeof selectAgent>): string {
-  if (!agent.path) return `source-wave: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`;
+  if (!canStart(agent)) return `source-wave: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`;
   const why = toollessReason(agent.agent);
   return why ? `source-wave: ${why}; use claude, opencode, pi or acp` : '';
 }
@@ -466,7 +466,7 @@ const excerpt = (repo: string, tracked: string[], s: Source | undefined) => {
 export async function triage(cfg: Config, choice: JudgeChoice, findings: Finding[], flow: Triage, state: unknown, record: string): Promise<Finding[]> {
   if (!findings.length) return [];
   const questions: Record<string, Question> = Object.fromEntries(findings.map((f) => [f.id, { kind: 'choice', instructions: `Finding ${f.id} ${flow.question}`, options: flow.options, floor: cfg.judge.floor, personReason: true }]));
-  const answers = await askJudge(cfg, await backend(cfg, choice, () => record, questions, TRIAGE_ATTEMPTS), choice, state, questions, {});
+  const { value: answers } = await onJudgeRoutes(cfg, choice, async (picked, i) => askJudge(cfg, await backend(cfg, picked, () => i ? `${record}.route-${i + 1}.json` : record, questions, TRIAGE_ATTEMPTS), picked, state, questions, {}));
   return findings.flatMap((f) => {
     const a = answers[f.id];
     if (!a.abstained && a.answer === flow.fix) return [];

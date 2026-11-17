@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, type Config, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
+import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, type Config, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, RouteUnavailable, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
+import { unavailable } from './routes.js';
 
 // How done-done starts a coding agent for one step: a fresh, single-shot session that
 // answers one JSON-schema question. The prompt goes on stdin or in a 0600 prompt file, never in
@@ -12,6 +13,7 @@ import { isExecutable, onPath } from './judge.js';
 // reads the answer, so adding an agent is one table entry.
 
 export type AgentCall = {
+  routes?: AgentRun[];
   agent: string;
   model: string;
   effort?: string; // agent_config.<agent>.effort, passed as the CLI's own flag
@@ -34,7 +36,7 @@ export type AgentCall = {
   env?: Record<string, string>; // extra environment for the agent
   onSpawn?: (pgid: number) => void; // an edit step runs in its own process group; this gets its id
 };
-export type AgentAnswer = { ok: boolean; answer?: Record<string, unknown>; error?: string; record?: string; recordError?: string; stderr?: string; account?: string; route?: string };
+export type AgentAnswer = { selected?: { harness: string; model: string; effort?: string }; unavailable?: boolean; ok: boolean; answer?: Record<string, unknown>; error?: string; record?: string; recordError?: string; stderr?: string; account?: string; route?: string };
 
 // argv never carries the prompt: it goes on stdin, or (file: true) into a 0600 prompt file the argv points at.
 // done-done parses the answer, validates it against the schema, and asks a tool-less call again, at most ASK_ATTEMPTS calls.
@@ -294,7 +296,7 @@ const ADAPTERS: Record<string, Adapter> = {
       const r = spawnSync(c.path, ['debug', 'models', '--bundled'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 16 << 20 });
       if (r.status !== 0) throw new Error(`codex tool-less setup: ${r.error?.message || r.stderr || `debug models --bundled exited ${r.status}`}; update Codex CLI`);
       const catalog = JSON.parse(r.stdout);
-      if (!Array.isArray(catalog.models) || !catalog.models.length || (c.model && !catalog.models.some((m: any) => m.slug === c.model))) throw new Error(`codex tool-less setup: bundled catalog does not list ${c.model || 'any model'}; choose a model from codex debug models --bundled`);
+      if (!Array.isArray(catalog.models) || !catalog.models.length || (c.model && !catalog.models.some((m: any) => m.slug === c.model))) throw new RouteUnavailable(`codex tool-less setup: bundled catalog does not list ${c.model || 'any model'}; choose a model from codex debug models --bundled`);
       for (const m of catalog.models) Object.assign(m, { shell_type: 'disabled', apply_patch_tool_type: null, tool_mode: 'direct', multi_agent_version: null, experimental_supported_tools: [], supports_search_tool: false });
       return { 'models.json': JSON.stringify(catalog) };
     },
@@ -349,11 +351,12 @@ const ADAPTERS: Record<string, Adapter> = {
   },
 };
 
-// The author agent: exactly the one the user set, never one done-done detects or falls back to. With none set,
+// The author starts with the user's route order; legacy agent settings remain the first route. With none set,
 // done-done asks the user (in a terminal) or stops with the command that saves their answer.
 export function selectAgent(cfg: Config): AgentRun {
   if (!cfg.agent) throw noAgent();
-  return agentRun(cfg, cfg.agent);
+  const first = cfg.routes.author[0];
+  return first ? { ...agentRun(cfg, first.harness, first.model), effort: first.effort ?? cfg.agent_config[first.harness]?.effort ?? '' } : agentRun(cfg, cfg.agent);
 }
 
 // The agents a user can pick, and the error that tells a calling agent to ask the user rather than pick one itself.
@@ -367,14 +370,16 @@ export const noAgent = () =>
 export const modelFor = (cfg: Config, agent: string) => cfg.agent_config[agent]?.model || CHEAP[agent]?.model || '';
 
 // Everything askAgent needs from config to start one agent: its model, effort, extra flags, binary and timeout.
-export type AgentRun = { agent: string; model: string; effort: string; args: string[]; path: string; override: string; timeoutMs: number; accountCommand?: string; pool?: ModelPool };
+export type AgentRun = { routes?: AgentRun[]; agent: string; model: string; effort: string; args: string[]; path: string; override: string; timeoutMs: number; accountCommand?: string; pool?: ModelPool };
 // The configured model pool (judge.pool_command and its helper config), or undefined: standalone users keep today's behaviour.
 export const modelPool = (cfg: Config): ModelPool | undefined =>
   cfg.judge.pool_command ? { command: cfg.judge.pool_command, config: cfg.judge.pool_config, binFor: (agent) => agentPath(agent, cfg) } : undefined;
-export const agentRun = (cfg: Config, agent: string, model = modelFor(cfg, agent)): AgentRun => ({
-  agent, model, effort: cfg.agent_config[agent]?.effort ?? '', args: cfg.agent_args_override[agent] ?? [], path: agentPath(agent, cfg), override: cfg.agent_path_override[agent] ?? '', timeoutMs: parseDuration(cfg.agent_timeout)!,
+export const agentRun = (cfg: Config, agent: string, model = modelFor(cfg, agent), author = true): AgentRun => ({
+  ...(author && cfg.routes.author.length && { routes: cfg.routes.author.slice(cfg.routes.author.findIndex(r => r.harness === agent && r.model === model) + 1).map(r => ({ ...agentRun(cfg, r.harness, r.model, false), effort: r.effort ?? cfg.agent_config[r.harness]?.effort ?? '' })) }),
+  agent, model, effort: (author ? cfg.routes.author.find(r => r.harness === agent && r.model === model)?.effort : undefined) ?? cfg.agent_config[agent]?.effort ?? '', args: cfg.agent_args_override[agent] ?? [], path: agentPath(agent, cfg), override: cfg.agent_path_override[agent] ?? '', timeoutMs: parseDuration(cfg.agent_timeout)!,
   ...(agent === 'claude' && (modelPool(cfg) ? { pool: modelPool(cfg) } : cfg.judge.account_command ? { accountCommand: cfg.judge.account_command } : {})),
 });
+export const canStart = (run: AgentRun) => !!run.path || !!run.routes?.some(r => r.path);
 export const notStartable = (agent: string, override = '') => (override ? `agent_path_override.${agent} ${override} is not an executable file` : `${agent} is not on PATH`);
 
 // The known agent an agent names, for the judge-independence check: acp:claude-code is claude; a target that
@@ -409,7 +414,7 @@ export function agentPath(agent: string, cfg?: Pick<Config, 'acpx_path' | 'agent
 // route (openai:key) goes through the kit's own backend on the user's API key, with no agent CLI. independence is recorded,
 // never enforced: agent (another agent), model (the author's agent at another model) or session-only (the author's agent
 // and model in a fresh session).
-export type JudgeChoice = { route: string; agent: string; model: string; independence: 'agent' | 'model' | 'session-only'; author: { agent: string; model: string } };
+export type JudgeChoice = { effort?: string; route: string; agent: string; model: string; independence: 'agent' | 'model' | 'session-only'; author: { agent: string; model: string } };
 
 export const routeOf = (agent: string) => (agent === 'claude' ? 'claude-code' : `answerer:${agent}`);
 export const JUDGES = AGENTS.filter((a) => a === 'claude' || ANSWERER_JUDGES.includes(a));
@@ -432,7 +437,7 @@ export function selectJudge(cfg: Config, found: { agent: string; model: string }
   const independence = keyed
     ? found.model && model === found.model ? 'session-only' : 'agent'
     : agent !== knownAgentOf(found.agent) ? 'agent' : found.model && model !== found.model ? 'model' : 'session-only';
-  return { route, agent, model, independence, author: { agent: found.agent, model: found.model } };
+  return { route, agent, model, effort: cfg.routes.judge.find(r => r.harness === agent && r.model === model)?.effort ?? cfg.agent_config[agent]?.effort, independence, author: { agent: found.agent, model: found.model } };
 }
 
 // One configured second route, else the legacy MiniMax fallback; use its own model, never the primary's.
@@ -502,7 +507,7 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
       if (!idleMs) return;
       clearTimeout(idle);
       idle = setTimeout(() => {
-        error = new Error(`${c.agent} printed nothing for ${Math.round(idleMs / 1000)}s`);
+        error = new Error(`${c.agent} printed nothing for ${Math.round(idleMs / 1000)}s${!stdout && !stderr ? ' before first output' : ''}`);
         kill();
       }, idleMs);
     };
@@ -519,7 +524,7 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
       kill();
     };
     const timer = setTimeout(() => {
-      error = new Error(`${c.agent} timed out after ${Math.round(c.timeoutMs / 1000)}s`);
+      error = new Error(`${c.agent} timed out after ${Math.round(c.timeoutMs / 1000)}s${!stdout && !stderr ? ' before first output' : ''}`);
       kill();
     }, c.timeoutMs);
     child.on('error', (e) => {
@@ -645,7 +650,7 @@ export async function accountDetail(cfg: Config, agent: string, model: string): 
 }
 
 // A valid picker refusal is availability, not a malformed account configuration.
-export class ClaudeUnavailable extends UsageError {}
+export class ClaudeUnavailable extends RouteUnavailable {}
 type ClaudeAccount = { id: string; folder: string; unset: string[] };
 let accountPick: Promise<ClaudeAccount> | undefined;
 
@@ -671,7 +676,28 @@ export function claudeAccount(agent: string, command?: string): Promise<ClaudeAc
   });
 }
 
+// State owner: this loop. Success (including a product failure) and invalid answers stop;
+// availability advances to the next route; exhaustion reports every attempted route.
 export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
+  const { routes, ...first } = c;
+  if (!routes?.length) return askOne(first);
+  const attempts = [];
+  let result: AgentAnswer = { ok: false };
+  for (const [i, route] of [first, ...routes].entries()) {
+    const call = { ...first, ...route, pool: route.pool, accountCommand: route.accountCommand, record: `${c.record}.route-${i + 1}.json` };
+    result = await askOne(call);
+    attempts.push({ ...result.selected, ok: result.ok, unavailable: result.unavailable ?? false, error: result.error, record: result.record });
+    if (result.ok || !result.unavailable) break;
+  }
+  if (!result.ok && result.unavailable) result.error = attempts.map(a => `${a.harness} ${a.model}: ${a.error}`).join('; ');
+  try {
+    const record = JSON.parse(readFileSync(result.record!, 'utf8'));
+    writeFileSync(c.record, JSON.stringify({ ...record, error: result.error, route_attempts: attempts }, null, 2) + '\n', { mode: 0o600 });
+    return { ...result, record: c.record };
+  } catch (e) { return { ...result, recordError: (e as Error).message }; }
+}
+
+async function askOne(c: AgentCall): Promise<AgentAnswer> {
   // The model pool owns the call's agent, model and account environment: a typed limit moves it to the helper's next
   // account or fall-over route, and the call's own timeout is the one deadline that whole chain shares.
   const deadline = Date.now() + c.timeoutMs;
@@ -768,7 +794,7 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
           adapter.answer(String(res.stdout), call);
         } catch (e) {
           if (e instanceof ProviderError) text = e.detail;
-          else if (!(e instanceof SyntaxError)) text = (e as Error).message;
+          else if (!text && !(e instanceof SyntaxError)) text = (e as Error).message;
         }
         if (await moveOn(text)) { attempts--; continue; }
         throw new ProviderError(text, `${call.agent} exited ${res.status}: `, adapter.hint && call.tools !== 'none' ? `; ${adapter.hint}` : '');
@@ -795,13 +821,16 @@ export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
     const said = stderrHead(String(res?.stderr ?? ''));
     const provider = e instanceof ProviderError;
     const note = (text: string) => (!provider && said && !text.includes(said.split(' | ')[0]) ? `${text}; ${call.agent} stderr: ${said}` : text);
-    out = { ok: false, error: note((e as Error).message), ...(!provider && said ? { stderr: said } : {}) };
+    const launch = !call.path || ['ENOENT', 'EACCES', 'ENOEXEC'].includes((e as NodeJS.ErrnoException).code ?? '');
+    const availability = launch || e instanceof RouteUnavailable || ((e instanceof ProviderError || !!res?.error || (res && res.status !== 0)) && unavailable((e as Error).message));
+    out = { ok: false, unavailable: availability, error: note((e as Error).message), ...(!provider && said ? { stderr: said } : {}) };
     failure = note(e instanceof ProviderError ? e.detail : (e as Error).message);
     if (e instanceof ProviderError) verdict = e.verdict;
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
   // The record holds what ran and what came back, never the prompt text or an image.
+  out = { ...out, selected: { harness: call.agent, model: call.model, effort: call.effort } };
   const { prompt, images, pool, ...spec } = c;
   try {
     const record = { ...spec, agent: call.agent, model: call.model, ...(picked && (picked.route ? { route: picked.id } : { account: picked.id })), ...(images && { images: images.map((i) => i.name) }), cwd, prompt_bytes: Buffer.byteLength(prompt), argv: argv('<tmp>'), ms: Date.now() - started, exit: res?.status ?? null, attempts, ...out, error: failure, ...(verdict && { verdict }), stderr: String(res?.stderr ?? '').slice(-2000) };

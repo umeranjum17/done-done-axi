@@ -8,6 +8,7 @@ import { type Dom, type LookRef, parseDom, parseLook } from './dom.js';
 import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
 import { isSize } from './size.js';
+import { AUTHOR_ROUTES, toolRoutes, validRoutes, type Routes } from './routes.js';
 
 // The tier of a journey entry that probes a real home and proves nothing: `done-done run --tier live` runs it, bounded by its own
 // timeout, and nothing else does. loadConfig moves these entries out of `journeys` into `live`, so no verify, affected or
@@ -31,10 +32,13 @@ export const REQUIREMENT_KINDS = ['asset', 'color', 'interaction', 'reference', 
 export const SCOPE_NAME = /^[A-Za-z0-9][\w.:-]*$/;
 export const scopeKnown = (repo: string, skill: string, journeys: object, name: string) =>
   Object.hasOwn(journeys, name) || existsSync(join(repo, skill, 'features', `${name}.md`));
+export class RouteUnavailable extends UsageError {}
+
 export type ApprovedScreen = { screen: string; size: string; theme: string; mock: string; capture: string };
 export type ApprovedRedesign = { screen: string; size: string; theme: string; capture: string };
 
 export type Config = {
+  routes: Routes;
   agent: string; // the agent done-done starts, set by the user; '' until they do
   agent_config: Record<string, { model?: string; effort?: string }>;
   agent_args_override: Record<string, string[]>; // extra CLI flags, after done-done's own
@@ -125,7 +129,9 @@ const AGENT_TIMEOUT = '30m';
 const MAX_CAPTURES = 10;
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' }> = {
+  'routes.author': { scope: 'global', type: 'routes' },
+  'routes.judge': { scope: 'global', type: 'routes' },
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   review_enabled: { scope: 'global', type: 'boolean' },
@@ -175,7 +181,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.pool_config': { scope: 'global', type: 'string' },
   'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
+const SECTIONS = new Set(['routes', 'affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
@@ -245,6 +251,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
       : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
       : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
+      : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
       : spec.type === 'agent' ? isAgent(value)
       : spec.type === 'route' ? isJudgeRoute(value)
       : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
@@ -272,6 +279,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
       auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
       route: ROUTE_FORM,
+      routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
       inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
     } as Record<string, string>;
     if (key === 'judge.route' && (value === 'auto' || value === '')) throw new UsageError(`${file}: judge.route ${value === '' ? 'must not be empty; to leave it unset, remove the key' : 'auto is gone: done-done never picks the judge, the user sets it'}`, `Delete the judge.route line in ${file}, then run: done-done init --judge <agent> --judge-model <model>`);
@@ -417,6 +425,7 @@ function readOptional(path: string): string | undefined {
 // The built-in defaults, before any config file is read.
 function defaultConfig(repo: string): Config {
   return {
+    routes: { author: [], judge: [] },
     agent: '',
     agent_config: Object.fromEntries(Object.entries(CHEAP).map(([a, c]) => [a, { ...c }])),
     agent_args_override: {},
@@ -462,6 +471,17 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   apply(cfg, readOptional(globalFile), globalFile, 'global');
   const projectFile = join(repo, '.done-done.yaml');
   apply(cfg, projectText ?? readOptional(projectFile), projectFile, 'repo');
+  Object.assign(cfg.routes, toolRoutes());
+  if (cfg.routes.author.length) cfg.agent = cfg.routes.author[0].harness;
+  else if (cfg.agent) {
+    const first = { harness: cfg.agent, model: cfg.agent_config[cfg.agent]?.model || CHEAP[cfg.agent]?.model || '', effort: cfg.agent_config[cfg.agent]?.effort };
+    if (first.harness === 'codex' && (!first.model || first.model === AUTHOR_ROUTES[0].model)) cfg.routes.author = AUTHOR_ROUTES.map((r, i) => i ? { ...r } : { ...r, ...first, model: first.model || r.model });
+  }
+  if (cfg.routes.judge.length) {
+    const first = cfg.routes.judge[0];
+    cfg.judge.route = first.harness === 'claude' ? 'claude-code' : first.harness.endsWith(':key') ? first.harness : `answerer:${first.harness}`;
+    cfg.judge.model = first.model;
+  }
   // A live entry is a probe, not proof: it leaves `journeys` here, so nothing that proves a change can select it.
   for (const [name, j] of Object.entries(cfg.journeys))
     if (j.tier === LIVE_TIER) {

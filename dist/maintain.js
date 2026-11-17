@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { askAgent, notStartable, selectAgent, selectJudge, toollessReason } from './agents.js';
-import { askJudge, backend } from './judge.js';
+import { canStart, askAgent, notStartable, selectAgent, selectJudge, toollessReason } from './agents.js';
+import { onJudgeRoutes, askJudge, backend } from './judge.js';
 // Plan 1.5 shared rules: a per-run call cap and a per-call timeout (agent_timeout) stop runaway cost.
 const MAX_CALLS = 30;
 const CHURN_SINCE = '30.days.ago';
@@ -438,7 +438,7 @@ Recently changed files (git log since ${CHURN_SINCE}, most recent first${churnAl
 }
 // Why the agent the user set cannot read the source for maintain, or '' when it can.
 export function readerProblem(agent) {
-    if (!agent.path)
+    if (!canStart(agent))
         return `source-wave: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`;
     const why = toollessReason(agent.agent);
     return why ? `source-wave: ${why}; use claude, opencode, pi or acp` : '';
@@ -460,7 +460,7 @@ export async function triage(cfg, choice, findings, flow, state, record) {
     if (!findings.length)
         return [];
     const questions = Object.fromEntries(findings.map((f) => [f.id, { kind: 'choice', instructions: `Finding ${f.id} ${flow.question}`, options: flow.options, floor: cfg.judge.floor, personReason: true }]));
-    const answers = await askJudge(cfg, await backend(cfg, choice, () => record, questions, TRIAGE_ATTEMPTS), choice, state, questions, {});
+    const { value: answers } = await onJudgeRoutes(cfg, choice, async (picked, i) => askJudge(cfg, await backend(cfg, picked, () => i ? `${record}.route-${i + 1}.json` : record, questions, TRIAGE_ATTEMPTS), picked, state, questions, {}));
     return findings.flatMap((f) => {
         const a = answers[f.id];
         if (!a.abstained && a.answer === flow.fix)

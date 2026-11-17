@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { askAgent, notStartable, toollessReason } from './agents.js';
+import { canStart, askAgent, notStartable, toollessReason } from './agents.js';
 // `done-done review [<base>]`: a read-only code and docs review of the commits since <base>. Two tool-less reviewers
 // (code, docs) get the diff and the docs as text from git objects and answer in a scratch folder, so no project agent
 // setting (AGENTS.md, CLAUDE.md, .codex/, hooks, MCP) can reach them and nothing in the checkout can change.
@@ -68,7 +68,7 @@ function docsText(repo, head, changed) {
 }
 export async function review(repo, agent, base, dir, allowEmpty = false, outsideAnswer, target = 'HEAD') {
     const started = Date.now();
-    if (!agent.path)
+    if (!canStart(agent))
         throw new Error(`review: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`);
     const why = toollessReason(agent.agent);
     if (why)
@@ -120,7 +120,7 @@ Docs, each line after its number:${docs.text}`;
             const valid = Array.isArray(items) && items.every((f) => f && classes.includes(f.class) && typeof f.file === 'string' && Number.isInteger(f.line) && typeof f.what === 'string' && typeof f.why === 'string' && (f.action === 'to-fix' || (f.action === 'to-ask' && typeof f.question === 'string' && f.question.trim())));
             const got = a.ok && valid ? items : [];
             findings.push(...got.map((f) => ({ reviewer: name, ...f })));
-            reviewers.push({ name, state: a.ok && valid ? 'completed' : 'failed', duration_ms: Date.now() - t, findings: got.length, record: a.record, ...(!valid && a.ok ? { error: 'invalid finding classification or question' } : a.error ? { error: a.error } : {}) });
+            reviewers.push({ ...(a.selected && { route: { agent: a.selected.harness, model: a.selected.model, effort: a.selected.effort } }), name, state: a.ok && valid ? 'completed' : 'failed', duration_ms: Date.now() - t, findings: got.length, record: a.record, ...(!valid && a.ok ? { error: 'invalid finding classification or question' } : a.error ? { error: a.error } : {}) });
         }
     }
     finally {

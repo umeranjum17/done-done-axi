@@ -3,8 +3,9 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, w
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import type { Backend, Question } from '@byokit/decide';
-import { accountDetail, agentRun, askAgent, ClaudeUnavailable, type JudgeChoice, notStartable } from './agents.js';
-import { type Config, home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
+import { unavailable } from './routes.js';
+import { accountDetail, agentRun, askAgent, ClaudeUnavailable, type JudgeChoice, notStartable, selectFallback } from './agents.js';
+import { type Config, home, KEY_ROUTES, parseDuration, tilde, RouteUnavailable, UsageError } from './config.js';
 import { downscaleToPng, type Verdict } from './media.js';
 
 // The relevance judge: one question about one downscaled capture and the claim's outcome line, asked through a
@@ -138,7 +139,7 @@ async function kit() {
   return await import('@byokit/decide');
 }
 
-export type Judge = { ask: Backend['ask']; resolve: typeof import('@byokit/decide/slim').resolve; lastError: () => string };
+export type Judge = { ask: Backend['ask']; resolve: typeof import('@byokit/decide/slim').resolve; lastError: () => string; unavailable?: () => boolean };
 
 // The backend for one judge choice. It checks everything that needs no model call, so doctor can use it too.
 // record: where each agent call writes its call record (the claude-code and answerer routes both run a real agent call);
@@ -149,19 +150,20 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
     const name = KEY_ROUTES[choice.route];
     // The kit never reads the environment: done-done reads the key here and hands it only to the kit.
     const key = process.env[name] ?? judgeEnv(cfg)[name];
-    if (!key) throw new UsageError(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
+    if (!key) throw new RouteUnavailable(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
     const { anthropic, openai, resolve } = await kit();
     const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 })).ask;
     return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
   }
   const override = cfg.agent_path_override[choice.agent];
-  const run = agentRun(cfg, choice.agent, choice.model);
+  const run = { ...agentRun(cfg, choice.agent, choice.model, false), effort: choice.effort ?? cfg.agent_config[choice.agent]?.effort ?? '' };
   const bin = run.path;
   const claude = choice.agent === 'claude';
-  if (!bin) throw new UsageError(`judge: ${notStartable(choice.agent, override)}`, claude ? (override ? 'Fix agent_path_override.claude in ~/.done-done/config.yaml, or install Claude Code' : 'Install Claude Code, or set agent_path_override.claude to its absolute path') : `Install ${choice.agent}, or ask the user for another judge and save it: done-done init --judge <agent> --judge-model <model>`);
+  if (!bin) throw new RouteUnavailable(`judge: ${notStartable(choice.agent, override)}`, claude ? (override ? 'Fix agent_path_override.claude in ~/.done-done/config.yaml, or install Claude Code' : 'Install Claude Code, or set agent_path_override.claude to its absolute path') : `Install ${choice.agent}, or ask the user for another judge and save it: done-done init --judge <agent> --judge-model <model>`);
   const account = await accountDetail(cfg, choice.agent, choice.model);
   const { answerer, resolve } = await kit();
   let lastError = '';
+  let routeUnavailable = false;
   // The kit hides a failed call's message from the verdict, so the real cause is kept here for the result.
   let requests = 0;
   const ask: Backend['ask'] = answerer({
@@ -175,12 +177,13 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
       // A tool-less call runs in its own scratch folder, so the CLI sees the attached capture and nothing else.
       const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
       lastError = a.ok ? '' : a.error ?? 'no answer';
+      routeUnavailable = !!a.unavailable;
       if (!a.ok) throw new Error(lastError);
       // The kit resolves the reply's probabilities, its reason and the answer fields asked for; the reply is the JSON text.
       return { text: JSON.stringify(a.answer) };
     },
   }).ask;
-  return { ask, resolve, lastError: () => lastError, detail: account || (claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off`) };
+  return { ask, resolve, lastError: () => lastError, unavailable: () => routeUnavailable, detail: account || (claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off`) };
 }
 
 // The parts list as the model gave it: labels trimmed and in its own order, so a cover position still names its label.
@@ -243,7 +246,7 @@ export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, stat
       throw new ClaudeUnavailable(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
     const freeTier = choice.agent === 'opencode' && /free tier can only be used from within OpenCode/.test(why);
     const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
-    const Failure = choice.route === 'claude-code' && /rate.?limit|usage.?limit|not signed in|(?:every|all|no eligible).*account.*(?:floor|limit|available)/i.test(why) ? ClaudeUnavailable : UsageError;
+    const Failure = be.unavailable?.() || (Object.hasOwn(KEY_ROUTES, choice.route) && unavailable(why)) ? RouteUnavailable : UsageError;
     throw new Failure(`judge: the judge did not answer: ${why}${hint}`, again);
   }
   const bad = malformed(answers);
@@ -291,19 +294,33 @@ type Judging = { judged: Judged[]; notJudged: string[]; choice?: JudgeChoice; mi
 // fallback: the judge for a route that fails (selectFallback). The whole check is judged again on it, so one check never mixes routes,
 // and the result names the route that answered; when that fails too, the error carries both causes.
 export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: string, captures: Capture[], records: string, fallback?: () => JudgeChoice | undefined): Promise<Judging> {
-  try {
-    return await judgeOn(cfg, choose, outcome, captures, records);
-  } catch (e) {
-    const next = e instanceof UsageError && (choose().route !== 'claude-code' || e instanceof ClaudeUnavailable) && fallback?.();
-    if (!next) throw e;
+  const { value, choice, failures } = await onJudgeRoutes(cfg, choose(), (choice, i) => judgeOn(cfg, () => choice, outcome, captures, i ? join(records, `route-${i + 1}`) : records), fallback);
+  return { ...value, detail: [failures.length ? `${choice.route} ${choice.model} answered after ${failures.join('; ')}` : '', value.detail].filter(Boolean).join('; ') };
+}
+
+// One availability policy for outcome, design, requirement and triage judges.
+export async function onJudgeRoutes<T>(cfg: Config, first: JudgeChoice, run: (choice: JudgeChoice, index: number) => Promise<T>, fallback?: () => JudgeChoice | undefined): Promise<{ value: T; choice: JudgeChoice; failures: string[] }> {
+  const choices = cfg.routes.judge.length ? cfg.routes.judge.map(r => ({
+    ...first, route: r.harness === 'claude' ? 'claude-code' : r.harness.endsWith(':key') ? r.harness : `answerer:${r.harness}`,
+    agent: r.harness, model: r.model, effort: r.effort ?? cfg.agent_config[r.harness]?.effort,
+    independence: r.harness !== first.author.agent ? 'agent' as const : r.model !== first.author.model ? 'model' as const : 'session-only' as const,
+  })) : [first, ...(() => { const next = fallback ? fallback() : selectFallback(cfg, first.author); return next ? [next] : []; })()];
+  const failures: string[] = [];
+  for (const [i, choice] of choices.entries()) {
     try {
-      const result = await judgeOn(cfg, () => next, outcome, captures, records);
-      return { ...result, detail: `${next.route} answered after ${choose().route} unavailable${result.detail ? `; ${result.detail}` : ''}` };
-    } catch (again) {
-      if (!(again instanceof UsageError)) throw again;
-      throw new UsageError(`${again.message} (after ${choose().route} failed: ${e.message})`, again.help);
+      const value = await run(choice, i);
+      Object.assign(first, choice);
+      return { value, choice, failures };
+    } catch (e) {
+      if (!(e instanceof RouteUnavailable) || i === choices.length - 1) {
+        if (!failures.length || !(e instanceof UsageError)) throw e;
+        const Failure = e instanceof RouteUnavailable ? RouteUnavailable : UsageError;
+        throw new Failure(`${e.message} [${choice.route} model ${choice.model}] (after ${failures.join('; ')})`, e.help);
+      }
+      failures.push(`${choice.route} failed: ${e.message} [model ${choice.model}]`);
     }
   }
+  throw new RouteUnavailable('judge: no routes configured');
 }
 
 async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, captures: Capture[], records: string, dir: string): Promise<Judging> {
@@ -316,7 +333,7 @@ async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, cap
     return { c, pair, row: { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) } };
   });
   const { route, model } = choice;
-  const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, cfg.judge.floor])).digest('hex');
+  const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, choice.effort, cfg.judge.floor])).digest('hex');
   const hit = readCache(dir, key);
   if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r: Judged) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r))))
     return { judged: hit.judged.map((r: Judged) => ({ ...r, cached: true })), notJudged, choice, missing: hit.missing ?? [] };
@@ -400,7 +417,7 @@ async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, 
     const pair = c.before && judgeable(c.before) && screen(c.before) === screen(c) ? c.before : undefined; // a screen pairs with a screen, text with text
     const row = { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) };
     // The floor is in the key: it decides pass or inconclusive, so a changed judge.floor asks the model again.
-    const key = createHash('sha256').update(JSON.stringify([VERSION, c.name, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.name, pair.sha256] : [])])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify([VERSION, c.name, c.sha256, outcome, route, model, choice.effort, cfg.judge.floor, ...(pair ? [pair.name, pair.sha256] : [])])).digest('hex');
     const hit = readCache(dir, key);
     // A stored coverage pair goes back through the same resolver as a reply's, so an entry whose covers do not index its
     // parts is unreadable, and asking the model again is the miss readCache promises.

@@ -6,6 +6,7 @@ import { checkMatrix } from './matrix.js';
 import { parseDom, parseLook } from './dom.js';
 import { parseEvals } from './evals.js';
 import { isSize } from './size.js';
+import { AUTHOR_ROUTES, toolRoutes, validRoutes } from './routes.js';
 // The tier of a journey entry that probes a real home and proves nothing: `done-done run --tier live` runs it, bounded by its own
 // timeout, and nothing else does. loadConfig moves these entries out of `journeys` into `live`, so no verify, affected or
 // landing path can see one.
@@ -23,6 +24,8 @@ export const REQUIREMENT_KINDS = ['asset', 'color', 'interaction', 'reference', 
 // A row's scope: the journey or verify-skill feature (screen) it belongs to, as a plain name.
 export const SCOPE_NAME = /^[A-Za-z0-9][\w.:-]*$/;
 export const scopeKnown = (repo, skill, journeys, name) => Object.hasOwn(journeys, name) || existsSync(join(repo, skill, 'features', `${name}.md`));
+export class RouteUnavailable extends UsageError {
+}
 // The coding agents a user can set as agent.
 export const AGENTS = ['claude', 'codex', 'opencode', 'pi', 'gemini'];
 // The agents whose CLI can read an attached image with every tool off, so they judge through the answerer route;
@@ -64,6 +67,8 @@ const AGENT_TIMEOUT = '30m';
 const MAX_CAPTURES = 10;
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
 const KEYS = {
+    'routes.author': { scope: 'global', type: 'routes' },
+    'routes.judge': { scope: 'global', type: 'routes' },
     agent: { scope: 'any', type: 'agent' },
     auto_fix: { scope: 'any', type: 'auto_fix' },
     review_enabled: { scope: 'global', type: 'boolean' },
@@ -113,7 +118,7 @@ const KEYS = {
     'judge.pool_config': { scope: 'global', type: 'string' },
     'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
+const SECTIONS = new Set(['routes', 'affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
@@ -192,18 +197,19 @@ function apply(target, text, file, scope) {
                 : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
                     : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
                         : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
-                            : spec.type === 'agent' ? isAgent(value)
-                                : spec.type === 'route' ? isJudgeRoute(value)
-                                    : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
-                                        : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
-                                            : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
-                                                : spec.type === 'bin' ? isBin(value)
-                                                    : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
-                                                        : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
-                                                            : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
-                                                                : spec.type === 'matrix' ? !checkMatrix(value)
-                                                                    : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
+                            : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
+                                : spec.type === 'agent' ? isAgent(value)
+                                    : spec.type === 'route' ? isJudgeRoute(value)
+                                        : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
+                                            : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
+                                                : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
+                                                    : spec.type === 'bin' ? isBin(value)
+                                                        : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
+                                                            : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
+                                                                : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
+                                                                    : spec.type === 'matrix' ? !checkMatrix(value)
+                                                                        : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
+                                                                            : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
         const want = {
             journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name; live needs a timeout>, timeout: <duration such as 30s: the bound of a verify run, and of a live check>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -219,6 +225,7 @@ function apply(target, text, file, scope) {
             regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
             auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
             route: ROUTE_FORM,
+            routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
             inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
         };
         if (key === 'judge.route' && (value === 'auto' || value === ''))
@@ -404,6 +411,7 @@ function readOptional(path) {
 // The built-in defaults, before any config file is read.
 function defaultConfig(repo) {
     return {
+        routes: { author: [], judge: [] },
         agent: '',
         agent_config: Object.fromEntries(Object.entries(CHEAP).map(([a, c]) => [a, { ...c }])),
         agent_args_override: {},
@@ -448,6 +456,19 @@ export function loadConfig(repo, projectText) {
     apply(cfg, readOptional(globalFile), globalFile, 'global');
     const projectFile = join(repo, '.done-done.yaml');
     apply(cfg, projectText ?? readOptional(projectFile), projectFile, 'repo');
+    Object.assign(cfg.routes, toolRoutes());
+    if (cfg.routes.author.length)
+        cfg.agent = cfg.routes.author[0].harness;
+    else if (cfg.agent) {
+        const first = { harness: cfg.agent, model: cfg.agent_config[cfg.agent]?.model || CHEAP[cfg.agent]?.model || '', effort: cfg.agent_config[cfg.agent]?.effort };
+        if (first.harness === 'codex' && (!first.model || first.model === AUTHOR_ROUTES[0].model))
+            cfg.routes.author = AUTHOR_ROUTES.map((r, i) => i ? { ...r } : { ...r, ...first, model: first.model || r.model });
+    }
+    if (cfg.routes.judge.length) {
+        const first = cfg.routes.judge[0];
+        cfg.judge.route = first.harness === 'claude' ? 'claude-code' : first.harness.endsWith(':key') ? first.harness : `answerer:${first.harness}`;
+        cfg.judge.model = first.model;
+    }
     // A live entry is a probe, not proof: it leaves `journeys` here, so nothing that proves a change can select it.
     for (const [name, j] of Object.entries(cfg.journeys))
         if (j.tier === LIVE_TIER) {

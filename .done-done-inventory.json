@@ -107,6 +107,10 @@
     "owner": "review",
     "sha256": "238d32335d40b5376d24d7c90c57d987d0c4c8ef3e500f989c7da0f3018bf3cc"
   },
+  "journeys/route-fallback.mjs": {
+    "owner": "route-fallback",
+    "sha256": "39e99cf89c3a1fab311d79b09bb8c7ebbe29b3a14f4a39dbabac0facca82d85d"
+  },
   "journeys/shared-parts.mjs": {
     "owner": "shared-parts",
     "sha256": "5373d8fc2e15e8c622d4adc1a4ad435f4e8a1a4dbcaaed383a98fc19345ae234"

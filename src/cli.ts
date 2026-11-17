@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
-import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
+import { canStart, ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
 import { checkDeadline } from './deadline.js';
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
@@ -154,12 +154,13 @@ const EVALS_TEXT = `evals (.done-done.yaml, opt-in): output-quality proof for an
   check and receipt then need a passing full eval at the same commit, the receipt records evals: pass <run id>, and gate refuses a receipt without it. eval never runs in CI and reads no key.`;
 const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME moves it) and .done-done.yaml (the repo), repo over global.
   agent (either file): claude, codex, opencode, pi, gemini or acp:<target>, set by the user (done-done init --agent); done-done never picks one.
-  global only: agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
+  global only: routes.author and routes.judge (ordered {harness, model, effort?} profiles; Juggernaut config/tool-models.json tags done-done-author/done-done-judge take precedence),
+  agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
   (extra flags), agent_path_override.<agent> (binary), acpx_path, agent_timeout (one agent call, default 30m; a streaming agent that prints nothing for 5m is stopped early),
   judge.account_command (optional Claude account pick; exported CLAUDE_CONFIG_DIR wins),
   judge.pool_command with judge.pool_config (optional shared model pool: the Claude account, a move on a rate/usage limit, and a fall-over route),
   judge.fallback_route (optional second judge, same values as judge.route; Claude usage/rate/sign-in limits or an empty pool trigger it;
-  e.g. answerer:pi with agent_config.pi.model: openai-codex/gpt-6.1-sol; unset keeps Claude failures as errors; no fallback chains),
+  e.g. answerer:pi with agent_config.pi.model: openai-codex/gpt-6.1-sol; unset keeps Claude failures as errors; routes.judge configures an ordered chain),
   evidence.local_root, judge.{route,model,floor,max_captures} (the judge, the shared confidence floor, and how many screen captures one
   check may send, set by the user with init --judge; never picked). done-done doctor shows where each agent setting came from.`;
 
@@ -983,7 +984,7 @@ function loadRecords(cfg: Config): RunRecord[] {
 // The judge block a receipt keeps: who judged, how apart from the author (recorded, never enforced), and each judged capture's verdict.
 type DesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; mock: string; mock_sha256: string; verdict: string };
 type RedesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; verdict: string; reason?: string };
-type JudgeBlock = { comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
+type JudgeBlock = { effort?: string; comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -1031,6 +1032,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   }
   const cfg = run?.cfg ?? loadConfig(repo, projectText);
   // --judge overrides judge.route for this call; a model set for the configured route is not the new route's, so it falls back to that agent's default.
+  if (values.judge !== undefined) cfg.routes.judge = [];
   if (values.judge !== undefined && values.judge !== cfg.judge.route) cfg.judge = { ...cfg.judge, route: values.judge, model: '' };
   const now = head(repo);
   const findings: Finding[] = [];
@@ -1279,10 +1281,10 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     findings.push({ level: 'inconclusive', why: `the outcome names ${part}, but no passing capture shows it: capture ${part} and cite that capture` });
   const rows = cap<Judged>(j.judged);
   const { choice } = j;
-  const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
+  const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
   if (choice) {
     const byHash = new Map(captures.map((c) => [c.sha256, receiptPath(repo, cfg, cite(c.name))]));
-    judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
+    judgeBlock = { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
   }
   if (rows.omitted) judged.judged_omitted = rows.omitted;
   if (j.notJudged.length) judged.not_judged = j.notJudged;
@@ -1402,7 +1404,7 @@ async function cmdEval(argv: string[]): Promise<number> {
   const store = join(runsRoot(cfg.app), rec.run_id, 'agents');
   let calls = 0;
   const ask = async (name: string, prompt: string, schema: Record<string, unknown>, model: string) => {
-    const a = await askAgent({ ...agentRun(cfg, choice.agent, model), prompt, schema, cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, record: join(store, `${name}.json`) });
+    const a = await askAgent({ ...agentRun(cfg, choice.agent, model, false), prompt, schema, cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, record: join(store, `${name}.json`) });
     try { calls += JSON.parse(readFileSync(a.record!, 'utf8')).attempts ?? 1; } catch { calls++; }
     if (!a.ok) throw new UsageError(`eval ${name}: ${choice.agent} did not answer: ${a.error}`, 'Check the judge with done-done doctor --probe, then re-run: done-done eval');
     return a.answer!;
@@ -1950,7 +1952,7 @@ async function agentDrive(repo: string, cfg: Config, feature?: string): Promise<
   // The author is the agent the user set; with none, ask (in a terminal) or stop with the command that saves the answer.
   await withChoice('agent', cfg);
   const a = selectAgent(cfg);
-  if (!a.path) throw new UsageError(`verify needs an agent to drive the app: ${notStartable(a.agent, a.override)}`, `Install ${a.agent}, or save the agent the user chooses: done-done init --agent <agent> --model <model>; or record a journey: done-done init --journey <name> -- <command>`);
+  if (!canStart(a)) throw new UsageError(`verify needs an agent to drive the app: ${notStartable(a.agent, a.override)}`, `Install ${a.agent}, or save the agent the user chooses: done-done init --agent <agent> --model <model>; or record a journey: done-done init --journey <name> -- <command>`);
   if (a.agent.startsWith('acp:')) throw new UsageError(`${a.agent} cannot drive the app: done-done runs ACP agents with every tool denied`, `Set agent: to one of ${AGENTS.join(', ')}, or record a journey: done-done init --journey <name> -- <command>`);
   return { author: { agent: a.agent, model: a.model }, feature: name ?? (features.length === 1 ? features[0] : undefined) };
 }
@@ -2173,6 +2175,7 @@ async function runSteps(dir: string): Promise<void> {
       });
       const a = await drive(at, evidence, instPort);
       if (run.runner?.instance_pgid) stopInstance(run.runner.instance_pgid);
+      if (a.selected) run.author = { agent: a.selected.harness, model: a.selected.model };
       const answer = a.answer as { feature?: unknown; captures?: unknown; blocker?: unknown } | undefined;
       const blocker = String(answer?.blocker ?? '').trim();
       rec.exit = a.ok && !blocker ? 0 : 1;
@@ -2189,7 +2192,7 @@ async function runSteps(dir: string): Promise<void> {
       if (run.feature) rec.feature = run.feature;
       const sealed = closeRun(at, cfg, rec);
       if (!fix) run.record = join(recordsDir(cfg), `${rec.run_id}.json`);
-      log('drive', { agent: author.agent, model: author.model, feature: run.feature ?? 'none', ...(a.ok ? { captures: answer?.captures, blocker } : { error: a.error }), record: a.record ?? a.recordError });
+      log('drive', { agent: a.selected?.harness ?? author.agent, model: a.selected?.model ?? author.model, feature: run.feature ?? 'none', ...(a.ok ? { captures: answer?.captures, blocker } : { error: a.error }), record: a.record ?? a.recordError });
       const why = !a.ok ? `${author.agent} did not finish the drive: ${a.error}${a.record ? `; call record ${a.record}` : ''}`
         : blocker ? `${author.agent} could not drive the feature: ${blocker}`
         : changed ? `${author.agent} changed tracked files in the repo during the drive (see git status), so its captures are not of the committed code`
@@ -2489,7 +2492,7 @@ async function sortJudged(run: Run, cfg: Config, open: MaintainFinding[], record
   }
   const choice = selectJudge(cfg, selectAgent(cfg));
   const asks = await triage(cfg, choice, judged, VERIFY_TRIAGE, { app: cfg.app, outcome: run.claim, findings: judged }, record);
-  h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, ask_user: asks });
+  h.log('triage', { judge: { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence }, ask_user: asks });
   h.set(step, 'completed');
   if (!(asks.length || park)) return [];
   return judged.map((f) => ({ level: 'fail', why: `${(asks.find((x) => x.id === f.id) ?? f).what}; triage: ${asks.some((x) => x.id === f.id) ? 'ask' : 'fix'}`, file: f.file }));
@@ -3669,7 +3672,7 @@ async function cmdJourney(argv: string[]): Promise<number> {
     if (existsSync(priorFeature) && !readFileSync(priorFeature, 'utf8').includes(`done-done run ${name}`)) throw new UsageError(`${shown(repo, priorFeature)} does not name this journey; nothing written`);
   }
   const agent = selectAgent(cfg), toolless = agent.agent !== 'claude';
-  if (!agent.path) throw new UsageError(notStartable(agent.agent, agent.override));
+  if (!canStart(agent)) throw new UsageError(notStartable(agent.agent, agent.override));
   if (toolless && toollessReason(agent.agent)) throw new UsageError(toollessReason(agent.agent), 'Use an agent supported by init: done-done init --agent <agent> --model <model>');
   const before = repoState(repo);
   const context = repoContext(repo, cfg.skill);
@@ -4652,7 +4655,11 @@ async function cmdDoctor(argv: string[]): Promise<number> {
 type ReviewLoop = { run_id: string; repo: string; base: string; head: string; state: 'to-fix' | 'to-ask' | 'approved' | 'spent' | 'failed'; fixes: number; limit: number; route: { agent: string; model: string }; result: ReviewResult; question?: string; answer?: string; error?: string };
 const reviewDir = (id: string) => join(home(), 'reviews', id);
 const reviewRun = (dir: string): ReviewLoop => JSON.parse(readFileSync(join(dir, 'loop.json'), 'utf8'));
-const saveReview = (dir: string, run: ReviewLoop) => writeFileSync(join(dir, 'loop.json'), `${JSON.stringify(run, null, 2)}\n`);
+const saveReview = (dir: string, run: ReviewLoop) => {
+  const actual = run.result.reviewers.findLast(r => r.route)?.route;
+  if (actual) run.route = { agent: actual.agent, model: actual.model };
+  writeFileSync(join(dir, 'loop.json'), `${JSON.stringify(run, null, 2)}\n`);
+};
 function showReview(run: ReviewLoop, command: string): number {
   emit({ command, run_id: run.run_id, status: run.state, result: run.state, base: run.base, head: run.head,
     fix: `fix ${run.fixes} of ${run.limit}`, route: run.route, trusted_config: { source: `${run.base}:.done-done.yaml + global config`, keys: TRUSTED_KEYS }, project_agent_settings: { loaded: false, ignored: run.result.ignored_agent_settings }, ...(run.question && { question: run.question }), ...(run.answer && { answer: run.answer }),
@@ -4696,7 +4703,7 @@ async function reviewFix(run: ReviewLoop, dir: string, cfg: Config, rereview = t
   if (git(run.repo, 'status', '--porcelain')) throw new Error('review fix needs a clean checkout; commit or remove your changes first');
   if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
   const agent = selectAgent(cfg);
-  if (!agent.path) throw new Error(`review fix: no agent (${notStartable(agent.agent, agent.override)})`);
+  if (!canStart(agent)) throw new Error(`review fix: no agent (${notStartable(agent.agent, agent.override)})`);
   const a = await askAgent({ ...agent, cwd: run.repo, tools: 'edit', record: join(dir, 'agents', 'fix-1.json'), schema: FIX_SCHEMA,
     env: { DONE_DONE_DRIVE: run.run_id }, prompt: `Fix these review findings in this checkout. Do not commit or run done-done. Findings: ${JSON.stringify(run.result.findings)}. ${run.answer ? `The person answered: ${run.answer}` : ''} Answer with summary and blocker (empty when fixed).` });
   if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('the fixer made a commit; inspect the checkout before continuing');
@@ -4980,7 +4987,7 @@ async function cmdDesign(argv: string[]): Promise<number> {
   emit({
     command: 'design',
     result: code === PASS ? 'pass' : code === FAIL ? 'fail' : 'inconclusive',
-    judge: { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' },
+    judge: { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' },
     counts: { pass: count('pass'), fail: count('fail'), unsure: count('unsure') },
     screens: rows.items,
     ...(rows.omitted && { screens_omitted: rows.omitted }),
