@@ -39,6 +39,7 @@ import { addPairs, auditSelection, featureFor } from './audit.js';
 import { planQa, planWrite, sealStage } from './qa.js';
 import { minimumScope, parseList, scopeShape } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape } from './suite.js';
+import { countRefusals } from './falserefusals.js';
 import { sealedPass } from './reuse.js';
 import { codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, stepRecordFault, stepsFault } from './proof.js';
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
@@ -449,7 +450,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
         more: [RUNS_TEXT],
     },
     report: {
-        usage: [['done-done report [--run <run-id>]', 'show a review result and any question']],
+        usage: [['done-done report [--run <run-id>]', 'show a review result and any question'], ['done-done report false-refusals', 'with check.count_false_refusals on: per check, the FAILs a later PASS on the same tree showed were false, and the catches-to-false ratio']],
         flags: ['--run <run-id>'],
         more: [],
     },
@@ -3230,6 +3231,20 @@ function showRecord(repo, cfg, rec) {
         ...(rows.omitted && { evidence_omitted: rows.omitted }),
         help: [rec.files.length ? `Check this proof: done-done check --outcome "<what you proved>" ${rel(rec.files[0].path)}` : `Read the run's folder: ${shown(repo, runDir(cfg, rec.run_id))}`],
     });
+    return PASS;
+}
+// check.count_false_refusals: every closed run record of this app, grouped by check (see src/falserefusals.ts). Off, it counts nothing.
+function cmdFalseRefusals(argv) {
+    parseArgs({ args: argv, options: {} });
+    const cfg = loadConfig(repoRoot());
+    if (!cfg.check.count_false_refusals) {
+        emit({ command: 'report', report: 'false-refusals', switch: 'off', help: ['Nothing was counted: turn it on with check.count_false_refusals: true in .done-done.yaml'] });
+        return PASS;
+    }
+    const checks = countRefusals(loadRecords(cfg).filter((r) => !r.eval && !r.reused_from));
+    const total = (key) => checks.reduce((n, c) => n + c[key], 0);
+    const [catches, falses] = [total('catches'), total('false_refusals')];
+    emit({ command: 'report', report: 'false-refusals', switch: 'on', checks, catches, false_refusals: falses, catches_to_false: `${catches}:${falses}`, help: ['A false refusal is a FAIL that a later PASS of the same check on the same git tree showed was wrong; a catch is a FAIL no such PASS follows'] });
     return PASS;
 }
 function cmdStatus(argv, command = 'status') {
@@ -6066,6 +6081,8 @@ async function main(argv) {
             return cmdQa(rest);
         if (cmd === 'after-commit')
             return await cmdAfterCommit(rest);
+        if (cmd === 'report' && rest[0] === 'false-refusals')
+            return cmdFalseRefusals(rest.slice(1));
         if (cmd === 'status' || cmd === 'report')
             return cmdStatus(rest, cmd);
         if (cmd === 'attach')

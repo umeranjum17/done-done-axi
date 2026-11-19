@@ -1,0 +1,4 @@
+// The fixture check: it fails when FLIP is "fail" and otherwise passes, writing the one file a run must leave, so a test picks each run's outcome.
+import { writeFileSync } from 'node:fs';
+if (process.env.FLIP === 'fail') process.exit(1);
+writeFileSync(`${process.env.DONE_DONE_EVIDENCE_ROOT}/out.txt`, 'ok\n');
