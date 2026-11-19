@@ -1,0 +1,10 @@
+#!/bin/sh
+# A fake mise shim: refuses like mise does unless the fake host config is trusted, else records its env and serves the instance port.
+if [ -f "$FAKE_MISE_CONFIG" ]; then
+  case ":$MISE_TRUSTED_CONFIG_PATHS:" in
+    *":$FAKE_MISE_CONFIG:"*) ;;
+    *) echo "mise ERROR Config files in $FAKE_MISE_CONFIG are not trusted" >&2; exit 1 ;;
+  esac
+fi
+printf '%s\n' "trusted=$MISE_TRUSTED_CONFIG_PATHS" "config_dir=$MISE_CONFIG_DIR" > "$SHIM_SEEN"
+exec node -e "require('http').createServer((q,r)=>r.end('ok')).listen(+process.env.DONE_DONE_PORT,'127.0.0.1')"
