@@ -8,6 +8,7 @@ import { type Dom, type LookRef, parseDom, parseLook } from './dom.js';
 import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
 import { isSize } from './size.js';
+import { AUTHOR_ROUTES, toolRoutes, validRoutes, type Routes } from './routes.js';
 
 // The tier of a journey entry that probes a real home and proves nothing: `done-done run --tier live` runs it, bounded by its own
 // timeout, and nothing else does. loadConfig moves these entries out of `journeys` into `live`, so no verify, affected or
@@ -31,10 +32,13 @@ export const REQUIREMENT_KINDS = ['asset', 'color', 'interaction', 'reference', 
 export const SCOPE_NAME = /^[A-Za-z0-9][\w.:-]*$/;
 export const scopeKnown = (repo: string, skill: string, journeys: object, name: string) =>
   Object.hasOwn(journeys, name) || existsSync(join(repo, skill, 'features', `${name}.md`));
+export class RouteUnavailable extends UsageError {}
+
 export type ApprovedScreen = { screen: string; size: string; theme: string; mock: string; capture: string };
 export type ApprovedRedesign = { screen: string; size: string; theme: string; capture: string };
 
 export type Config = {
+  routes: Routes;
   agent: string; // the agent done-done starts, set by the user; '' until they do
   agent_config: Record<string, { model?: string; effort?: string }>;
   agent_args_override: Record<string, string[]>; // extra CLI flags, after done-done's own
@@ -65,6 +69,7 @@ export type Config = {
   interaction_checklist: InteractionEvidence | null; // opt-in; omitted items are flagged
   // Primitive 4 (base-ref-before): verify drives this ref too and pairs its captures with the head's; '' (the default) is off.
   base_ref: string;
+  base_install: string;
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
@@ -72,13 +77,13 @@ export type Config = {
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
   signoff: { post: boolean; board: string };
-  check: { timeout: string }; // how long `check`'s plain checks may run before it stops with the line it was judging, e.g. 5m
+  check: { timeout: string; review_base: boolean; project: string; preflight: boolean; red_before_green: boolean; gut_check: boolean; reuse_pass: boolean; test_run: string }; // reuse_pass: a run whose tree, journey and command match a sealed PASS receipt is not run again (src/reuse.ts); off when absent. timeout: how long `check`'s plain checks may run before it stops with the line it was judging, e.g. 5m; review_base: take the review base from the policy command `jg-item base <project>` (project '' is the repo folder name); preflight: refuse a run whose command is not found, before it starts; red_before_green: receipt --new-test refuses a declared test that already passes on the base; gut_check: receipt --new-test also refuses a declared test that still passes with its one target stubbed to do nothing; test_run: the command for a test file no built-in runner covers, {file} its path
   suite: { command: string; timeout: string }; // the project's own test suite, run as one proof step; command '' detects it from the repo
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
   // floor: every judge's probability for its pick must reach it, else the verdict is unsure (inconclusive), never a pass.
   // max_captures: how many screen captures one check may send, one judge call each; a wider set is refused before any call.
-  judge: { route: string; fallback_route: string; model: string; floor: number; max_captures: number; env_file: string; account_command: string; pool_command: string; pool_config: string };
+  judge: { route: string; fallback_route: string; model: string; cheap_first: boolean; floor: number; max_captures: number; env_file: string; account_command: string; pool_command: string; pool_config: string };
   trusted: boolean; // project file came from --trusted-ref
   from: Record<string, 'global' | 'repo'>; // the file that set each key path; a key path not here is the built-in default
 };
@@ -124,7 +129,9 @@ const AGENT_TIMEOUT = '30m';
 const MAX_CAPTURES = 10;
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' }> = {
+  'routes.author': { scope: 'global', type: 'routes' },
+  'routes.judge': { scope: 'global', type: 'routes' },
   agent: { scope: 'any', type: 'agent' },
   auto_fix: { scope: 'any', type: 'auto_fix' },
   review_enabled: { scope: 'global', type: 'boolean' },
@@ -148,6 +155,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   approved_requirements: { scope: 'repo', type: 'approved_requirements' },
   interaction_checklist: { scope: 'repo', type: 'interaction_checklist' },
   base_ref: { scope: 'repo', type: 'string' },
+  base_install: { scope: 'repo', type: 'string' },
   'evidence.root': { scope: 'repo', type: 'string' },
   'evidence.allow_dirty': { scope: 'repo', type: 'boolean' },
   'evidence.ignore_paths': { scope: 'repo', type: 'string[]' },
@@ -161,10 +169,18 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'signoff.post': { scope: 'repo', type: 'boolean' },
   'signoff.board': { scope: 'repo', type: 'string' },
   'check.timeout': { scope: 'any', type: 'duration' },
+  'check.review_base': { scope: 'any', type: 'boolean' },
+  'check.project': { scope: 'any', type: 'string' },
+  'check.preflight': { scope: 'any', type: 'boolean' },
+  'check.red_before_green': { scope: 'any', type: 'boolean' },
+  'check.gut_check': { scope: 'any', type: 'boolean' },
+  'check.test_run': { scope: 'any', type: 'string' },
+  'check.reuse_pass': { scope: 'any', type: 'boolean' },
   'suite.command': { scope: 'repo', type: 'string' },
   'suite.timeout': { scope: 'any', type: 'duration' },
   'judge.model': { scope: 'global', type: 'string' },
   'judge.route': { scope: 'global', type: 'route' },
+  'judge.cheap_first': { scope: 'global', type: 'boolean' },
   'judge.floor': { scope: 'global', type: 'number' },
   'judge.max_captures': { scope: 'any', type: 'count' },
   'judge.env_file': { scope: 'global', type: 'string' },
@@ -173,7 +189,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.pool_config': { scope: 'global', type: 'string' },
   'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
+const SECTIONS = new Set(['routes', 'affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
@@ -243,6 +259,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
       : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
       : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
+      : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
       : spec.type === 'agent' ? isAgent(value)
       : spec.type === 'route' ? isJudgeRoute(value)
       : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
@@ -270,6 +287,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       regexes: key === 'secrets.allow' ? 'a list of valid regexes' : 'a map of <name>: <valid regex>',
       auto_fix: `a map of <step>: <attempts, 0 or more> for ${AUTO_FIX_STEPS.join(', ')}`,
       route: ROUTE_FORM,
+      routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
       inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
     } as Record<string, string>;
     if (key === 'judge.route' && (value === 'auto' || value === '')) throw new UsageError(`${file}: judge.route ${value === '' ? 'must not be empty; to leave it unset, remove the key' : 'auto is gone: done-done never picks the judge, the user sets it'}`, `Delete the judge.route line in ${file}, then run: done-done init --judge <agent> --judge-model <model>`);
@@ -415,6 +433,7 @@ function readOptional(path: string): string | undefined {
 // The built-in defaults, before any config file is read.
 function defaultConfig(repo: string): Config {
   return {
+    routes: { author: [], judge: [] },
     agent: '',
     agent_config: Object.fromEntries(Object.entries(CHEAP).map(([a, c]) => [a, { ...c }])),
     agent_args_override: {},
@@ -438,14 +457,15 @@ function defaultConfig(repo: string): Config {
     approved_redesign: [],
     interaction_checklist: null,
     base_ref: '',
+    base_install: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
     affected: { global_paths: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
-    check: { timeout: '5m' },
+    check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, gut_check: false, reuse_pass: false, test_run: '' },
     suite: { command: '', timeout: '30m' },
-    judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
+    judge: { route: '', fallback_route: '', model: '', cheap_first: false, floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
     trusted: false,
     from: {},
   };
@@ -459,6 +479,17 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   apply(cfg, readOptional(globalFile), globalFile, 'global');
   const projectFile = join(repo, '.done-done.yaml');
   apply(cfg, projectText ?? readOptional(projectFile), projectFile, 'repo');
+  Object.assign(cfg.routes, toolRoutes());
+  if (cfg.routes.author.length) cfg.agent = cfg.routes.author[0].harness;
+  else if (cfg.agent) {
+    const first = { harness: cfg.agent, model: cfg.agent_config[cfg.agent]?.model || CHEAP[cfg.agent]?.model || '', effort: cfg.agent_config[cfg.agent]?.effort };
+    if (first.harness === 'codex' && (!first.model || first.model === AUTHOR_ROUTES[0].model)) cfg.routes.author = AUTHOR_ROUTES.map((r, i) => i ? { ...r } : { ...r, ...first, model: first.model || r.model });
+  }
+  if (cfg.routes.judge.length) {
+    const first = cfg.routes.judge[0];
+    cfg.judge.route = first.harness === 'claude' ? 'claude-code' : first.harness.endsWith(':key') ? first.harness : `answerer:${first.harness}`;
+    cfg.judge.model = first.model;
+  }
   // A live entry is a probe, not proof: it leaves `journeys` here, so nothing that proves a change can select it.
   for (const [name, j] of Object.entries(cfg.journeys))
     if (j.tier === LIVE_TIER) {
@@ -528,6 +559,11 @@ agent_path_override: {}
 
 # The acpx bridge that starts acp:<target> agents: a name on PATH or an absolute path.
 acpx_path: acpx
+
+# Take every review base from the policy command \`jg-item base <project>\` (DONE_DONE_ITEM_CMD names another command), and
+# refuse when it says the project has no policy row. Set false to guess origin/HEAD, then main, as before.
+check:
+  review_base: true
 
 # How long one agent call (a reader, the judge, the doctor probe) may run: 90s, 30m or 1h.
 agent_timeout: ${AGENT_TIMEOUT}

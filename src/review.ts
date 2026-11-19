@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { askAgent, type AgentRun, notStartable, toollessReason } from './agents.js';
+import { canStart, askAgent, type AgentRun, notStartable, toollessReason } from './agents.js';
 
 // `done-done review [<base>]`: a read-only code and docs review of the commits since <base>. Two tool-less reviewers
 // (code, docs) get the diff and the docs as text from git objects and answer in a scratch folder, so no project agent
@@ -36,7 +36,7 @@ const schema = (classes: readonly string[]) => ({
 });
 
 export type ReviewFinding = { reviewer: string; class: string; file: string; line: number; what: string; why: string; action: 'to-fix' | 'to-ask'; question: string };
-export type ReviewerRun = { name: string; state: 'completed' | 'failed'; duration_ms: number; findings: number; record?: string; error?: string };
+export type ReviewerRun = { route?: { agent: string; model: string; effort?: string }; name: string; state: 'completed' | 'failed'; duration_ms: number; findings: number; record?: string; error?: string };
 export type ReviewResult = {
   base: string; merge_base: string; head: string; duration_ms: number; reviewers: ReviewerRun[]; findings: ReviewFinding[]; classes: Record<string, number>;
   truncated: string[]; ignored_agent_settings: string[]; record: string;
@@ -44,9 +44,23 @@ export type ReviewResult = {
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 });
 
-// The base to compare with: the one the user named, else origin's default branch, else main.
-export function reviewBase(repo: string, named?: string): string {
-  const base = named ?? (() => { try { return git(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim(); } catch { return 'main'; } })();
+// The base the policy command names: `${DONE_DONE_ITEM_CMD:-jg-item} base <project>` prints one ref, or exits 2 with a refusal when the project has no policy row.
+export function policyBase(repo: string, project: string): string {
+  const [cmd, ...pre] = (process.env.DONE_DONE_ITEM_CMD || 'jg-item').split(/\s+/);
+  const r = spawnSync(cmd, [...pre, 'base', project], { cwd: repo, encoding: 'utf8', timeout: 10_000 });
+  const name = cmd.replace(/^.*\//, '');
+  if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') throw new Error(`review base command not found: ${name}`);
+  if (r.error) throw new Error(`review: ${name} base ${project} failed: ${r.error.message}`);
+  if (r.status === 2) throw new Error(`review: no policy row for ${project}${/\S/.test(r.stdout) ? ` (${r.stdout.trim()})` : ''}`);
+  if (r.status !== 0) throw new Error(`review: ${name} base ${project} exited ${r.status}: ${(r.stderr || r.stdout).trim()}`);
+  const ref = r.stdout.trim();
+  try { git(repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`); } catch { throw new Error(`review: the policy base ${ref || '(empty)'} for ${project} is not a commit in this repo`); }
+  return ref;
+}
+
+// The base to compare with: the one the user named, else the policy command's (when `policyProject` is given), else origin's default branch, else main.
+export function reviewBase(repo: string, named?: string, policyProject?: string): string {
+  const base = named ?? (policyProject !== undefined ? policyBase(repo, policyProject) : (() => { try { return git(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim(); } catch { return 'main'; } })());
   try { git(repo, 'rev-parse', '--verify', '--quiet', `${base}^{commit}`); } catch { throw new Error(`review: base ${base} is not a commit in this repo`); }
   return base;
 }
@@ -71,7 +85,7 @@ function docsText(repo: string, head: string, changed: string[]): { text: string
 
 export async function review(repo: string, agent: AgentRun, base: string, dir: string, allowEmpty = false, outsideAnswer?: { question: string; answer: string }, target = 'HEAD'): Promise<ReviewResult> {
   const started = Date.now();
-  if (!agent.path) throw new Error(`review: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`);
+  if (!canStart(agent)) throw new Error(`review: no agent done-done can start (${notStartable(agent.agent, agent.override)}); run done-done doctor`);
   const why = toollessReason(agent.agent);
   if (why) throw new Error(`review: ${why}; use claude, codex, opencode, pi or acp`);
   const head = git(repo, 'rev-parse', target).trim();
@@ -120,7 +134,7 @@ Docs, each line after its number:${docs.text}`;
       const valid = Array.isArray(items) && items.every((f) => f && (classes as readonly string[]).includes(f.class) && typeof f.file === 'string' && Number.isInteger(f.line) && typeof f.what === 'string' && typeof f.why === 'string' && (f.action === 'to-fix' || (f.action === 'to-ask' && typeof f.question === 'string' && f.question.trim())));
       const got: Omit<ReviewFinding, 'reviewer'>[] = a.ok && valid ? items : [];
       findings.push(...got.map((f) => ({ reviewer: name, ...f })));
-      reviewers.push({ name, state: a.ok && valid ? 'completed' : 'failed', duration_ms: Date.now() - t, findings: got.length, record: a.record, ...(!valid && a.ok ? { error: 'invalid finding classification or question' } : a.error ? { error: a.error } : {}) });
+      reviewers.push({ ...(a.selected && { route: { agent: a.selected.harness, model: a.selected.model, effort: a.selected.effort } }), name, state: a.ok && valid ? 'completed' : 'failed', duration_ms: Date.now() - t, findings: got.length, record: a.record, ...(!valid && a.ok ? { error: 'invalid finding classification or question' } : a.error ? { error: a.error } : {}) });
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true });

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stub of `jg-item base <project>`: prints the ref held in the file named by $STUB_BASE_FILE,
+# or refuses with exit 2 when that file is absent.
+if [ "$1" != base ] || [ -z "$2" ]; then echo "usage: jg-item base <project>" >&2; exit 64; fi
+if [ -n "$STUB_BASE_FILE" ] && [ -f "$STUB_BASE_FILE" ]; then cat "$STUB_BASE_FILE"; exit 0; fi
+echo "refused: base: $2 has no policy row"
+exit 2

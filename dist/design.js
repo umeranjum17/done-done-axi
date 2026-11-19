@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { home, INTERACTIONS, UsageError } from './config.js';
-import { askJudge, backend, prepare, readCache, screen, VERSION, writeCache } from './judge.js';
+import { onJudgeRoutes, askJudge, backend, prepare, readCache, screen, VERSION, writeCache } from './judge.js';
 import { decodePixels } from './media.js';
 // Only sealed, cited product frames reach here. Missing evidence is a finding, never a model-inferred pass.
-export async function interactions(cfg, choice, captures, records) {
+async function interactionsOn(cfg, choice, captures, records) {
     if (cfg.interaction_checklist === null)
         return [];
     const out = [];
@@ -48,7 +48,7 @@ export async function interactions(cfg, choice, captures, records) {
     return out;
 }
 // One isolated image and one explicit repo requirement per question; no heuristic can establish a pass.
-export async function writtenRequirement(cfg, choice, name, requirement, capture, records) {
+async function writtenRequirementOn(cfg, choice, name, requirement, capture, records) {
     const shot = image(capture);
     if (typeof shot === 'string')
         throw new UsageError(`written requirement: ${shot}`);
@@ -197,7 +197,7 @@ function image(c) {
 // The judge's answer is cached in the run store per exact input (screen and mock bytes, questions, route and model), so
 // the same input gets the same verdict on every run: one request per new input, none for a repeat. A judge that does not
 // answer stops the command with its cause.
-export async function design(cfg, choice, screens, records) {
+async function designOn(cfg, choice, screens, records) {
     const dir = join(home(), 'runs', cfg.app, 'design');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const out = [];
@@ -243,7 +243,7 @@ export const PAIR_KINDS = {
     preserved: { yes: 'Both versions keep the same essential content, navigation entries and function, so a user can still do the same things.', no: 'Content, navigation or function is lost in one version.' },
 };
 const pairQuestions = (floor) => Object.fromEntries(Object.entries(PAIR_KINDS).map(([kind, k]) => [kind, { kind: 'choice', instructions: `Write the rationale first: describe each half of the image. ${PAIR} Question ${kind}.`, options: { yes: k.yes, no: k.no }, floor, personReason: true, images: ['pair'] }]));
-export async function redesign(cfg, choice, screens, records) {
+async function redesignOn(cfg, choice, screens, records) {
     const dir = join(home(), 'runs', cfg.app, 'redesign');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const out = [];
@@ -272,3 +272,7 @@ export async function redesign(cfg, choice, screens, records) {
     }
     return out;
 }
+export const interactions = async (cfg, choice, captures, records) => (await onJudgeRoutes(cfg, choice, (picked, i) => interactionsOn(cfg, picked, captures, i ? join(records, `route-${i + 1}`) : records))).value;
+export const writtenRequirement = async (cfg, choice, name, requirement, capture, records) => (await onJudgeRoutes(cfg, choice, (picked, i) => writtenRequirementOn(cfg, picked, name, requirement, capture, i ? join(records, `route-${i + 1}`) : records))).value;
+export const design = async (cfg, choice, screens, records) => (await onJudgeRoutes(cfg, choice, (picked, i) => designOn(cfg, picked, screens, i ? join(records, `route-${i + 1}`) : records))).value;
+export const redesign = async (cfg, choice, screens, records) => (await onJudgeRoutes(cfg, choice, (picked, i) => redesignOn(cfg, picked, screens, i ? join(records, `route-${i + 1}`) : records))).value;

@@ -1,0 +1,21 @@
+// A stub judge backend for one agent CLI: `stub-judge <claude|opencode|gemini>`. It reads its verdict from STUB_<KIND>
+// (correct or wrong), writes one line to STUB_LOG per call, and answers in that agent's own output shape. It reports
+// no token usage, the way the agent CLIs done-done starts do not.
+import { appendFileSync, readFileSync } from 'node:fs';
+
+const kind = process.argv[2];
+if (!process.env.STUB_LOG) throw new Error('STUB_LOG is not set');
+appendFileSync(process.env.STUB_LOG, `${kind}\n`);
+const say = process.env[`STUB_${kind.toUpperCase()}`] ?? 'correct';
+const probabilities = say === 'correct' ? { correct: 0.95, wrong: 0.03, unclear: 0.02 } : { correct: 0.03, wrong: 0.95, unclear: 0.02 };
+const answer = JSON.stringify({ relevance: { probabilities, rationale: `The ${kind} stub says ${say}.`, personReason: `The ${kind} stub says ${say}.`, parts: [], covers: [] } });
+if (kind === 'claude') {
+  readFileSync(0, 'utf8');
+  console.log(JSON.stringify({ type: 'result', structured_output: JSON.parse(answer) }));
+} else if (kind === 'opencode') {
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: answer } }));
+} else {
+  readFileSync(0, 'utf8');
+  process.stdout.write(JSON.stringify({ response: answer }));
+}

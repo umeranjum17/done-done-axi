@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, UsageError } from './config.js';
+import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, RouteUnavailable, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
+import { unavailable } from './routes.js';
 // argv never carries the prompt: it goes on stdin, or (file: true) into a 0600 prompt file the argv points at.
 // done-done parses the answer, validates it against the schema, and asks a tool-less call again, at most ASK_ATTEMPTS calls.
 const ASK_ATTEMPTS = 3;
@@ -300,7 +301,7 @@ const ADAPTERS = {
                 throw new Error(`codex tool-less setup: ${r.error?.message || r.stderr || `debug models --bundled exited ${r.status}`}; update Codex CLI`);
             const catalog = JSON.parse(r.stdout);
             if (!Array.isArray(catalog.models) || !catalog.models.length || (c.model && !catalog.models.some((m) => m.slug === c.model)))
-                throw new Error(`codex tool-less setup: bundled catalog does not list ${c.model || 'any model'}; choose a model from codex debug models --bundled`);
+                throw new RouteUnavailable(`codex tool-less setup: bundled catalog does not list ${c.model || 'any model'}; choose a model from codex debug models --bundled`);
             for (const m of catalog.models)
                 Object.assign(m, { shell_type: 'disabled', apply_patch_tool_type: null, tool_mode: 'direct', multi_agent_version: null, experimental_supported_tools: [], supports_search_tool: false });
             return { 'models.json': JSON.stringify(catalog) };
@@ -361,12 +362,13 @@ const ADAPTERS = {
         },
     },
 };
-// The author agent: exactly the one the user set, never one done-done detects or falls back to. With none set,
+// The author starts with the user's route order; legacy agent settings remain the first route. With none set,
 // done-done asks the user (in a terminal) or stops with the command that saves their answer.
 export function selectAgent(cfg) {
     if (!cfg.agent)
         throw noAgent();
-    return agentRun(cfg, cfg.agent);
+    const first = cfg.routes.author[0];
+    return first ? { ...agentRun(cfg, first.harness, first.model), effort: first.effort ?? cfg.agent_config[first.harness]?.effort ?? '' } : agentRun(cfg, cfg.agent);
 }
 // The agents a user can pick, and the error that tells a calling agent to ask the user rather than pick one itself.
 export const agentChoices = () => [...AGENTS, 'acp:<target>'];
@@ -376,10 +378,12 @@ export const noAgent = () => askError('agent', agentChoices().join(', '), 'never
 export const modelFor = (cfg, agent) => cfg.agent_config[agent]?.model || CHEAP[agent]?.model || '';
 // The configured model pool (judge.pool_command and its helper config), or undefined: standalone users keep today's behaviour.
 export const modelPool = (cfg) => cfg.judge.pool_command ? { command: cfg.judge.pool_command, config: cfg.judge.pool_config, binFor: (agent) => agentPath(agent, cfg) } : undefined;
-export const agentRun = (cfg, agent, model = modelFor(cfg, agent)) => ({
-    agent, model, effort: cfg.agent_config[agent]?.effort ?? '', args: cfg.agent_args_override[agent] ?? [], path: agentPath(agent, cfg), override: cfg.agent_path_override[agent] ?? '', timeoutMs: parseDuration(cfg.agent_timeout),
+export const agentRun = (cfg, agent, model = modelFor(cfg, agent), author = true) => ({
+    ...(author && cfg.routes.author.length && { routes: cfg.routes.author.slice(cfg.routes.author.findIndex(r => r.harness === agent && r.model === model) + 1).map(r => ({ ...agentRun(cfg, r.harness, r.model, false), effort: r.effort ?? cfg.agent_config[r.harness]?.effort ?? '' })) }),
+    agent, model, effort: (author ? cfg.routes.author.find(r => r.harness === agent && r.model === model)?.effort : undefined) ?? cfg.agent_config[agent]?.effort ?? '', args: cfg.agent_args_override[agent] ?? [], path: agentPath(agent, cfg), override: cfg.agent_path_override[agent] ?? '', timeoutMs: parseDuration(cfg.agent_timeout),
     ...(agent === 'claude' && (modelPool(cfg) ? { pool: modelPool(cfg) } : cfg.judge.account_command ? { accountCommand: cfg.judge.account_command } : {})),
 });
+export const canStart = (run) => !!run.path || !!run.routes?.some(r => r.path);
 export const notStartable = (agent, override = '') => (override ? `agent_path_override.${agent} ${override} is not an executable file` : `${agent} is not on PATH`);
 // The known agent an agent names, for the judge-independence check: acp:claude-code is claude; a target that
 // names no known agent (acp:claudex, acp:foo) stays as named.
@@ -429,7 +433,7 @@ export function selectJudge(cfg, found) {
     const independence = keyed
         ? found.model && model === found.model ? 'session-only' : 'agent'
         : agent !== knownAgentOf(found.agent) ? 'agent' : found.model && model !== found.model ? 'model' : 'session-only';
-    return { route, agent, model, independence, author: { agent: found.agent, model: found.model } };
+    return { route, agent, model, effort: cfg.routes.judge.find(r => r.harness === agent && r.model === model)?.effort ?? cfg.agent_config[agent]?.effort, independence, author: { agent: found.agent, model: found.model } };
 }
 // One configured second route, else the legacy MiniMax fallback; use its own model, never the primary's.
 export function selectFallback(cfg, found) {
@@ -501,7 +505,7 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
                 return;
             clearTimeout(idle);
             idle = setTimeout(() => {
-                error = new Error(`${c.agent} printed nothing for ${Math.round(idleMs / 1000)}s`);
+                error = new Error(`${c.agent} printed nothing for ${Math.round(idleMs / 1000)}s${!stdout && !stderr ? ' before first output' : ''}`);
                 kill();
             }, idleMs);
         };
@@ -521,7 +525,7 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
             kill();
         };
         const timer = setTimeout(() => {
-            error = new Error(`${c.agent} timed out after ${Math.round(c.timeoutMs / 1000)}s`);
+            error = new Error(`${c.agent} timed out after ${Math.round(c.timeoutMs / 1000)}s${!stdout && !stderr ? ' before first output' : ''}`);
             kill();
         }, c.timeoutMs);
         child.on('error', (e) => {
@@ -658,7 +662,7 @@ export async function accountDetail(cfg, agent, model) {
     return account ? `Claude account ${account.id}` : '';
 }
 // A valid picker refusal is availability, not a malformed account configuration.
-export class ClaudeUnavailable extends UsageError {
+export class ClaudeUnavailable extends RouteUnavailable {
 }
 let accountPick;
 // One pick (including failure) per process, shared by readers, drives and the judge; never change the caller's env.
@@ -698,7 +702,33 @@ export function claudeAccount(agent, command) {
         return { id: pick.id, folder, unset: pick.unset };
     });
 }
+// State owner: this loop. Success (including a product failure) and invalid answers stop;
+// availability advances to the next route; exhaustion reports every attempted route.
 export async function askAgent(c) {
+    const { routes, ...first } = c;
+    if (!routes?.length)
+        return askOne(first);
+    const attempts = [];
+    let result = { ok: false };
+    for (const [i, route] of [first, ...routes].entries()) {
+        const call = { ...first, ...route, pool: route.pool, accountCommand: route.accountCommand, record: `${c.record}.route-${i + 1}.json` };
+        result = await askOne(call);
+        attempts.push({ ...result.selected, ok: result.ok, unavailable: result.unavailable ?? false, error: result.error, record: result.record });
+        if (result.ok || !result.unavailable)
+            break;
+    }
+    if (!result.ok && result.unavailable)
+        result.error = attempts.map(a => `${a.harness} ${a.model}: ${a.error}`).join('; ');
+    try {
+        const record = JSON.parse(readFileSync(result.record, 'utf8'));
+        writeFileSync(c.record, JSON.stringify({ ...record, error: result.error, route_attempts: attempts }, null, 2) + '\n', { mode: 0o600 });
+        return { ...result, record: c.record };
+    }
+    catch (e) {
+        return { ...result, recordError: e.message };
+    }
+}
+async function askOne(c) {
     // The model pool owns the call's agent, model and account environment: a typed limit moves it to the helper's next
     // account or fall-over route, and the call's own timeout is the one deadline that whole chain shares.
     const deadline = Date.now() + c.timeoutMs;
@@ -815,7 +845,7 @@ export async function askAgent(c) {
                 catch (e) {
                     if (e instanceof ProviderError)
                         text = e.detail;
-                    else if (!(e instanceof SyntaxError))
+                    else if (!text && !(e instanceof SyntaxError))
                         text = e.message;
                 }
                 if (await moveOn(text)) {
@@ -853,7 +883,9 @@ export async function askAgent(c) {
         const said = stderrHead(String(res?.stderr ?? ''));
         const provider = e instanceof ProviderError;
         const note = (text) => (!provider && said && !text.includes(said.split(' | ')[0]) ? `${text}; ${call.agent} stderr: ${said}` : text);
-        out = { ok: false, error: note(e.message), ...(!provider && said ? { stderr: said } : {}) };
+        const launch = !call.path || ['ENOENT', 'EACCES', 'ENOEXEC'].includes(e.code ?? '');
+        const availability = launch || e instanceof RouteUnavailable || ((e instanceof ProviderError || !!res?.error || (res && res.status !== 0)) && unavailable(e.message));
+        out = { ok: false, unavailable: availability, error: note(e.message), ...(!provider && said ? { stderr: said } : {}) };
         failure = note(e instanceof ProviderError ? e.detail : e.message);
         if (e instanceof ProviderError)
             verdict = e.verdict;
@@ -863,6 +895,7 @@ export async function askAgent(c) {
             rmSync(dir, { recursive: true, force: true });
     }
     // The record holds what ran and what came back, never the prompt text or an image.
+    out = { ...out, selected: { harness: call.agent, model: call.model, effort: call.effort } };
     const { prompt, images, pool, ...spec } = c;
     try {
         const record = { ...spec, agent: call.agent, model: call.model, ...(picked && (picked.route ? { route: picked.id } : { account: picked.id })), ...(images && { images: images.map((i) => i.name) }), cwd, prompt_bytes: Buffer.byteLength(prompt), argv: argv('<tmp>'), ms: Date.now() - started, exit: res?.status ?? null, attempts, ...out, error: failure, ...(verdict && { verdict }), stderr: String(res?.stderr ?? '').slice(-2000) };

@@ -762,14 +762,14 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
   assert.equal(d.gitignore, 'unchanged', 'nothing to ignore: the evidence root is outside the repo');
   assert.match(d.help.join('\n'), /journeys: .*done-done run smoke/s, 'the next step shows a journey, then the run');
   const yml = join(repo, '.done-done.yaml');
-  assert.deepEqual(parse(readFileSync(yml, 'utf8')), { app: 'repo' }, 'the app is pinned and no in-repo evidence root is set');
+  assert.deepEqual(parse(readFileSync(yml, 'utf8')), { app: 'repo', check: { reuse_pass: true } }, 'the app is pinned, reuse_pass is on for a new install, and no in-repo evidence root is set');
   assert.ok(!existsSync(join(repo, '.gitignore')), 'no .gitignore is written');
   assert.match(d.evidence_root, /evidence[/\\]repo$/, 'init names the out-of-repo evidence root');
   const globalYml = join(dir, 'home', 'config.yaml');
   assert.equal(d.global_config, `written ${globalYml}`);
   const globalText = readFileSync(globalYml, 'utf8');
   const g = parse(globalText);
-  assert.deepEqual(Object.keys(g), ['review_enabled', 'agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
+  assert.deepEqual(Object.keys(g), ['review_enabled', 'agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'check', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
   assert.deepEqual([g.agent, g.agent_config.claude, g.agent_config.opencode, g.agent_timeout], [undefined, { model: 'claude-haiku-5-5', effort: 'low' }, { model: 'opencode-go/muse-spark-1.3-contributor', effort: 'low' }, '30m'], 'no agent key until the user picks one, and the cheap defaults');
   for (const key of Object.keys(g)) assert.match(globalText, new RegExp(`# .*\\n${key}:`), `${key} has a comment`);
   assert.equal(g.agent_config.codex, undefined, 'codex has no cheap default, so init writes no codex model');
@@ -1093,6 +1093,56 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), out + e
   assert.equal(blocked.status, 2, blocked.stdout + blocked.stderr);
   assert.match(JSON.parse(blocked.stdout).error, /blocked: 需要 approval/);
   assert.equal(sh('diff').toString(), beforeInvalid, 'a real blocker still prevents all writes');
+});
+
+test('journey generation shows the source the task names first, whatever the context cap leaves out', () => {
+  const { repo, env, sh } = setup('app: capped\n');
+  delete env.CI;
+  const skill = join(repo, '.agents/skills/done-done-verify-capped');
+  mkdirSync(join(skill, 'features'), { recursive: true });
+  writeFileSync(join(skill, 'SKILL.md'), '# Capped CLI\n');
+  writeFileSync(join(skill, 'features/README.md'), '# Features\n');
+  // Committed build output sorts ahead of src/ and alone fills the 150,000-character cap, so path order drops source.
+  mkdirSync(join(repo, 'dist'));
+  for (let i = 0; i < 9; i++) writeFileSync(join(repo, 'dist', `part-${i}.js`), `// built\n${'export const x = 1;\n'.repeat(1400)}`);
+  writeFileSync(join(repo, 'src/app.js'), `export const app = 1;\n${'// route table\nexport const routes = [];\n'.repeat(1000)}`);
+  writeFileSync(join(repo, 'src/routes.js'), `export const routes = [{ tool: "done-done-author", model: "first" }];\n${'// ordered author and judge routes\nexport const route = (model) => ({ harness: "opencode", model });\n'.repeat(500)}`);
+  writeFileSync(join(repo, '.env.local'), 'ROUTE_KEY=not-for-the-generator\n');
+  sh('add', '-A');
+  sh('commit', '-qm', 'fixture app with build output and a routes source');
+  const script = `import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+// Drives src/app.js through its real handles.
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'greeting.txt'), 'Hello Umer\\n');
+writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stringify({ target: { version: '1' }, start: 'fresh CLI', steps: ['run the greeting command'], result: 'Hello Umer' }));
+`;
+  const answer = { name: 'capped-routes', title: 'Capped routes', source: 'src/routes.js', script, checks: 'The route record names its ordered author.', spends: '', blocker: '' };
+  // A tool-less stand-in refuses exactly as the real generators did when the file it must cite was left out.
+  const s = stubAgents(env, JSON.stringify(answer), `const prompt = file;
+const enhance = prompt.includes('Enhance ONLY');
+const wanted = enhance ? 'src/app.js' : 'src/routes.js';
+const shown = prompt.includes('File ' + wanted + ':');
+const answer = shown ? resolvedAnswer : { ...resolvedAnswer, blocker: wanted + ' is not in the supplied source' };
+console.log(JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }));
+console.log(JSON.stringify({ type: 'text', part: { type: 'text', text: JSON.stringify(answer) } }));`);
+  writeFileSync(join(env.DONE_DONE_HOME, 'config.yaml'), `agent: opencode\nagent_config:\n  opencode:\n    model: fixture/capped\nagent_path_override:\n  opencode: ${join(s.bin, 'opencode')}\n`);
+  const journey = (...args) => spawnSync(process.execPath, [CLI, 'journey', ...args, '--json'], { cwd: repo, env: { ...s.env, PATH: `${s.env.PATH}:${process.env.PATH}` }, encoding: 'utf8' });
+  const added = journey('add', 'drive the ordered author routes named in src/routes.js, never the key in .env.local');
+  assert.equal(added.status, 0, added.stdout + added.stderr);
+  const prompt = s.calls()[0].file;
+  assert.match(prompt, /\nTracked files \(\d+\): [^\n]*src\/routes\.js[^\n]*\n\nFile src\/routes\.js:\n/, 'the file the request names comes first');
+  assert.match(prompt, /\[left out: \d+ files cannot be read or pass the 150000-character cap/, 'the cap still names what it left out');
+  assert.doesNotMatch(prompt, /File src\/app\.js:/, 'source no task names is still left out at the cap');
+  assert.match(prompt, /Tracked files \(\d+\): [^\n]*\.env\.local/, 'a secret-looking file is still named in the list');
+  assert.doesNotMatch(prompt, /File \.env\.local:/, 'naming a secret-looking file never sends its text');
+  assert.match(readFileSync(join(repo, 'journeys/capped-routes.mjs'), 'utf8'), /Drives src\/app\.js/, 'the generated journey is written');
+  sh('add', '-A');
+  sh('commit', '-qm', 'generated capped journey');
+  // A named journey's own script and feature doc are its task text too: the handles it drives must reach the generator.
+  const enhanced = journey('enhance', 'capped-routes', 'also cover a second route');
+  assert.equal(enhanced.status, 0, enhanced.stdout + enhanced.stderr);
+  assert.match(s.calls()[1].file, /File src\/app\.js:/, 'the file the existing journey drives reaches the generator');
+  assert.equal(s.calls().length, 2, 'add and enhance each ask once');
 });
 
 test("init has the agent write the verify skill from the repo's own proof path, not the start script", () => {

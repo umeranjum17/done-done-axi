@@ -27,6 +27,10 @@
     "owner": "approved-design",
     "sha256": "86d412b2e2edbc798dd0e60a4ba93b2b66ea9a23260ce19ff2a51551be4362cf"
   },
+  "journeys/base-ref-verify.mjs": {
+    "owner": "base-ref-verify",
+    "sha256": "16e8a5f705fe94776a913ad248f499d447015e6507c8500c4935da2fa961757d"
+  },
   "journeys/create-maintain.mjs": {
     "owner": "create-maintain",
     "sha256": "6619515132537c78673bcc553a0165d17481a4925d898445db1fd8639bde068d"
@@ -89,7 +93,7 @@
   },
   "journeys/registered-script.mjs": {
     "owner": "registered-script",
-    "sha256": "afad560817e203ed699db04850781ca2f5617880c7abe696df5660aa2955894d"
+    "sha256": "bb29625c7b3791a9564db5c439b95ae500338284d78bbd354540212018a1bf8c"
   },
   "journeys/requirements-scope.mjs": {
     "owner": "requirements-scope",
@@ -102,6 +106,10 @@
   "journeys/review.mjs": {
     "owner": "review",
     "sha256": "238d32335d40b5376d24d7c90c57d987d0c4c8ef3e500f989c7da0f3018bf3cc"
+  },
+  "journeys/route-fallback.mjs": {
+    "owner": "route-fallback",
+    "sha256": "39e99cf89c3a1fab311d79b09bb8c7ebbe29b3a14f4a39dbabac0facca82d85d"
   },
   "journeys/shared-parts.mjs": {
     "owner": "shared-parts",
@@ -127,9 +135,17 @@
     "owner": "verify-review",
     "sha256": "42c59487cae766d13853a7ff18a78d397e37cd69ce6cbd0935b56308bb802ac7"
   },
+  "test/cheap-judge.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "071d0d8d8b1fa0ee7f7cbca7205efd65f77aa40794176ea45aa952ba16a153f7"
+  },
   "test/cli.test.mjs": {
     "owner": "npm-test",
-    "sha256": "ac8bab3ea067a0440b7ba7314125c57ae91b0c09f2b0540c2dc9b6dffd208a4d"
+    "sha256": "fc4f5f8634a7e8e26d69722c1fd829f3c9504ebf2fdc61d0529042d6a656de42"
+  },
+  "test/command-preflight.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "0733cd551c7b788018a1fc36b2ac51250190aa36a5dc0630d06a4200c88e28f5"
   },
   "test/conformance.test.mjs": {
     "owner": "npm-test",
@@ -138,5 +154,21 @@
   "test/evals.test.mjs": {
     "owner": "npm-test",
     "sha256": "f0892bd012f8718f2b18931d5309bad4cf3ebcb70ca965340374b61aad8bfd85"
+  },
+  "test/reuse-sealed-pass.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "c8fe9561ceb314239c890ef01503c48657e81f60466b32275d4ce7871660d5d3"
+  },
+  "test/review-base-policy.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "c8e70b7975f8ec68b7b67048cf3e34594edea3a793e5ae2269180b108e723d54"
+  },
+  "test/red-before-green.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "82ee1b957e30e75104bda64f27e943e603601999367958854e91694fc86dce03"
+  },
+  "test/gut-check.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "dd35e68d400a3e9512490bae6c8b51ae11cd817864bd4326d8cd203084715683"
   }
 }

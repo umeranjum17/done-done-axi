@@ -2,6 +2,8 @@
 # The app name finds this repo's evidence and receipts from every checkout.
 app: "done-done"
 journeys:
+  route-fallback:
+    command: node journeys/route-fallback.mjs
   e2e:
     command: node journeys/e2e.mjs
     tier: ci
@@ -75,6 +77,8 @@ journeys:
     command: node journeys/affected-proof.mjs
   live-tier:
     command: node journeys/live-tier.mjs
+  base-ref-verify:
+    command: node journeys/base-ref-verify.mjs
 
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode

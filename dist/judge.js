@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
-import { accountDetail, agentRun, askAgent, ClaudeUnavailable, notStartable } from './agents.js';
-import { home, KEY_ROUTES, parseDuration, tilde, UsageError } from './config.js';
+import { unavailable } from './routes.js';
+import { accountDetail, agentRun, askAgent, ClaudeUnavailable, JUDGES, notStartable, routeOf, selectFallback, selectJudge } from './agents.js';
+import { CHEAP, home, KEY_ROUTES, parseDuration, tilde, RouteUnavailable, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
@@ -134,20 +135,21 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
         // The kit never reads the environment: done-done reads the key here and hands it only to the kit.
         const key = process.env[name] ?? judgeEnv(cfg)[name];
         if (!key)
-            throw new UsageError(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
+            throw new RouteUnavailable(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
         const { anthropic, openai, resolve } = await kit();
         const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 })).ask;
         return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
     }
     const override = cfg.agent_path_override[choice.agent];
-    const run = agentRun(cfg, choice.agent, choice.model);
+    const run = { ...agentRun(cfg, choice.agent, choice.model, false), effort: choice.effort ?? cfg.agent_config[choice.agent]?.effort ?? '' };
     const bin = run.path;
     const claude = choice.agent === 'claude';
     if (!bin)
-        throw new UsageError(`judge: ${notStartable(choice.agent, override)}`, claude ? (override ? 'Fix agent_path_override.claude in ~/.done-done/config.yaml, or install Claude Code' : 'Install Claude Code, or set agent_path_override.claude to its absolute path') : `Install ${choice.agent}, or ask the user for another judge and save it: done-done init --judge <agent> --judge-model <model>`);
+        throw new RouteUnavailable(`judge: ${notStartable(choice.agent, override)}`, claude ? (override ? 'Fix agent_path_override.claude in ~/.done-done/config.yaml, or install Claude Code' : 'Install Claude Code, or set agent_path_override.claude to its absolute path') : `Install ${choice.agent}, or ask the user for another judge and save it: done-done init --judge <agent> --judge-model <model>`);
     const account = await accountDetail(cfg, choice.agent, choice.model);
     const { answerer, resolve } = await kit();
     let lastError = '';
+    let routeUnavailable = false;
     // The kit hides a failed call's message from the verdict, so the real cause is kept here for the result.
     let requests = 0;
     const ask = answerer({
@@ -161,13 +163,14 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
             // A tool-less call runs in its own scratch folder, so the CLI sees the attached capture and nothing else.
             const a = await askAgent({ ...run, prompt, schema: answerSchema(questions), cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, attempts, record: record(requests), images: attached });
             lastError = a.ok ? '' : a.error ?? 'no answer';
+            routeUnavailable = !!a.unavailable;
             if (!a.ok)
                 throw new Error(lastError);
             // The kit resolves the reply's probabilities, its reason and the answer fields asked for; the reply is the JSON text.
             return { text: JSON.stringify(a.answer) };
         },
     }).ask;
-    return { ask, resolve, lastError: () => lastError, detail: account || (claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off`) };
+    return { ask, resolve, lastError: () => lastError, unavailable: () => routeUnavailable, detail: account || (claude ? `claude binary at ${bin} and the judge kit are present; it judges with your own claude sign-in` : `${choice.agent} at ${bin} and the judge kit are present; it judges with every tool off`) };
 }
 // The parts list as the model gave it: labels trimmed and in its own order, so a cover position still names its label.
 const labels = (x) => (Array.isArray(x) && x.every((s) => typeof s === 'string') ? x.map((s) => s.trim()) : undefined);
@@ -199,7 +202,7 @@ export function prepare(c) {
 // with its cause, never a verdict: the command stops with no result and no receipt.
 // An answer the kit cannot read (all-zero probabilities, an option left out) would abstain on every question as if the
 // judge were unsure, so it is asked once more, and one that still cannot be read is an error too.
-export async function askJudge(cfg, be, choice, state, questions, images, sharedParts = '') {
+export async function askJudge(cfg, be, choice, state, questions, images, sharedParts = '', onCall) {
     const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
     let answers;
     const resolved = (r) => {
@@ -218,7 +221,13 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
     const noLists = (a) => Object.keys(questions).filter((k) => questions[k].answerFields?.some(f => FIELDS.includes(f)) && coverageOf(a[k]) === undefined);
     const unreadable = (a) => [...malformed(a), ...noLists(a)];
     try {
-        const ask = async () => resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
+        const ask = async () => {
+            const got = resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
+            // One request, one call: the kit puts the backend's usage on every answer of it, and a backend that reported none leaves it off.
+            const usage = Object.values(got).find((a) => a.usage)?.usage;
+            onCall?.({ model: choice.model, tokens_in: usage?.input_tokens ?? null, tokens_out: usage?.output_tokens ?? null });
+            return got;
+        };
         answers = await ask();
         if (unreadable(answers).length)
             answers = await ask();
@@ -229,7 +238,7 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
             throw new ClaudeUnavailable(`judge: claude is not signed in (${why})`, 'sign in with: claude auth login, then re-run this command');
         const freeTier = choice.agent === 'opencode' && /free tier can only be used from within OpenCode/.test(why);
         const hint = choice.route === 'claude-code' ? ` (check judge.model ${choice.model} and your plan's usage limit)` : Object.hasOwn(KEY_ROUTES, choice.route) ? ` (check judge.model ${choice.model} and the key in ${KEY_ROUTES[choice.route]})` : freeTier ? ` (${choice.model} is on OpenCode's free tier, which only runs inside OpenCode, and the judge runs with every tool off: set judge.model in ~/.done-done/config.yaml to a model that is not on the free tier)` : '';
-        const Failure = choice.route === 'claude-code' && /rate.?limit|usage.?limit|not signed in|(?:every|all|no eligible).*account.*(?:floor|limit|available)/i.test(why) ? ClaudeUnavailable : UsageError;
+        const Failure = be.unavailable?.() || (Object.hasOwn(KEY_ROUTES, choice.route) && unavailable(why)) ? RouteUnavailable : UsageError;
         throw new Failure(`judge: the judge did not answer: ${why}${hint}`, again);
     }
     const bad = malformed(answers);
@@ -272,25 +281,65 @@ export function writeCache(dir, key, value) {
 // fallback: the judge for a route that fails (selectFallback). The whole check is judged again on it, so one check never mixes routes,
 // and the result names the route that answered; when that fails too, the error carries both causes.
 export async function judge(cfg, choose, outcome, captures, records, fallback) {
-    try {
-        return await judgeOn(cfg, choose, outcome, captures, records);
-    }
-    catch (e) {
-        const next = e instanceof UsageError && (choose().route !== 'claude-code' || e instanceof ClaudeUnavailable) && fallback?.();
-        if (!next)
-            throw e;
+    const first = choose();
+    const cheap = cfg.judge.cheap_first ? cheapPair(cfg, first) : [];
+    const calls = [];
+    const tally = (tier) => (spent) => void calls.push({ ...spent, tier });
+    let note = '';
+    if (cheap.length === 2) {
         try {
-            const result = await judgeOn(cfg, () => next, outcome, captures, records);
-            return { ...result, detail: `${next.route} answered after ${choose().route} unavailable${result.detail ? `; ${result.detail}` : ''}` };
+            // The pair runs one after the other, and each answers the whole check on its own route and model.
+            const [a, b] = [await judgeOn(cfg, () => cheap[0], outcome, captures, join(records, 'cheap-1'), tally('cheap')), await judgeOn(cfg, () => cheap[1], outcome, captures, join(records, 'cheap-2'), tally('cheap'))];
+            if (a.judged.length === b.judged.length && a.judged.every((r, i) => r.verdict === b.judged[i].verdict))
+                return { ...a, choice: cheap[0], calls, detail: [`the cheap judges ${cheap[0].model} and ${cheap[1].model} agree`, a.detail].filter(Boolean).join('; ') };
+            note = `the cheap judges ${cheap[0].model} and ${cheap[1].model} disagree, so ${first.model} judged`;
         }
-        catch (again) {
-            if (!(again instanceof UsageError))
-                throw again;
-            throw new UsageError(`${again.message} (after ${choose().route} failed: ${e.message})`, again.help);
+        catch (e) {
+            // A cheap judge that cannot answer never decides, and never stops a check the configured judge can still answer.
+            note = `the cheap judges did not answer (${e.message}), so ${first.model} judged`;
         }
     }
+    const { value, choice, failures } = await onJudgeRoutes(cfg, first, (choice, i) => judgeOn(cfg, () => choice, outcome, captures, i ? join(records, `route-${i + 1}`) : records, tally('large')), fallback);
+    return { ...value, calls, detail: [note, failures.length ? `${choice.route} ${choice.model} answered after ${failures.join('; ')}` : '', value.detail].filter(Boolean).join('; ') };
 }
-async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
+// The two cheap judges: the CHEAP model of two different agents that can judge and start here, never the configured one itself.
+function cheapPair(cfg, large) {
+    const pair = [];
+    for (const agent of Object.keys(CHEAP).filter((a) => JUDGES.includes(a))) {
+        const choice = selectJudge({ ...cfg, judge: { ...cfg.judge, route: routeOf(agent), model: '' } }, large.author);
+        if (!agentRun(cfg, agent, choice.model, false).path || (choice.route === large.route && choice.model === large.model))
+            continue;
+        pair.push(choice);
+    }
+    return pair.slice(0, 2);
+}
+// One availability policy for outcome, design, requirement and triage judges.
+export async function onJudgeRoutes(cfg, first, run, fallback) {
+    const choices = cfg.routes.judge.length ? cfg.routes.judge.map(r => ({
+        ...first, route: r.harness === 'claude' ? 'claude-code' : r.harness.endsWith(':key') ? r.harness : `answerer:${r.harness}`,
+        agent: r.harness, model: r.model, effort: r.effort ?? cfg.agent_config[r.harness]?.effort,
+        independence: r.harness !== first.author.agent ? 'agent' : r.model !== first.author.model ? 'model' : 'session-only',
+    })) : [first, ...(() => { const next = fallback ? fallback() : selectFallback(cfg, first.author); return next ? [next] : []; })()];
+    const failures = [];
+    for (const [i, choice] of choices.entries()) {
+        try {
+            const value = await run(choice, i);
+            Object.assign(first, choice);
+            return { value, choice, failures };
+        }
+        catch (e) {
+            if (!(e instanceof RouteUnavailable) || i === choices.length - 1) {
+                if (!failures.length || !(e instanceof UsageError))
+                    throw e;
+                const Failure = e instanceof RouteUnavailable ? RouteUnavailable : UsageError;
+                throw new Failure(`${e.message} [${choice.route} model ${choice.model}] (after ${failures.join('; ')})`, e.help);
+            }
+            failures.push(`${choice.route} failed: ${e.message} [model ${choice.model}]`);
+        }
+    }
+    throw new RouteUnavailable('judge: no routes configured');
+}
+async function judgeBatch(cfg, choice, outcome, captures, records, dir, onCall) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const eligible = captures.filter(judgeable);
     const notJudged = captures.filter((c) => !judgeable(c)).map((c) => c.name);
@@ -300,7 +349,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
         return { c, pair, row: { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) } };
     });
     const { route, model } = choice;
-    const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, cfg.judge.floor])).digest('hex');
+    const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, choice.effort, cfg.judge.floor])).digest('hex');
     const hit = readCache(dir, key);
     if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r))))
         return { judged: hit.judged.map((r) => ({ ...r, cached: true })), notJudged, choice, missing: hit.missing ?? [] };
@@ -334,7 +383,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
             const one = { [id]: shape };
             const call = join(records, `judge-${stamp}-${Object.keys(answers).length + 1}`);
             const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, one);
-            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : ''));
+            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : '', onCall));
             if (!parts?.length)
                 parts = lists(answers[id]).parts;
         }
@@ -346,7 +395,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     else {
         const call = join(records, `judge-${stamp}-1`);
         const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
-        Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0'));
+        Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0', onCall));
     }
     const judged = rows.map(({ row, c }, i) => {
         const a = answers[`capture_${i}`];
@@ -359,7 +408,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     writeCache(dir, key, { judged, missing, route, model });
     return { judged, notJudged, choice, missing };
 }
-async function judgeOn(cfg, choose, outcome, captures, records) {
+async function judgeOn(cfg, choose, outcome, captures, records, onCall) {
     // Check the account or pool route even on a verdict cache hit: a broken configured picker must never produce a pass.
     const first = choose();
     await accountDetail(cfg, first.agent, first.model);
@@ -374,7 +423,7 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
     const notJudged = [];
     const batchChoice = captures.filter(judgeable).length > 1 ? choose() : undefined;
     if (batchChoice && batchChoice.route !== 'openai:key')
-        return named(await judgeBatch(cfg, batchChoice, outcome, captures, records, dir));
+        return named(await judgeBatch(cfg, batchChoice, outcome, captures, records, dir, onCall));
     let choice;
     let be;
     let calls = 0;
@@ -389,7 +438,7 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         const pair = c.before && judgeable(c.before) && screen(c.before) === screen(c) ? c.before : undefined; // a screen pairs with a screen, text with text
         const row = { path: c.name, sha256: c.sha256, ...(pair && { before: pair.name }) };
         // The floor is in the key: it decides pass or inconclusive, so a changed judge.floor asks the model again.
-        const key = createHash('sha256').update(JSON.stringify([VERSION, c.name, c.sha256, outcome, route, model, cfg.judge.floor, ...(pair ? [pair.name, pair.sha256] : [])])).digest('hex');
+        const key = createHash('sha256').update(JSON.stringify([VERSION, c.name, c.sha256, outcome, route, model, choice.effort, cfg.judge.floor, ...(pair ? [pair.name, pair.sha256] : [])])).digest('hex');
         const hit = readCache(dir, key);
         // A stored coverage pair goes back through the same resolver as a reply's, so an entry whose covers do not index its
         // parts is unreadable, and asking the model again is the miss readCache promises.
@@ -419,8 +468,8 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
         be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
         const answers = 'text' in input
-            ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
-            : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input });
+            ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {}, '', onCall)
+            : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input }, '', onCall);
         const a = answers.relevance;
         const options = shape.options;
         const reason = a.personReason || a.rationale || options[String(a.answer)] || '';

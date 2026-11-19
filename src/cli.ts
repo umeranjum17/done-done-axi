@@ -9,10 +9,10 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
-import { ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
+import { canStart, ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
 import { checkDeadline } from './deadline.js';
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
-import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
+import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, type JudgeCall, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { CODE_CLASSES, DOC_CLASSES, review, reviewBase, TRUSTED_KEYS, type ReviewResult } from './review.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
@@ -23,7 +23,10 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { gutCheckAll, type Gut } from './gutcheck.js';
+import { baseCommit, checkNewTests, parseNewTests, type NewTest } from './newtests.js';
 import { runLive } from './live.js';
+import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
@@ -36,6 +39,7 @@ import { addPairs, auditSelection, featureFor, type JourneyFailure } from './aud
 import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
 import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
+import { sealedPass } from './reuse.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
@@ -154,12 +158,13 @@ const EVALS_TEXT = `evals (.done-done.yaml, opt-in): output-quality proof for an
   check and receipt then need a passing full eval at the same commit, the receipt records evals: pass <run id>, and gate refuses a receipt without it. eval never runs in CI and reads no key.`;
 const CONFIG_TEXT = `config: ~/.done-done/config.yaml (global; DONE_DONE_HOME moves it) and .done-done.yaml (the repo), repo over global.
   agent (either file): claude, codex, opencode, pi, gemini or acp:<target>, set by the user (done-done init --agent); done-done never picks one.
-  global only: agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
+  global only: routes.author and routes.judge (ordered {harness, model, effort?} profiles; Juggernaut config/tool-models.json tags done-done-author/done-done-judge take precedence),
+  agent_config.<agent>.{model,effort} (effort: minimal, low, medium, high, xhigh, max), agent_args_override.<agent>
   (extra flags), agent_path_override.<agent> (binary), acpx_path, agent_timeout (one agent call, default 30m; a streaming agent that prints nothing for 5m is stopped early),
   judge.account_command (optional Claude account pick; exported CLAUDE_CONFIG_DIR wins),
   judge.pool_command with judge.pool_config (optional shared model pool: the Claude account, a move on a rate/usage limit, and a fall-over route),
   judge.fallback_route (optional second judge, same values as judge.route; Claude usage/rate/sign-in limits or an empty pool trigger it;
-  e.g. answerer:pi with agent_config.pi.model: openai-codex/gpt-6.1-sol; unset keeps Claude failures as errors; no fallback chains),
+  e.g. answerer:pi with agent_config.pi.model: openai-codex/gpt-6.1-sol; unset keeps Claude failures as errors; routes.judge configures an ordered chain),
   evidence.local_root, judge.{route,model,floor,max_captures} (the judge, the shared confidence floor, and how many screen captures one
   check may send, set by the user with init --judge; never picked). done-done doctor shows where each agent setting came from.`;
 
@@ -600,6 +605,7 @@ type RunRecord = {
   flaky?: string[]; // journeys (or matrix cells) that failed once and passed on the second run: quarantined, the run still passes
   warning?: string; // the one warning line a quarantined run prints
   steps_error?: string; // why that file is not a step record
+  reused_from?: string; // the sealed run this record stands for: check.reuse_pass found the same tree, journey and command in a sealed PASS, so nothing ran
 };
 
 // A path as the user should see it: repo-relative inside the repo, else with the home directory as ~.
@@ -772,6 +778,23 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
   return { code: reason ? FAIL : PASS, result, reason };
 }
 
+// check.reuse_pass: HEAD's tree, this journey and this command already ran in a clean run that a sealed PASS receipt cites, so write a
+// record that names it (reused_from) and report it instead of driving again. null: nothing to reuse, so the caller runs as before.
+function reuseSealedPass(repo: string, cfg: Config, command: 'run' | 'verify', journey: string | null, text: string | null): number | null {
+  if (!cfg.check.reuse_pass || !text) return null;
+  const h = head(repo);
+  if (h.dirty) return null;
+  const records = loadRecords(cfg);
+  const from = sealedPass({ app: cfg.app, tree: h.tree, journey, command: text }, [...receiptsByHead(cfg).values()], records, (r) => !evidenceFaults(repo, cfg, r as Receipt, records).length);
+  if (!from) return null;
+  const rec = openRun(repo, cfg, journey, text);
+  rec.exit = 0;
+  rec.reused_from = from;
+  rec.ended_at = new Date().toISOString();
+  emit({ command, result: 'reused', reused: true, reused_from: from, run_id: rec.run_id, commit: rec.commit, record: shown(repo, writeRecord(cfg, rec)), help: [`Nothing ran: the same tree, journey and command passed in sealed run ${from}; its receipt stands. To run again: set check.reuse_pass to false`] });
+  return PASS;
+}
+
 // What a name that is a live check (not a journey a proof can drive) is told instead of a bare "unknown journey".
 const liveNote = (cfg: Config, name: string) => (Object.hasOwn(cfg.live, name) ? ` (it is a live check, which proves nothing: done-done run --tier live ${name})` : '');
 
@@ -786,6 +809,7 @@ async function cmdRunLive(repo: string, cfg: Config, only: string | null, clash:
     if (!j) throw new UsageError(`unknown live check ${only}; the live checks are: ${names.join(', ')}`);
     throw new UsageError(`journey ${only} has tier ${j.tier ?? '(none)'}, not live`);
   }
+  preflightCommands(repo, cfg, Object.entries(only ? { [only]: cfg.live[only] } : cfg.live).map(([label, e]) => ({ label, command: e.command })));
   const report = await runLive(only ? { [only]: cfg.live[only] } : cfg.live, { cwd: repo, env: process.env, onData: (b) => process.stderr.write(b) });
   const red = report.rows.filter((r) => r.result === 'red').length;
   emit({
@@ -849,6 +873,9 @@ async function cmdRun(argv: string[]): Promise<number> {
     if (!j) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
     command = j.command;
   }
+  const reused = values.open ? null : reuseSealedPass(repo, cfg, 'run', journey, command);
+  if (reused !== null) return reused;
+  if (command) preflightCommands(repo, cfg, [{ label: journey ?? 'the command after --', command }]);
   const rec = openRun(repo, cfg, journey, command);
   if (values.open) {
     if (command) throw new UsageError('--open takes no command; drive the proof, then run --close');
@@ -983,7 +1010,7 @@ function loadRecords(cfg: Config): RunRecord[] {
 // The judge block a receipt keeps: who judged, how apart from the author (recorded, never enforced), and each judged capture's verdict.
 type DesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; mock: string; mock_sha256: string; verdict: string };
 type RedesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; verdict: string; reason?: string };
-type JudgeBlock = { comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
+type JudgeBlock = { calls?: JudgeCall[]; effort?: string; comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -1031,6 +1058,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   }
   const cfg = run?.cfg ?? loadConfig(repo, projectText);
   // --judge overrides judge.route for this call; a model set for the configured route is not the new route's, so it falls back to that agent's default.
+  if (values.judge !== undefined) cfg.routes.judge = [];
   if (values.judge !== undefined && values.judge !== cfg.judge.route) cfg.judge = { ...cfg.judge, route: values.judge, model: '' };
   const now = head(repo);
   const findings: Finding[] = [];
@@ -1279,10 +1307,10 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     findings.push({ level: 'inconclusive', why: `the outcome names ${part}, but no passing capture shows it: capture ${part} and cite that capture` });
   const rows = cap<Judged>(j.judged);
   const { choice } = j;
-  const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
+  const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
   if (choice) {
     const byHash = new Map(captures.map((c) => [c.sha256, receiptPath(repo, cfg, cite(c.name))]));
-    judgeBlock = { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
+    judgeBlock = { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author, ...(j.calls && { calls: j.calls }), verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
   }
   if (rows.omitted) judged.judged_omitted = rows.omitted;
   if (j.notJudged.length) judged.not_judged = j.notJudged;
@@ -1402,7 +1430,7 @@ async function cmdEval(argv: string[]): Promise<number> {
   const store = join(runsRoot(cfg.app), rec.run_id, 'agents');
   let calls = 0;
   const ask = async (name: string, prompt: string, schema: Record<string, unknown>, model: string) => {
-    const a = await askAgent({ ...agentRun(cfg, choice.agent, model), prompt, schema, cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, record: join(store, `${name}.json`) });
+    const a = await askAgent({ ...agentRun(cfg, choice.agent, model, false), prompt, schema, cwd: tmpdir(), env: judgeEnv(cfg), tools: 'none', safeMode: true, record: join(store, `${name}.json`) });
     try { calls += JSON.parse(readFileSync(a.record!, 'utf8')).attempts ?? 1; } catch { calls++; }
     if (!a.ok) throw new UsageError(`eval ${name}: ${choice.agent} did not answer: ${a.error}`, 'Check the judge with done-done doctor --probe, then re-run: done-done eval');
     return a.answer!;
@@ -1489,6 +1517,7 @@ type Receipt = {
   evals?: string; // `pass <run id>`: the full eval run at this head (only when evals.enabled)
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
   review?: { state: 'approved' | 'skipped'; reason?: string; head?: string; result?: ReviewResult };
+  new_tests?: (Partial<NewTest> & { file: string; gut?: Gut })[]; // receipt --new-test: each declared new test, red on the base and green at head, and caught when its one target is stubbed (check.gut_check)
   scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
   affected?: AffectedProof; // verify --affected-by: the prior receipt this one extends, the files, the journeys and no review again
 };
@@ -1572,6 +1601,27 @@ function priorFault(cfg: Config, a: AffectedProof): string | null {
   }
 }
 
+// What no longer matches in the evidence a receipt cites: a file gone, or one whose hash changed since its run. Empty means the seal holds.
+function evidenceFaults(repo: string, cfg: Config, rec: Receipt, records: RunRecord[]): string[] {
+  const bad: string[] = [];
+  for (const f of rec.files) {
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path));
+    } catch (e) {
+      bad.push(`${f.path}: no such file (looked for ${f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path)}${(e as NodeJS.ErrnoException).code ? `, ${(e as NodeJS.ErrnoException).code}` : ''})`);
+      continue;
+    }
+    if (sha256(bytes) !== f.sha256) {
+      // The receipt names a path a run recorded: the file was edited after its run.
+      const inRoot = f.path.startsWith(IN_EVIDENCE) ? f.path.slice(IN_EVIDENCE.length) : under(cfg.evidence.root, resolve(repo, f.path));
+      const edited = inRoot !== null ? records.filter((r) => r.files.some((rf) => rf.path === inRoot)) : [];
+      bad.push(edited.length ? `${f.path}: changed after run ${edited.map((r) => r.run_id).join(', ')} (hash changed)` : `${f.path}: hash changed`);
+    }
+  }
+  return bad;
+}
+
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
 function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: number; result: Record<string, unknown> } {
@@ -1600,22 +1650,7 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
   const records = loadRecords(cfg);
   if (cfg.evals?.enabled && !rec.evals) return fail(`receipt for ${short} records no evals line, and evals.enabled is on: output quality is not proven`);
   if (rec.evals && !records.some((r) => r.run_id === rec.evals!.slice(5) && r.eval?.pass && r.commit === commit)) return fail(`receipt for ${short} names eval run ${rec.evals.slice(5)}, which is not a passing run at this head in ${recordsDir(cfg)}`);
-  const bad: string[] = [];
-  for (const f of rec.files) {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path));
-    } catch (e) {
-      bad.push(`${f.path}: no such file (looked for ${f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path)}${(e as NodeJS.ErrnoException).code ? `, ${(e as NodeJS.ErrnoException).code}` : ''})`);
-      continue;
-    }
-    if (sha256(bytes) !== f.sha256) {
-      // The receipt names a path a run recorded: the file was edited after its run.
-      const inRoot = f.path.startsWith(IN_EVIDENCE) ? f.path.slice(IN_EVIDENCE.length) : under(cfg.evidence.root, resolve(repo, f.path));
-      const edited = inRoot !== null ? records.filter((r) => r.files.some((rf) => rf.path === inRoot)) : [];
-      bad.push(edited.length ? `${f.path}: changed after run ${edited.map((r) => r.run_id).join(', ')} (hash changed)` : `${f.path}: hash changed`);
-    }
-  }
+  const bad = evidenceFaults(repo, cfg, rec, records);
   if (bad.length) return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
   const gone = rec.affected && priorFault(cfg, rec.affected);
   if (gone) return fail(gone);
@@ -1637,9 +1672,33 @@ async function cmdReceipt(argv: string[]): Promise<number> {
     if (rest.length) throw new UsageError('receipt --verify takes no other arguments');
     return emitted(verifyReceipt(repo, cfg, verifyHead));
   }
-  if (!rest.length) throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
+  const declared = parseNewTests(rest);
+  if (declared.error) throw new UsageError(`receipt: ${declared.error}`);
+  if (!declared.rest.length) throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
   assertCleanForReceipt(repo);
-  return emitted(recordReceipt(repo, cfg, await runCheck(rest)));
+  let newTests: Receipt['new_tests'];
+  if (declared.files.length && !cfg.check.red_before_green && !cfg.check.gut_check) process.stderr.write('receipt: --new-test ignored: check.red_before_green is off in the config\n');
+  if (declared.files.length && cfg.check.red_before_green) {
+    let found;
+    try {
+      found = checkNewTests(repo, declared.files, baseCommit(repo, cfg.base_ref, defaultBranch(repo)), cfg.check.test_run);
+    } catch (e) {
+      throw new UsageError(`receipt: red-before-green check could not run: ${errorText(e)}`);
+    }
+    if (found.refusal) return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${found.refusal}`, new_tests: found.rows, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
+    newTests = found.rows;
+  }
+  if (declared.files.length && cfg.check.gut_check) {
+    let gut;
+    try {
+      gut = gutCheckAll(repo, declared.files, cfg.check.test_run);
+    } catch (e) {
+      throw new UsageError(`receipt: gut check could not run: ${errorText(e)}`);
+    }
+    newTests = gut.rows.map((g) => ({ ...newTests?.find((n) => n.file === g.file), ...g }));
+    if (gut.refusal) return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${gut.refusal}`, new_tests: newTests, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
+  }
+  return emitted(recordReceipt(repo, cfg, await runCheck(declared.rest), undefined, undefined, newTests));
 }
 
 function assertCleanForReceipt(repo: string): void {
@@ -1647,15 +1706,15 @@ function assertCleanForReceipt(repo: string): void {
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }): { code: number; result: Record<string, unknown> } {
+function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }, newTests?: Receipt['new_tests']): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-  let rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(extended && { affected: extended.affected }) };
+  let rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(newTests && { new_tests: newTests }), ...(extended && { affected: extended.affected }) };
   if (extended) rec = extendReceipt(earlierReceipt(cfg, rec.head), rec, extended.journey);
   const path = writeReceipt(cfg, rec);
-  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), ...(rec.new_tests && { new_tests: rec.new_tests }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 
@@ -1950,7 +2009,7 @@ async function agentDrive(repo: string, cfg: Config, feature?: string): Promise<
   // The author is the agent the user set; with none, ask (in a terminal) or stop with the command that saves the answer.
   await withChoice('agent', cfg);
   const a = selectAgent(cfg);
-  if (!a.path) throw new UsageError(`verify needs an agent to drive the app: ${notStartable(a.agent, a.override)}`, `Install ${a.agent}, or save the agent the user chooses: done-done init --agent <agent> --model <model>; or record a journey: done-done init --journey <name> -- <command>`);
+  if (!canStart(a)) throw new UsageError(`verify needs an agent to drive the app: ${notStartable(a.agent, a.override)}`, `Install ${a.agent}, or save the agent the user chooses: done-done init --agent <agent> --model <model>; or record a journey: done-done init --journey <name> -- <command>`);
   if (a.agent.startsWith('acp:')) throw new UsageError(`${a.agent} cannot drive the app: done-done runs ACP agents with every tool denied`, `Set agent: to one of ${AGENTS.join(', ')}, or record a journey: done-done init --journey <name> -- <command>`);
   return { author: { agent: a.agent, model: a.model }, feature: name ?? (features.length === 1 ? features[0] : undefined) };
 }
@@ -2003,6 +2062,25 @@ async function driveBase(run: Run, cfg: Config, dir: string, rec: RunRecord, fix
     base.commit = git(run.repo, 'rev-parse', '--verify', '--end-of-options', `${cfg.base_ref}^{commit}`);
     mkdirSync(evidence, { recursive: true });
     const error = await inWorktree(run.repo, wt, async () => {
+      const has = (file: string) => existsSync(join(wt, file));
+      const install = cfg.base_install || (!has('package.json') ? ''
+        : has('package-lock.json') ? 'npm ci'
+        : has('pnpm-lock.yaml') ? 'pnpm install --frozen-lockfile'
+        : has('yarn.lock') ? 'yarn install --frozen-lockfile'
+        : has('bun.lock') || has('bun.lockb') ? 'bun install --frozen-lockfile'
+        : 'npm install');
+      if (install) {
+        const child = spawn(install, { cwd: wt, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        run.runner!.journey_pgid = child.pid;
+        let output = '';
+        child.stdout.on('data', (data) => { output = (output + data).slice(-8192); });
+        child.stderr.on('data', (data) => { output = (output + data).slice(-8192); });
+        const failure = await new Promise<string>((done) => {
+          child.on('error', (e) => done(e.message));
+          child.on('close', (code) => done(code === 0 ? '' : `exit ${code ?? 'unknown'}${output.trim() ? `: ${output.trim()}` : ''}`));
+        });
+        if (failure) return `base install (${install}) failed: ${failure}`;
+      }
       if (!cfg.instance) return drive(wt, evidence, {});
       const inst = await startInstance(wt, cfg.instance, rec.run_id, join(dir, `${fix}base-tmp`), process.env, join(dir, 'logs', `${fix}base-instance.log`));
       run.runner!.instance_pgid = inst.pgid;
@@ -2154,6 +2232,7 @@ async function runSteps(dir: string): Promise<void> {
       });
       const a = await drive(at, evidence, instPort);
       if (run.runner?.instance_pgid) stopInstance(run.runner.instance_pgid);
+      if (a.selected) run.author = { agent: a.selected.harness, model: a.selected.model };
       const answer = a.answer as { feature?: unknown; captures?: unknown; blocker?: unknown } | undefined;
       const blocker = String(answer?.blocker ?? '').trim();
       rec.exit = a.ok && !blocker ? 0 : 1;
@@ -2170,7 +2249,7 @@ async function runSteps(dir: string): Promise<void> {
       if (run.feature) rec.feature = run.feature;
       const sealed = closeRun(at, cfg, rec);
       if (!fix) run.record = join(recordsDir(cfg), `${rec.run_id}.json`);
-      log('drive', { agent: author.agent, model: author.model, feature: run.feature ?? 'none', ...(a.ok ? { captures: answer?.captures, blocker } : { error: a.error }), record: a.record ?? a.recordError });
+      log('drive', { agent: a.selected?.harness ?? author.agent, model: a.selected?.model ?? author.model, feature: run.feature ?? 'none', ...(a.ok ? { captures: answer?.captures, blocker } : { error: a.error }), record: a.record ?? a.recordError });
       const why = !a.ok ? `${author.agent} did not finish the drive: ${a.error}${a.record ? `; call record ${a.record}` : ''}`
         : blocker ? `${author.agent} could not drive the feature: ${blocker}`
         : changed ? `${author.agent} changed tracked files in the repo during the drive (see git status), so its captures are not of the committed code`
@@ -2345,7 +2424,7 @@ async function runSteps(dir: string): Promise<void> {
     if (run.affected) proof = noReview(run.affected);
     else if (!cfg.review_enabled) proof = { state: 'skipped', reason: 'review disabled in global config' };
     else {
-      const base = run.review?.base ?? reviewBase(run.repo);
+      const base = run.review?.base ?? reviewBase(run.repo, undefined, policyProject(run.repo, cfg));
       const current = p.checked!.head.commit;
       const mergeBase = git(run.repo, 'merge-base', base, current);
       if (!git(run.repo, 'diff', '--name-only', mergeBase, current)) proof = { state: 'skipped', reason: 'no diff' };
@@ -2470,7 +2549,7 @@ async function sortJudged(run: Run, cfg: Config, open: MaintainFinding[], record
   }
   const choice = selectJudge(cfg, selectAgent(cfg));
   const asks = await triage(cfg, choice, judged, VERIFY_TRIAGE, { app: cfg.app, outcome: run.claim, findings: judged }, record);
-  h.log('triage', { judge: { route: choice.route, model: choice.model, independence: choice.independence }, ask_user: asks });
+  h.log('triage', { judge: { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence }, ask_user: asks });
   h.set(step, 'completed');
   if (!(asks.length || park)) return [];
   return judged.map((f) => ({ level: 'fail', why: `${(asks.find((x) => x.id === f.id) ?? f).what}; triage: ${asks.some((x) => x.id === f.id) ? 'ask' : 'fix'}`, file: f.file }));
@@ -2727,8 +2806,19 @@ function refuseParked(cfg: Config, repo: string, claim: string | undefined) {
   throw new UsageError(`run ${parked.join(', ')} waiting at its gate for the user's answer blocks this run, which would go around that gate`, `Show the user its findings and captures (done-done status --run ${id}), then answer with their choice: done-done respond --run ${id} --action fix (approve|skip --reason "<why>" at a spend gate), or stop it: done-done abort --run ${id}`);
 }
 
+// With check.preflight on, refuses the run when a command it would execute is not found, before any judge or agent call.
+function preflightCommands(repo: string, cfg: Config, entries: { label: string; command: string }[]): void {
+  if (!cfg.check.preflight) return;
+  const fault = preflightFault(entries, repo);
+  if (fault) throw new UsageError(`${fault}: nothing ran`, 'Fix the command in .done-done.yaml (or install the tool, or make the script executable), or set check.preflight: false to skip this check');
+}
+
 // Before a verify starts: its judge, plus the agent when it drives (no journey) or fixes (auto_fix.verify, an agent that can edit).
-async function preflightVerify(cfg: Config, agentDrives: boolean, tries = cfg.auto_fix.verify ?? 0): Promise<void> {
+async function preflightVerify(cfg: Config, agentDrives: boolean, tries = cfg.auto_fix.verify ?? 0, run?: { repo: string; journeys: string[] }): Promise<void> {
+  if (run) {
+    const suite = suiteCommand(run.repo, cfg.suite.command);
+    preflightCommands(run.repo, cfg, [...run.journeys.map((label) => ({ label, command: cfg.journeys[label].command })), ...(suite ? [{ label: 'the suite command', command: suite }] : [])]);
+  }
   if (agentDrives || tries) await withChoice('agent', cfg);
   if (tries && cfg.agent.startsWith('acp:')) throw new UsageError(`${cfg.agent} cannot fix the product: done-done runs ACP agents with every tool denied`, `Set auto_fix.verify: 0 to report only, or set agent: to one of ${AGENTS.join(', ')}`);
   await preflightJudge(cfg, false);
@@ -2780,10 +2870,12 @@ async function cmdVerify(argv: string[]): Promise<number> {
     }
   }
   refuseParked(cfg, repo, values['claim-id'] ?? branch);
+  const reused = journey === null ? null : reuseSealedPass(repo, cfg, 'verify', journey, cfg.journeys[journey].command);
+  if (reused !== null) return reused;
   const drive = journey === null ? await agentDrive(repo, cfg, values.feature) : undefined;
   // verify always runs the judge the user set, the author's own agent and model included; the judge is settled here, so a
   // run never fails later for one it never had.
-  await preflightVerify(cfg, journey === null, fixTries);
+  await preflightVerify(cfg, journey === null, fixTries, { repo, journeys: journey === null ? [] : [journey] });
   const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey, drive, fixTries, scope });
   return launch(dir, cfg, 'verify', values);
 }
@@ -2844,7 +2936,7 @@ async function verifyAffected(repo: string, cfg: Config, branch: string, values:
   if (journeys.length > 1 && values['no-wait']) throw new UsageError(`these files select ${journeys.length} journeys (${journeys.join(', ')}), which run one after another, so --no-wait cannot start them`, 'Re-run with --wait or --foreground');
   const proof = affectedProof({ prior, files, journeys });
   refuseParked(cfg, repo, values['claim-id'] ?? branch);
-  await preflightVerify(cfg, false, 0);
+  await preflightVerify(cfg, false, 0, { repo, journeys });
   for (let i = 0; ; i++) {
     const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey: journeys[i], fixTries: 0, affected: proof });
     const { gone } = await startRunner(dir, values);
@@ -3010,7 +3102,7 @@ async function cmdRerun(argv: string[]): Promise<number> {
   const driveReuse = same && drivesClean(src.record, src.inputs?.head) && JSON.stringify(src.guarded?.patterns ?? []) === JSON.stringify(srcCfg.inputs);
   const reused = (name: string) => (name === 'resolve' && same) || (name === 'drive' && driveReuse);
   // A rerun always judges, whatever its source run did. A missing or forbidden judge is a usage error here too.
-  await preflightVerify(cfg, src.journey === null, src.fix_tries);
+  await preflightVerify(cfg, src.journey === null, src.fix_tries, { repo: src.repo, journeys: src.journey && cfg.journeys[src.journey] ? [src.journey] : [] });
   const id = newRunId(git(repo, 'rev-parse', 'HEAD'));
   const dir = join(root, id);
   mkdirSync(join(dir, 'logs'), { recursive: true });
@@ -3442,8 +3534,8 @@ const clause = (s: string) => s.trim().replace(/\.+$/, '');
 // A cited path as the tracked file list spells it: no leading ./ and no :line suffix.
 const cited = (s: string) => s.trim().replace(/^\.\//, '').replace(/:\d+(-\d+)?$/, '');
 
-// ponytail: the agent sees at most CONTEXT_CHARS of file text, each file cut at FILE_CHARS, ranked by path only
-// (manifests, proof scripts, source); the prompt names what was left out. Rank by content when a repo needs more.
+// ponytail: the agent sees at most CONTEXT_CHARS of file text, each file cut at FILE_CHARS: the files the task names
+// first, then by path only (manifests, proof scripts, source); the prompt names what was left out.
 const CONTEXT_CHARS = 150_000;
 const FILE_CHARS = 20_000;
 const LISTED = 500;
@@ -3466,19 +3558,32 @@ function repoText(p: string): string | undefined {
   }
 }
 
+// The tracked files a text names: a token that is exactly a tracked path, with or without a ./ prefix or a :line
+// suffix. Prose that is no path in this repo matches nothing, and a named folder is no file.
+function namedFiles(text: string, tracked: Set<string>): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/[^A-Za-z0-9_./@+-]+/)) {
+    const token = raw.replace(/^\.\//, '').replace(/:\d+(-\d+)?$/, '').replace(/\.+$/, '');
+    if (token && tracked.has(token) && !out.includes(token)) out.push(token);
+  }
+  return out;
+}
+
 // The repo as the agent sees it: the tracked file list (without the skill folder) and the text of the files that
-// say how the app starts and how the repo proves it.
-function repoContext(repo: string, skill: string): { files: Set<string>; read: Set<string>; text: string } {
+// say how the app starts and how the repo proves it, plus every file the task itself names whatever the cap leaves
+// out: a request that names its own source must be given it, and no path ranking sees a doc or data file coming.
+function repoContext(repo: string, skill: string, task = ''): { files: Set<string>; read: Set<string>; text: string } {
   const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: Infinity, stdio: ['ignore', 'pipe', 'pipe'] });
   const own = `${skill.replace(/\\/g, '/').replace(/\/+$/, '')}/`;
   const files = listed.split('\0').filter((f) => f && !f.startsWith(own));
   const rank = (f: string) => (MANIFEST.test(f) ? 0 : DATA_FILE.test(f) ? 3 : PROOF.test(f) || /(^|\/)bin\//.test(f) || DOCKERFILE.test(f) ? 1 : SOURCE_FILE.test(f) ? 2 : 3);
   const shown = (f: string) => !SECRET.test(f) && rank(f) < 3;
+  const focus = namedFiles(task, new Set(files)).filter((f) => !SECRET.test(f));
   let total = 0;
   const parts: string[] = [];
   const read = new Set<string>();
   const left: string[] = [];
-  for (const f of files.filter(shown).sort((a, b) => rank(a) - rank(b))) {
+  for (const f of [...focus, ...files.filter((f) => shown(f) && !focus.includes(f)).sort((a, b) => rank(a) - rank(b))]) {
     const body = total < CONTEXT_CHARS ? repoText(join(repo, f)) : undefined;
     const kept = body === undefined ? undefined : body.length > FILE_CHARS ? `${body.slice(0, FILE_CHARS)}\n[truncated after ${FILE_CHARS} characters]` : body;
     if (kept === undefined || total + kept.length > CONTEXT_CHARS) {
@@ -3637,6 +3742,11 @@ async function cmdJourney(argv: string[]): Promise<number> {
   if (named && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(name)) throw new UsageError(`${action} needs a lowercase kebab-case journey name`);
   // A journey whose command runs a registered test script is rewritten in place and keeps its command; any other journey gets journeys/<name>.mjs.
   const entry = named ? entryScript(cfg.journeys[name].command) : null, scriptRel = entry ?? `journeys/${name}.mjs`;
+  const bash = entry?.endsWith('.sh') ?? false;
+  const language = bash ? 'Bash' : 'JavaScript';
+  const scriptContract = bash
+    ? `a complete Bash script for ${entry}. Keep its Bash language, existing fixture helpers and command, including evidence redirections; never return a Node wrapper`
+    : 'a complete Node ESM capture script';
   const priorScript = join(repo, scriptRel), priorFeature = join(dirname(index), `${name}.md`);
   if (named) {
     for (const p of [priorScript, priorFeature]) safePath(p);
@@ -3645,10 +3755,13 @@ async function cmdJourney(argv: string[]): Promise<number> {
     if (existsSync(priorFeature) && !readFileSync(priorFeature, 'utf8').includes(`done-done run ${name}`)) throw new UsageError(`${shown(repo, priorFeature)} does not name this journey; nothing written`);
   }
   const agent = selectAgent(cfg), toolless = agent.agent !== 'claude';
-  if (!agent.path) throw new UsageError(notStartable(agent.agent, agent.override));
+  if (!canStart(agent)) throw new UsageError(notStartable(agent.agent, agent.override));
   if (toolless && toollessReason(agent.agent)) throw new UsageError(toollessReason(agent.agent), 'Use an agent supported by init: done-done init --agent <agent> --model <model>');
   const before = repoState(repo);
-  const context = repoContext(repo, cfg.skill);
+  // The task's own files reach the generator whatever the cap leaves out: the request's paths, and for a named journey
+  // its existing script and feature doc, which name the handles that journey already drives.
+  const task = named ? [request, repoText(priorScript) ?? '', repoText(priorFeature) ?? ''].join('\n') : request;
+  const context = repoContext(repo, cfg.skill, task);
   const fields = ['name', 'title', 'source', 'script', 'checks', 'spends', 'blocker'];
   const schema = { type: 'object', properties: Object.fromEntries(fields.map(k => [k, STR])), required: fields, additionalProperties: false };
   const record = join(home(), 'agents', `journey-${action}-${randomBytes(8).toString('hex')}.json`);
@@ -3658,10 +3771,10 @@ Existing journey: ${JSON.stringify(cfg.journeys[name])}
 Existing script:\n${repoText(priorScript)}\nExisting feature:\n${repoText(priorFeature)}` : `Add ONE journey for this user request: ${JSON.stringify(request)}.`;
   const a = await askAgent({ ...agent, cwd: repo, tools: toolless ? 'none' : 'read', record, schema, prompt: `${goal}
 Read only; never edit files, run commands or drive the app during generation. Use only the real handles in the supplied repository source. Never open secret-looking files or include secret values. Return blocker with the real cause if this cannot be driven safely; leave blocker empty otherwise.
-Return name (lowercase kebab-case), title, source (one tracked non-secret file shown below), script (a complete Node ESM capture script), checks (the concrete assertions and expected user-visible result), spends (empty unless it uses a paid service or sends/posts externally), blocker. Empty spends/blocker means a zero-character JSON string, not a string containing quote characters. Generation cost itself is not a journey spend.
-Return script as source text, not JSON.stringify(source). After the JSON response is decoded, JavaScript statements must have actual newline separators, not literal backslash-n sequences. Do not double-escape the source.
-The script runs from the repo root as node journeys/<name>.mjs. Drive the REAL app the way a user does, not tests, typechecks, lint or builds. Use isolated temporary state and clean up only what the script started. Use Umer for demo data. No installed app state or real accounts. Reuse existing proof handles where possible.
-The saved script MUST be deterministic and self-contained: no agents, model calls, done-done verify, generation or Firstmate dependency at runtime. Use node:assert/strict to check actual output/side effects; a failed check must exit nonzero. Write captures of the actual resulting state into process.env.DONE_DONE_EVIDENCE_ROOT, never invented output. Write steps.json there (${STEPS_SHAPE}) from the actual drive. Honour DONE_DONE_BASE_URL and matrix env when configured; screenshot/page-check records for visual flows. Do not embed absolute checkout paths.
+Return name (lowercase kebab-case), title, source (one tracked non-secret file shown below), script (${scriptContract}), checks (the concrete assertions and expected user-visible result), spends (empty unless it uses a paid service or sends/posts externally), blocker. Empty spends/blocker means a zero-character JSON string, not a string containing quote characters. Generation cost itself is not a journey spend.
+Return script as source text, not JSON.stringify(source). After the JSON response is decoded, statements must have actual newline separators, not literal backslash-n sequences. Do not double-escape the source.
+The script runs from the repo root ${entry ? `through the existing command: ${cfg.journeys[name].command}` : 'as node journeys/<name>.mjs'}. Drive the REAL app the way a user does, not typechecks, lint or builds${entry ? '; preserve the registered test and its existing real-product fixture checks' : ' or tests'}. Use isolated temporary state and clean up only what the script started. Use Umer for demo data. No installed app state or real accounts. Reuse existing proof handles where possible.
+The saved script MUST be deterministic and self-contained: no agents, model calls, done-done verify, generation${entry ? '' : ' or Firstmate dependency'} at runtime. ${bash ? 'Use Bash assertions and the existing fixture helpers' : 'Use node:assert/strict'} to check actual output/side effects; a failed check must exit nonzero. Write captures of the actual resulting state into ${bash ? '$DONE_DONE_EVIDENCE_ROOT (the existing command may redirect stdout/stderr there)' : 'process.env.DONE_DONE_EVIDENCE_ROOT'}, never invented output. Write steps.json there (${STEPS_SHAPE}) from the actual drive. Honour DONE_DONE_BASE_URL and matrix env when configured; screenshot/page-check records for visual flows. Do not embed absolute checkout paths.
 Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature map:\n${repoText(index)}\n\n${context.text}` });
   if (repoState(repo) !== before) throw new UsageError('the repo changed during generation; no recipe was written; review the changes before retrying');
   if (!a.ok) throw new UsageError(`${agent.agent} did not generate a journey: ${a.error}; record ${a.record ?? record}`);
@@ -3670,14 +3783,15 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   if (s.blocker.trim()) throw new UsageError(`journey ${action} blocked: ${s.blocker}`);
   if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(s.name) || s.name === 'readme') throw new UsageError('the agent returned an invalid journey name');
   if (named ? s.name !== name : Object.hasOwn(cfg.journeys, s.name)) throw new UsageError(named ? 'the agent renamed the journey; nothing written' : `journey ${s.name} already exists; nothing written`);
-  if (!s.title.trim() || !s.checks.trim() || !s.script.includes('DONE_DONE_EVIDENCE_ROOT')) throw new UsageError('the agent returned no title, checks or capture script; nothing written');
+  if (!s.title.trim() || !s.checks.trim()) throw new UsageError(`the agent returned no title or checks; nothing written; record ${a.record ?? record}`);
+  if (!s.script.trim() || !(s.script.includes('DONE_DONE_EVIDENCE_ROOT') || (bash && cfg.journeys[name].command.includes('DONE_DONE_EVIDENCE_ROOT')))) throw new UsageError(`the agent returned no capture script using DONE_DONE_EVIDENCE_ROOT; nothing written; record ${a.record ?? record}`);
   if (absoluteInside(s.script, repo)) throw new UsageError('the agent embedded an absolute checkout path; nothing written');
   if (!context.files.has(s.source) || SECRET.test(s.source) || (toolless && !context.read.has(s.source))) throw new UsageError(`the agent cited an unavailable source: ${s.source}; nothing written`);
   // Parse, never execute, before touching any project file.
   try {
-    execFileSync(process.execPath, ['--check', '--input-type=module'], { input: s.script, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync(bash ? 'bash' : process.execPath, bash ? ['--noprofile', '--norc', '-n'] : ['--check', '--input-type=module'], { input: s.script, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
   } catch (e) {
-    throw new UsageError(`the agent returned invalid JavaScript; nothing written: ${String((e as { stderr?: string }).stderr || (e as Error).message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
+    throw new UsageError(`the agent returned invalid ${language}; nothing written: ${String((e as { stderr?: string }).stderr || (e as Error).message).trim()}`, `Review the generator answer: ${a.record ?? record}`);
   }
   const script = join(repo, named ? scriptRel : `journeys/${s.name}.mjs`), feature = join(dirname(index), `${s.name}.md`);
   for (const p of [script, feature]) {
@@ -3696,7 +3810,7 @@ Existing verify skill:\n${repoText(join(repo, cfg.skill, 'SKILL.md'))}\nFeature 
   }
   const nextConfig = doc.toString({ lineWidth: 0 });
   loadConfig(repo, nextConfig);
-  const featureText = `# ${s.title}\n\nRequest: ${request}\n\nSource: \`${s.source}\`, \`journeys/${s.name}.mjs\`.\n\n## Drive and capture\n\nRun \`done-done run ${s.name}\`. The committed script drives the app, checks the result and writes captures and steps.json into $DONE_DONE_EVIDENCE_ROOT.\n\n## Checks\n\n${s.checks}\n`;
+  const featureText = `# ${s.title}\n\nRequest: ${request}\n\nSource: \`${s.source}\`, \`${relative(repo, script)}\`.\n\n## Drive and capture\n\nRun \`done-done run ${s.name}\`. The committed script drives the app, checks the result and writes captures and steps.json into $DONE_DONE_EVIDENCE_ROOT.\n\n## Checks\n\n${s.checks}\n`;
   const nextFeature = named && existsSync(feature) ? `${readFileSync(feature, 'utf8').trimEnd()}\n\n## ${label} coverage\n\n${improve ? 'Instruction' : 'Focus'}: ${request}\n\nSource: \`${s.source}\`.\n\n${s.checks}\n` : featureText;
   const nextIndex = named && originalIndex.includes(`](${s.name}.md)`) ? originalIndex : `${originalIndex.trimEnd()}\n- [${s.title}](${s.name}.md): run \`done-done run ${s.name}\`\n`;
   const files = new Map([[script, `${s.script.trim()}\n`], [feature, nextFeature], [index, nextIndex], [config, nextConfig]]);
@@ -4319,6 +4433,9 @@ async function cmdInit(argv: string[]): Promise<number> {
 app: ${JSON.stringify(cfg.app)}
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode
+# A run whose git tree, journey and command match a sealed PASS receipt names that run instead of running again.
+check:
+  reuse_pass: true
 `;
     writeFileSync(`${file}.tmp`, body);
     renameSync(`${file}.tmp`, file);
@@ -4627,7 +4744,11 @@ async function cmdDoctor(argv: string[]): Promise<number> {
 type ReviewLoop = { run_id: string; repo: string; base: string; head: string; state: 'to-fix' | 'to-ask' | 'approved' | 'spent' | 'failed'; fixes: number; limit: number; route: { agent: string; model: string }; result: ReviewResult; question?: string; answer?: string; error?: string };
 const reviewDir = (id: string) => join(home(), 'reviews', id);
 const reviewRun = (dir: string): ReviewLoop => JSON.parse(readFileSync(join(dir, 'loop.json'), 'utf8'));
-const saveReview = (dir: string, run: ReviewLoop) => writeFileSync(join(dir, 'loop.json'), `${JSON.stringify(run, null, 2)}\n`);
+const saveReview = (dir: string, run: ReviewLoop) => {
+  const actual = run.result.reviewers.findLast(r => r.route)?.route;
+  if (actual) run.route = { agent: actual.agent, model: actual.model };
+  writeFileSync(join(dir, 'loop.json'), `${JSON.stringify(run, null, 2)}\n`);
+};
 function showReview(run: ReviewLoop, command: string): number {
   emit({ command, run_id: run.run_id, status: run.state, result: run.state, base: run.base, head: run.head,
     fix: `fix ${run.fixes} of ${run.limit}`, route: run.route, trusted_config: { source: `${run.base}:.done-done.yaml + global config`, keys: TRUSTED_KEYS }, project_agent_settings: { loaded: false, ignored: run.result.ignored_agent_settings }, ...(run.question && { question: run.question }), ...(run.answer && { answer: run.answer }),
@@ -4645,6 +4766,8 @@ function reviewPath(id: string | undefined, repo: string): string | undefined {
   const stamp = basename(latest).slice(0, 16).replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z');
   return other && Date.parse(other.created) > Date.parse(stamp) ? undefined : latest;
 }
+// The project the policy command is asked about when check.review_base is on, else undefined (the origin/HEAD guess).
+const policyProject = (repo: string, cfg: Config) => (cfg.check.review_base ? cfg.check.project || basename(repo) : undefined);
 function reviewConfig(repo: string, base: string): Config {
   let projectText = '';
   try { projectText = git(repo, 'show', `${base}:.done-done.yaml`); } catch (e) {
@@ -4671,7 +4794,7 @@ async function reviewFix(run: ReviewLoop, dir: string, cfg: Config, rereview = t
   if (git(run.repo, 'status', '--porcelain')) throw new Error('review fix needs a clean checkout; commit or remove your changes first');
   if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('reviewed HEAD changed; start a new review');
   const agent = selectAgent(cfg);
-  if (!agent.path) throw new Error(`review fix: no agent (${notStartable(agent.agent, agent.override)})`);
+  if (!canStart(agent)) throw new Error(`review fix: no agent (${notStartable(agent.agent, agent.override)})`);
   const a = await askAgent({ ...agent, cwd: run.repo, tools: 'edit', record: join(dir, 'agents', 'fix-1.json'), schema: FIX_SCHEMA,
     env: { DONE_DONE_DRIVE: run.run_id }, prompt: `Fix these review findings in this checkout. Do not commit or run done-done. Findings: ${JSON.stringify(run.result.findings)}. ${run.answer ? `The person answered: ${run.answer}` : ''} Answer with summary and blocker (empty when fixed).` });
   if (git(run.repo, 'rev-parse', 'HEAD') !== run.head) throw new Error('the fixer made a commit; inspect the checkout before continuing');
@@ -4685,7 +4808,7 @@ async function reviewFix(run: ReviewLoop, dir: string, cfg: Config, rereview = t
 async function cmdReview(argv: string[]): Promise<number> {
   const { positionals } = parseArgs({ args: argv, allowPositionals: true });
   if (positionals.length > 1) throw new UsageError('review takes at most one base');
-  const repo = repoRoot(), base = reviewBase(repo, positionals[0]), cfg = reviewConfig(repo, base);
+  const repo = repoRoot(), base = reviewBase(repo, positionals[0], policyProject(repo, loadConfig(repo))), cfg = reviewConfig(repo, base);
   await withChoice('agent', cfg);
   const id = newRunId(git(repo, 'rev-parse', 'HEAD')), dir = reviewDir(id);
   mkdirSync(join(dir, 'agents'), { recursive: true });
@@ -4955,7 +5078,7 @@ async function cmdDesign(argv: string[]): Promise<number> {
   emit({
     command: 'design',
     result: code === PASS ? 'pass' : code === FAIL ? 'fail' : 'inconclusive',
-    judge: { route: choice.route, model: choice.model, independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' },
+    judge: { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' },
     counts: { pass: count('pass'), fail: count('fail'), unsure: count('unsure') },
     screens: rows.items,
     ...(rows.omitted && { screens_omitted: rows.omitted }),
