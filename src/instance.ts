@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { closeSync, mkdirSync, openSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { delimiter, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { parseDuration } from './config.js';
+import { miseEnv } from './miseenv.js';
 
 // A run-instance harness: each run starts the app under test on its own port,
 // with its own HOME/XDG folders, waits until ready, and kills it at run end.
@@ -34,21 +34,6 @@ function instanceHome(scratch: string): Record<string, string> {
   const cache = join(root, 'cache');
   for (const d of [home, config, data, cache]) mkdirSync(d, { recursive: true });
   return { HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data, XDG_CACHE_HOME: cache };
-}
-
-// The private HOME and XDG folders hide the host's mise config, trust and installs, so a mise shim
-// (python3, node, ...) would fail inside the instance. Point mise back at the host's own folders
-// (only where they exist and the caller set nothing) and trust the host's global config, keeping
-// any trusted paths the caller already set.
-export function miseEnv(base: NodeJS.ProcessEnv): Record<string, string> {
-  const home = base.HOME ?? homedir();
-  const xdg = (name: string, fallback: string) => join(base[name] || join(home, fallback), 'mise');
-  const dirs = { MISE_CONFIG_DIR: xdg('XDG_CONFIG_HOME', '.config'), MISE_DATA_DIR: xdg('XDG_DATA_HOME', '.local/share'), MISE_STATE_DIR: xdg('XDG_STATE_HOME', '.local/state'), MISE_CACHE_DIR: xdg('XDG_CACHE_HOME', '.cache') };
-  const out: Record<string, string> = {};
-  for (const [k, dir] of Object.entries(dirs)) if (!base[k] && existsSync(dir)) out[k] = dir;
-  const config = join(base.MISE_CONFIG_DIR || dirs.MISE_CONFIG_DIR, 'config.toml');
-  if (existsSync(config)) out.MISE_TRUSTED_CONFIG_PATHS = [base.MISE_TRUSTED_CONFIG_PATHS, config].filter(Boolean).join(delimiter);
-  return out;
 }
 
 async function waitUrl(url: string, timeoutMs: number): Promise<boolean> {

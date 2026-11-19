@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseDuration } from './config.js';
+import { commandEnv } from './miseenv.js';
 
 // What a receipt records about the suite at its head: command null means the project has none.
 export type SuiteRecord = { command: string | null; exit?: number | null; duration_ms?: number; log?: string; timed_out?: boolean };
@@ -45,7 +46,7 @@ export async function runSuite(repo: string, evidenceRoot: string, commit: strin
   const started = Date.now();
   let timedOut = false;
   const exit = await new Promise<number | null>((done) => {
-    const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, [SUITE_ENV]: commit } });
+    const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), [SUITE_ENV]: commit } });
     const kill = () => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} };
     const timer = setTimeout(() => { timedOut = true; kill(); }, parseDuration(timeout) ?? 1_800_000);
     child.on('error', () => { clearTimeout(timer); done(null); });
