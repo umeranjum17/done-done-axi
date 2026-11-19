@@ -139,6 +139,10 @@
     "owner": "npm-test",
     "sha256": "a84412cde73765455646b238a046fcd87562d953c2749da707b352fe00f17e76"
   },
+  "test/command-preflight.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "0733cd551c7b788018a1fc36b2ac51250190aa36a5dc0630d06a4200c88e28f5"
+  },
   "test/conformance.test.mjs": {
     "owner": "npm-test",
     "sha256": "5cfc9f70f9fac2030cd319d560be3f3c173fb35444c7575fa17e742553a01a97"

@@ -24,6 +24,7 @@ import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, ev
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { runLive } from './live.js';
+import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
@@ -757,6 +758,7 @@ async function cmdRunLive(repo, cfg, only, clash) {
             throw new UsageError(`unknown live check ${only}; the live checks are: ${names.join(', ')}`);
         throw new UsageError(`journey ${only} has tier ${j.tier ?? '(none)'}, not live`);
     }
+    preflightCommands(repo, cfg, Object.entries(only ? { [only]: cfg.live[only] } : cfg.live).map(([label, e]) => ({ label, command: e.command })));
     const report = await runLive(only ? { [only]: cfg.live[only] } : cfg.live, { cwd: repo, env: process.env, onData: (b) => process.stderr.write(b) });
     const red = report.rows.filter((r) => r.result === 'red').length;
     emit({
@@ -829,6 +831,8 @@ async function cmdRun(argv) {
             throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
         command = j.command;
     }
+    if (command)
+        preflightCommands(repo, cfg, [{ label: journey ?? 'the command after --', command }]);
     const rec = openRun(repo, cfg, journey, command);
     if (values.open) {
         if (command)
@@ -2932,8 +2936,20 @@ function refuseParked(cfg, repo, claim) {
     const id = parked[0];
     throw new UsageError(`run ${parked.join(', ')} waiting at its gate for the user's answer blocks this run, which would go around that gate`, `Show the user its findings and captures (done-done status --run ${id}), then answer with their choice: done-done respond --run ${id} --action fix (approve|skip --reason "<why>" at a spend gate), or stop it: done-done abort --run ${id}`);
 }
+// With check.preflight on, refuses the run when a command it would execute is not found, before any judge or agent call.
+function preflightCommands(repo, cfg, entries) {
+    if (!cfg.check.preflight)
+        return;
+    const fault = preflightFault(entries, repo);
+    if (fault)
+        throw new UsageError(`${fault}: nothing ran`, 'Fix the command in .done-done.yaml (or install the tool, or make the script executable), or set check.preflight: false to skip this check');
+}
 // Before a verify starts: its judge, plus the agent when it drives (no journey) or fixes (auto_fix.verify, an agent that can edit).
-async function preflightVerify(cfg, agentDrives, tries = cfg.auto_fix.verify ?? 0) {
+async function preflightVerify(cfg, agentDrives, tries = cfg.auto_fix.verify ?? 0, run) {
+    if (run) {
+        const suite = suiteCommand(run.repo, cfg.suite.command);
+        preflightCommands(run.repo, cfg, [...run.journeys.map((label) => ({ label, command: cfg.journeys[label].command })), ...(suite ? [{ label: 'the suite command', command: suite }] : [])]);
+    }
     if (agentDrives || tries)
         await withChoice('agent', cfg);
     if (tries && cfg.agent.startsWith('acp:'))
@@ -3006,7 +3022,7 @@ async function cmdVerify(argv) {
     const drive = journey === null ? await agentDrive(repo, cfg, values.feature) : undefined;
     // verify always runs the judge the user set, the author's own agent and model included; the judge is settled here, so a
     // run never fails later for one it never had.
-    await preflightVerify(cfg, journey === null, fixTries);
+    await preflightVerify(cfg, journey === null, fixTries, { repo, journeys: journey === null ? [] : [journey] });
     const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey, drive, fixTries, scope });
     return launch(dir, cfg, 'verify', values);
 }
@@ -3073,7 +3089,7 @@ async function verifyAffected(repo, cfg, branch, values) {
         throw new UsageError(`these files select ${journeys.length} journeys (${journeys.join(', ')}), which run one after another, so --no-wait cannot start them`, 'Re-run with --wait or --foreground');
     const proof = affectedProof({ prior, files, journeys });
     refuseParked(cfg, repo, values['claim-id'] ?? branch);
-    await preflightVerify(cfg, false, 0);
+    await preflightVerify(cfg, false, 0, { repo, journeys });
     for (let i = 0;; i++) {
         const dir = newVerifyRun(repo, cfg, { claim: values.outcome, claimId: values['claim-id'], branch, journey: journeys[i], fixTries: 0, affected: proof });
         const { gone } = await startRunner(dir, values);
@@ -3256,7 +3272,7 @@ async function cmdRerun(argv) {
     const driveReuse = same && drivesClean(src.record, src.inputs?.head) && JSON.stringify(src.guarded?.patterns ?? []) === JSON.stringify(srcCfg.inputs);
     const reused = (name) => (name === 'resolve' && same) || (name === 'drive' && driveReuse);
     // A rerun always judges, whatever its source run did. A missing or forbidden judge is a usage error here too.
-    await preflightVerify(cfg, src.journey === null, src.fix_tries);
+    await preflightVerify(cfg, src.journey === null, src.fix_tries, { repo: src.repo, journeys: src.journey && cfg.journeys[src.journey] ? [src.journey] : [] });
     const id = newRunId(git(repo, 'rev-parse', 'HEAD'));
     const dir = join(root, id);
     mkdirSync(join(dir, 'logs'), { recursive: true });
