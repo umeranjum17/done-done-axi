@@ -28,3 +28,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 
 - [Review base from policy](review-base-policy.md): `node --test test/review-base-policy.test.mjs`; with `check.review_base` on, `done-done review` takes its base from `jg-item base <project>`, refuses with `no policy row for <project>` or `review base command not found: jg-item`, and a named base still wins
 - [Route fallback](route-fallback.md): `done-done run route-fallback` forces first author and judge failures, verifies YAML/tool-models precedence and actual route records, and rejects product failures without failover.
+- [Cheaper judge, counted](cheap-judge.md): `node --test test/cheap-judge.test.mjs`; with `judge.cheap_first` two cheap verdicts that agree stand and the configured judge is called only when they differ, and the receipt lists every call with its tokens (`null` when unreported)

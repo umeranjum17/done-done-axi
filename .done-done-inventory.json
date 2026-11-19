@@ -135,6 +135,10 @@
     "owner": "verify-review",
     "sha256": "42c59487cae766d13853a7ff18a78d397e37cd69ce6cbd0935b56308bb802ac7"
   },
+  "test/cheap-judge.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "071d0d8d8b1fa0ee7f7cbca7205efd65f77aa40794176ea45aa952ba16a153f7"
+  },
   "test/cli.test.mjs": {
     "owner": "npm-test",
     "sha256": "a84412cde73765455646b238a046fcd87562d953c2749da707b352fe00f17e76"

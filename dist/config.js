@@ -113,6 +113,7 @@ const KEYS = {
     'suite.timeout': { scope: 'any', type: 'duration' },
     'judge.model': { scope: 'global', type: 'string' },
     'judge.route': { scope: 'global', type: 'route' },
+    'judge.cheap_first': { scope: 'global', type: 'boolean' },
     'judge.floor': { scope: 'global', type: 'number' },
     'judge.max_captures': { scope: 'any', type: 'count' },
     'judge.env_file': { scope: 'global', type: 'string' },
@@ -446,7 +447,7 @@ function defaultConfig(repo) {
         signoff: { post: false, board: '' },
         check: { timeout: '5m', review_base: false, project: '', preflight: false },
         suite: { command: '', timeout: '30m' },
-        judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
+        judge: { route: '', fallback_route: '', model: '', cheap_first: false, floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
         trusted: false,
         from: {},
     };

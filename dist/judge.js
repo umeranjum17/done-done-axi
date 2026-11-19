@@ -3,8 +3,8 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, w
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { unavailable } from './routes.js';
-import { accountDetail, agentRun, askAgent, ClaudeUnavailable, notStartable, selectFallback } from './agents.js';
-import { home, KEY_ROUTES, parseDuration, tilde, RouteUnavailable, UsageError } from './config.js';
+import { accountDetail, agentRun, askAgent, ClaudeUnavailable, JUDGES, notStartable, routeOf, selectFallback, selectJudge } from './agents.js';
+import { CHEAP, home, KEY_ROUTES, parseDuration, tilde, RouteUnavailable, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
 const MAX_SIDE = 1280; // long edge sent to the model, in pixels
 const MAX_TEXT = 64 * 1024; // bytes of a text capture sent to the model; a longer one is unsure, never cut
@@ -202,7 +202,7 @@ export function prepare(c) {
 // with its cause, never a verdict: the command stops with no result and no receipt.
 // An answer the kit cannot read (all-zero probabilities, an option left out) would abstain on every question as if the
 // judge were unsure, so it is asked once more, and one that still cannot be read is an error too.
-export async function askJudge(cfg, be, choice, state, questions, images, sharedParts = '') {
+export async function askJudge(cfg, be, choice, state, questions, images, sharedParts = '', onCall) {
     const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
     let answers;
     const resolved = (r) => {
@@ -221,7 +221,13 @@ export async function askJudge(cfg, be, choice, state, questions, images, shared
     const noLists = (a) => Object.keys(questions).filter((k) => questions[k].answerFields?.some(f => FIELDS.includes(f)) && coverageOf(a[k]) === undefined);
     const unreadable = (a) => [...malformed(a), ...noLists(a)];
     try {
-        const ask = async () => resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
+        const ask = async () => {
+            const got = resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
+            // One request, one call: the kit puts the backend's usage on every answer of it, and a backend that reported none leaves it off.
+            const usage = Object.values(got).find((a) => a.usage)?.usage;
+            onCall?.({ model: choice.model, tokens_in: usage?.input_tokens ?? null, tokens_out: usage?.output_tokens ?? null });
+            return got;
+        };
         answers = await ask();
         if (unreadable(answers).length)
             answers = await ask();
@@ -275,8 +281,37 @@ export function writeCache(dir, key, value) {
 // fallback: the judge for a route that fails (selectFallback). The whole check is judged again on it, so one check never mixes routes,
 // and the result names the route that answered; when that fails too, the error carries both causes.
 export async function judge(cfg, choose, outcome, captures, records, fallback) {
-    const { value, choice, failures } = await onJudgeRoutes(cfg, choose(), (choice, i) => judgeOn(cfg, () => choice, outcome, captures, i ? join(records, `route-${i + 1}`) : records), fallback);
-    return { ...value, detail: [failures.length ? `${choice.route} ${choice.model} answered after ${failures.join('; ')}` : '', value.detail].filter(Boolean).join('; ') };
+    const first = choose();
+    const cheap = cfg.judge.cheap_first ? cheapPair(cfg, first) : [];
+    const calls = [];
+    const tally = (tier) => (spent) => void calls.push({ ...spent, tier });
+    let note = '';
+    if (cheap.length === 2) {
+        try {
+            // The pair runs one after the other, and each answers the whole check on its own route and model.
+            const [a, b] = [await judgeOn(cfg, () => cheap[0], outcome, captures, join(records, 'cheap-1'), tally('cheap')), await judgeOn(cfg, () => cheap[1], outcome, captures, join(records, 'cheap-2'), tally('cheap'))];
+            if (a.judged.length === b.judged.length && a.judged.every((r, i) => r.verdict === b.judged[i].verdict))
+                return { ...a, choice: cheap[0], calls, detail: [`the cheap judges ${cheap[0].model} and ${cheap[1].model} agree`, a.detail].filter(Boolean).join('; ') };
+            note = `the cheap judges ${cheap[0].model} and ${cheap[1].model} disagree, so ${first.model} judged`;
+        }
+        catch (e) {
+            // A cheap judge that cannot answer never decides, and never stops a check the configured judge can still answer.
+            note = `the cheap judges did not answer (${e.message}), so ${first.model} judged`;
+        }
+    }
+    const { value, choice, failures } = await onJudgeRoutes(cfg, first, (choice, i) => judgeOn(cfg, () => choice, outcome, captures, i ? join(records, `route-${i + 1}`) : records, tally('large')), fallback);
+    return { ...value, calls, detail: [note, failures.length ? `${choice.route} ${choice.model} answered after ${failures.join('; ')}` : '', value.detail].filter(Boolean).join('; ') };
+}
+// The two cheap judges: the CHEAP model of two different agents that can judge and start here, never the configured one itself.
+function cheapPair(cfg, large) {
+    const pair = [];
+    for (const agent of Object.keys(CHEAP).filter((a) => JUDGES.includes(a))) {
+        const choice = selectJudge({ ...cfg, judge: { ...cfg.judge, route: routeOf(agent), model: '' } }, large.author);
+        if (!agentRun(cfg, agent, choice.model, false).path || (choice.route === large.route && choice.model === large.model))
+            continue;
+        pair.push(choice);
+    }
+    return pair.slice(0, 2);
 }
 // One availability policy for outcome, design, requirement and triage judges.
 export async function onJudgeRoutes(cfg, first, run, fallback) {
@@ -304,7 +339,7 @@ export async function onJudgeRoutes(cfg, first, run, fallback) {
     }
     throw new RouteUnavailable('judge: no routes configured');
 }
-async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
+async function judgeBatch(cfg, choice, outcome, captures, records, dir, onCall) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const eligible = captures.filter(judgeable);
     const notJudged = captures.filter((c) => !judgeable(c)).map((c) => c.name);
@@ -348,7 +383,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
             const one = { [id]: shape };
             const call = join(records, `judge-${stamp}-${Object.keys(answers).length + 1}`);
             const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, one);
-            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : ''));
+            Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : '', onCall));
             if (!parts?.length)
                 parts = lists(answers[id]).parts;
         }
@@ -360,7 +395,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     else {
         const call = join(records, `judge-${stamp}-1`);
         const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
-        Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0'));
+        Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0', onCall));
     }
     const judged = rows.map(({ row, c }, i) => {
         const a = answers[`capture_${i}`];
@@ -373,7 +408,7 @@ async function judgeBatch(cfg, choice, outcome, captures, records, dir) {
     writeCache(dir, key, { judged, missing, route, model });
     return { judged, notJudged, choice, missing };
 }
-async function judgeOn(cfg, choose, outcome, captures, records) {
+async function judgeOn(cfg, choose, outcome, captures, records, onCall) {
     // Check the account or pool route even on a verdict cache hit: a broken configured picker must never produce a pass.
     const first = choose();
     await accountDetail(cfg, first.agent, first.model);
@@ -388,7 +423,7 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
     const notJudged = [];
     const batchChoice = captures.filter(judgeable).length > 1 ? choose() : undefined;
     if (batchChoice && batchChoice.route !== 'openai:key')
-        return named(await judgeBatch(cfg, batchChoice, outcome, captures, records, dir));
+        return named(await judgeBatch(cfg, batchChoice, outcome, captures, records, dir, onCall));
     let choice;
     let be;
     let calls = 0;
@@ -433,8 +468,8 @@ async function judgeOn(cfg, choose, outcome, captures, records) {
         // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
         be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
         const answers = 'text' in input
-            ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {})
-            : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input });
+            ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {}, '', onCall)
+            : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input }, '', onCall);
         const a = answers.relevance;
         const options = shape.options;
         const reason = a.personReason || a.rationale || options[String(a.answer)] || '';

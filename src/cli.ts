@@ -12,7 +12,7 @@ import { Document, parseDocument } from 'yaml';
 import { canStart, ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
 import { checkDeadline } from './deadline.js';
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
-import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, onPath, quote, screen } from './judge.js';
+import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, type JudgeCall, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
 import { CODE_CLASSES, DOC_CLASSES, review, reviewBase, TRUSTED_KEYS, type ReviewResult } from './review.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, type Finding as MaintainFinding, inWorktree, maintainSteps, type MaintainResult, journeyProposal, named, pathspec, readerProblem, repoState, triage, type Triage } from './maintain.js';
@@ -987,7 +987,7 @@ function loadRecords(cfg: Config): RunRecord[] {
 // The judge block a receipt keeps: who judged, how apart from the author (recorded, never enforced), and each judged capture's verdict.
 type DesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; mock: string; mock_sha256: string; verdict: string };
 type RedesignMatch = { screen: string; size: string; theme: string; path: string; sha256: string; verdict: string; reason?: string };
-type JudgeBlock = { effort?: string; comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
+type JudgeBlock = { calls?: JudgeCall[]; effort?: string; comparison_basis?: string; approved_requirements?: RequirementMatch[]; interaction_checklist?: InteractionResult[]; approved_design?: DesignMatch[]; approved_redesign?: RedesignMatch[]; route: string; model: string; independence: JudgeChoice['independence']; author: JudgeChoice['author']; verdicts: { path: string; sha256: string; verdict: string; seen?: string }[] };
 
 type CheckOutcome = {
   code: number;
@@ -1287,7 +1287,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const judged: Record<string, unknown> = { ...(choice && { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
   if (choice) {
     const byHash = new Map(captures.map((c) => [c.sha256, receiptPath(repo, cfg, cite(c.name))]));
-    judgeBlock = { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
+    judgeBlock = { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author, ...(j.calls && { calls: j.calls }), verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256)!, sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
   }
   if (rows.omitted) judged.judged_omitted = rows.omitted;
   if (j.notJudged.length) judged.not_judged = j.notJudged;

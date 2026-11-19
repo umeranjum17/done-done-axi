@@ -1321,7 +1321,7 @@ async function runCheck(argv, run) {
     const judged = { ...(choice && { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author.agent ? `${choice.author.agent} (model ${choice.author.model || 'none'})` : 'no agent set' }), ...(j.detail && { detail: j.detail }), judged: rows.items.map(({ sha256, ...r }) => r) };
     if (choice) {
         const byHash = new Map(captures.map((c) => [c.sha256, receiptPath(repo, cfg, cite(c.name))]));
-        judgeBlock = { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author, verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256), sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
+        judgeBlock = { route: choice.route, model: choice.model, ...(choice.effort && { effort: choice.effort }), independence: choice.independence, author: choice.author, ...(j.calls && { calls: j.calls }), verdicts: j.judged.map((r) => ({ path: byHash.get(r.sha256), sha256: r.sha256, verdict: r.verdict, ...(r.seen && { seen: r.seen }) })) };
     }
     if (rows.omitted)
         judged.judged_omitted = rows.omitted;
