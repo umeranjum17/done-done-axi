@@ -39,6 +39,7 @@ import { addPairs, auditSelection, featureFor, type JourneyFailure } from './aud
 import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
 import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
+import { sealedPass } from './reuse.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
@@ -604,6 +605,7 @@ type RunRecord = {
   flaky?: string[]; // journeys (or matrix cells) that failed once and passed on the second run: quarantined, the run still passes
   warning?: string; // the one warning line a quarantined run prints
   steps_error?: string; // why that file is not a step record
+  reused_from?: string; // the sealed run this record stands for: check.reuse_pass found the same tree, journey and command in a sealed PASS, so nothing ran
 };
 
 // A path as the user should see it: repo-relative inside the repo, else with the home directory as ~.
@@ -776,6 +778,23 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
   return { code: reason ? FAIL : PASS, result, reason };
 }
 
+// check.reuse_pass: HEAD's tree, this journey and this command already ran in a clean run that a sealed PASS receipt cites, so write a
+// record that names it (reused_from) and report it instead of driving again. null: nothing to reuse, so the caller runs as before.
+function reuseSealedPass(repo: string, cfg: Config, command: 'run' | 'verify', journey: string | null, text: string | null): number | null {
+  if (!cfg.check.reuse_pass || !text) return null;
+  const h = head(repo);
+  if (h.dirty) return null;
+  const records = loadRecords(cfg);
+  const from = sealedPass({ app: cfg.app, tree: h.tree, journey, command: text }, [...receiptsByHead(cfg).values()], records, (r) => !evidenceFaults(repo, cfg, r as Receipt, records).length);
+  if (!from) return null;
+  const rec = openRun(repo, cfg, journey, text);
+  rec.exit = 0;
+  rec.reused_from = from;
+  rec.ended_at = new Date().toISOString();
+  emit({ command, result: 'reused', reused: true, reused_from: from, run_id: rec.run_id, commit: rec.commit, record: shown(repo, writeRecord(cfg, rec)), help: [`Nothing ran: the same tree, journey and command passed in sealed run ${from}; its receipt stands. To run again: set check.reuse_pass to false`] });
+  return PASS;
+}
+
 // What a name that is a live check (not a journey a proof can drive) is told instead of a bare "unknown journey".
 const liveNote = (cfg: Config, name: string) => (Object.hasOwn(cfg.live, name) ? ` (it is a live check, which proves nothing: done-done run --tier live ${name})` : '');
 
@@ -854,6 +873,8 @@ async function cmdRun(argv: string[]): Promise<number> {
     if (!j) throw new UsageError(`unknown journey ${journey}; .done-done.yaml defines: ${Object.keys(cfg.journeys).join(', ') || 'none'}`);
     command = j.command;
   }
+  const reused = values.open ? null : reuseSealedPass(repo, cfg, 'run', journey, command);
+  if (reused !== null) return reused;
   if (command) preflightCommands(repo, cfg, [{ label: journey ?? 'the command after --', command }]);
   const rec = openRun(repo, cfg, journey, command);
   if (values.open) {
@@ -1580,6 +1601,27 @@ function priorFault(cfg: Config, a: AffectedProof): string | null {
   }
 }
 
+// What no longer matches in the evidence a receipt cites: a file gone, or one whose hash changed since its run. Empty means the seal holds.
+function evidenceFaults(repo: string, cfg: Config, rec: Receipt, records: RunRecord[]): string[] {
+  const bad: string[] = [];
+  for (const f of rec.files) {
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path));
+    } catch (e) {
+      bad.push(`${f.path}: no such file (looked for ${f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path)}${(e as NodeJS.ErrnoException).code ? `, ${(e as NodeJS.ErrnoException).code}` : ''})`);
+      continue;
+    }
+    if (sha256(bytes) !== f.sha256) {
+      // The receipt names a path a run recorded: the file was edited after its run.
+      const inRoot = f.path.startsWith(IN_EVIDENCE) ? f.path.slice(IN_EVIDENCE.length) : under(cfg.evidence.root, resolve(repo, f.path));
+      const edited = inRoot !== null ? records.filter((r) => r.files.some((rf) => rf.path === inRoot)) : [];
+      bad.push(edited.length ? `${f.path}: changed after run ${edited.map((r) => r.run_id).join(', ')} (hash changed)` : `${f.path}: hash changed`);
+    }
+  }
+  return bad;
+}
+
 // Verify a recorded receipt for `headArg`, which may be a full sha or a ref (HEAD, a branch or a tag).
 // Read-only, so a missing or changed record is a failure, not a usage error.
 function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: number; result: Record<string, unknown> } {
@@ -1608,22 +1650,7 @@ function verifyReceipt(repo: string, cfg: Config, headArg: string): { code: numb
   const records = loadRecords(cfg);
   if (cfg.evals?.enabled && !rec.evals) return fail(`receipt for ${short} records no evals line, and evals.enabled is on: output quality is not proven`);
   if (rec.evals && !records.some((r) => r.run_id === rec.evals!.slice(5) && r.eval?.pass && r.commit === commit)) return fail(`receipt for ${short} names eval run ${rec.evals.slice(5)}, which is not a passing run at this head in ${recordsDir(cfg)}`);
-  const bad: string[] = [];
-  for (const f of rec.files) {
-    let bytes: Buffer;
-    try {
-      bytes = readFileSync(f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path));
-    } catch (e) {
-      bad.push(`${f.path}: no such file (looked for ${f.path.startsWith(IN_EVIDENCE) ? join(cfg.evidence.root, f.path.slice(IN_EVIDENCE.length)) : resolve(repo, f.path)}${(e as NodeJS.ErrnoException).code ? `, ${(e as NodeJS.ErrnoException).code}` : ''})`);
-      continue;
-    }
-    if (sha256(bytes) !== f.sha256) {
-      // The receipt names a path a run recorded: the file was edited after its run.
-      const inRoot = f.path.startsWith(IN_EVIDENCE) ? f.path.slice(IN_EVIDENCE.length) : under(cfg.evidence.root, resolve(repo, f.path));
-      const edited = inRoot !== null ? records.filter((r) => r.files.some((rf) => rf.path === inRoot)) : [];
-      bad.push(edited.length ? `${f.path}: changed after run ${edited.map((r) => r.run_id).join(', ')} (hash changed)` : `${f.path}: hash changed`);
-    }
-  }
+  const bad = evidenceFaults(repo, cfg, rec, records);
   if (bad.length) return fail(`cited evidence no longer matches the receipt: ${bad.join('; ')}`);
   const gone = rec.affected && priorFault(cfg, rec.affected);
   if (gone) return fail(gone);
@@ -2843,6 +2870,8 @@ async function cmdVerify(argv: string[]): Promise<number> {
     }
   }
   refuseParked(cfg, repo, values['claim-id'] ?? branch);
+  const reused = journey === null ? null : reuseSealedPass(repo, cfg, 'verify', journey, cfg.journeys[journey].command);
+  if (reused !== null) return reused;
   const drive = journey === null ? await agentDrive(repo, cfg, values.feature) : undefined;
   // verify always runs the judge the user set, the author's own agent and model included; the judge is settled here, so a
   // run never fails later for one it never had.
@@ -4404,6 +4433,9 @@ async function cmdInit(argv: string[]): Promise<number> {
 app: ${JSON.stringify(cfg.app)}
 # This repo's coding agent, over agent in ~/.done-done/config.yaml (model, effort and the other agent settings stay there).
 # agent: opencode
+# A run whose git tree, journey and command match a sealed PASS receipt names that run instead of running again.
+check:
+  reuse_pass: true
 `;
     writeFileSync(`${file}.tmp`, body);
     renameSync(`${file}.tmp`, file);

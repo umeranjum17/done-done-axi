@@ -762,7 +762,7 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
   assert.equal(d.gitignore, 'unchanged', 'nothing to ignore: the evidence root is outside the repo');
   assert.match(d.help.join('\n'), /journeys: .*done-done run smoke/s, 'the next step shows a journey, then the run');
   const yml = join(repo, '.done-done.yaml');
-  assert.deepEqual(parse(readFileSync(yml, 'utf8')), { app: 'repo' }, 'the app is pinned and no in-repo evidence root is set');
+  assert.deepEqual(parse(readFileSync(yml, 'utf8')), { app: 'repo', check: { reuse_pass: true } }, 'the app is pinned, reuse_pass is on for a new install, and no in-repo evidence root is set');
   assert.ok(!existsSync(join(repo, '.gitignore')), 'no .gitignore is written');
   assert.match(d.evidence_root, /evidence[/\\]repo$/, 'init names the out-of-repo evidence root');
   const globalYml = join(dir, 'home', 'config.yaml');

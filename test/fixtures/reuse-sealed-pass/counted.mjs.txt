@@ -1,0 +1,6 @@
+// The fixture journey: each real run appends one line to the counter file and writes a capture and its step record.
+import { appendFileSync, copyFileSync, writeFileSync } from 'node:fs';
+appendFileSync(process.env.COUNTER_FILE, 'ran\n');
+const out = process.env.DONE_DONE_EVIDENCE_ROOT;
+copyFileSync(process.env.SCREEN_PNG, `${out}/home.png`);
+writeFileSync(`${out}/steps.json`, JSON.stringify({ target: { version: '1.0.0' }, start: 'a fresh notes app', steps: ['open the home screen'], result: 'home renders' }));

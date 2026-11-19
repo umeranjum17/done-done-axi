@@ -141,7 +141,7 @@
   },
   "test/cli.test.mjs": {
     "owner": "npm-test",
-    "sha256": "a84412cde73765455646b238a046fcd87562d953c2749da707b352fe00f17e76"
+    "sha256": "fc4f5f8634a7e8e26d69722c1fd829f3c9504ebf2fdc61d0529042d6a656de42"
   },
   "test/command-preflight.test.mjs": {
     "owner": "npm-test",
@@ -154,6 +154,10 @@
   "test/evals.test.mjs": {
     "owner": "npm-test",
     "sha256": "f0892bd012f8718f2b18931d5309bad4cf3ebcb70ca965340374b61aad8bfd85"
+  },
+  "test/reuse-sealed-pass.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "c8fe9561ceb314239c890ef01503c48657e81f60466b32275d4ce7871660d5d3"
   },
   "test/review-base-policy.test.mjs": {
     "owner": "npm-test",
