@@ -24,7 +24,7 @@ import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, ev
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { gutCheckAll, type Gut } from './gutcheck.js';
-import { baseCommit, checkNewTests, parseNewTests, type NewTest } from './newtests.js';
+import { baseCommit, checkNewTests, parseNewTests, SKIP_EXIT, type NewTest } from './newtests.js';
 import { runLive } from './live.js';
 import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
@@ -39,7 +39,9 @@ import { addPairs, auditSelection, featureFor, type JourneyFailure } from './aud
 import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
 import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
+import { countRefusals } from './falserefusals.js';
 import { sealedPass } from './reuse.js';
+import { isSkip, settleSkips, skipEnv, skipReason } from './skipexit.js';
 import { type CaptureRun, codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, type StepRecord, stepRecordFault, stepsFault } from './proof.js';
 
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
@@ -453,7 +455,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     more: [RUNS_TEXT],
   },
   report: {
-    usage: [['done-done report [--run <run-id>]', 'show a review result and any question']],
+    usage: [['done-done report [--run <run-id>]', 'show a review result and any question'], ['done-done report false-refusals', 'with check.count_false_refusals on: per check, the FAILs a later PASS on the same tree showed were false, and the catches-to-false ratio']],
     flags: ['--run <run-id>'],
     more: [],
   },
@@ -605,6 +607,7 @@ type RunRecord = {
   flaky?: string[]; // journeys (or matrix cells) that failed once and passed on the second run: quarantined, the run still passes
   warning?: string; // the one warning line a quarantined run prints
   steps_error?: string; // why that file is not a step record
+  skipped?: string[]; // check.skip_is_not_proof: the cells whose test command exited 77; all of them skipped leaves exit 77, so no receipt cites the run
   reused_from?: string; // the sealed run this record stands for: check.reuse_pass found the same tree, journey and command in a sealed PASS, so nothing ran
 };
 
@@ -743,6 +746,7 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
   const rel = (p: string) => citable(repo, join(cfg.evidence.root, p));
   let reason = '';
   if (now.commit !== rec.commit) reason = `HEAD moved from ${rec.commit} to ${now.commit} during the run; evidence is not tied to one commit`;
+  else if (rec.skipped?.length && rec.exit === SKIP_EXIT) reason = skipReason(rec.skipped);
   else if (rec.exit !== null && rec.exit !== 0) {
     const failure = log ? firstFailure(log) : '';
     reason = `the run command exited ${rec.exit}${failure ? `: ${failure}` : ''}`;
@@ -753,7 +757,7 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
   const result: Record<string, unknown> = {
     command: 'run',
     // A capture that ran is recorded, never a pass: only the judged check decides whether it proves anything.
-    result: reason ? 'fail' : 'recorded',
+    result: reason ? (rec.skipped?.length && rec.exit === SKIP_EXIT ? 'skipped' : 'fail') : 'recorded',
     run_id: rec.run_id,
     commit: rec.commit,
     dirty: rec.dirty,
@@ -762,6 +766,7 @@ function closeRun(repo: string, cfg: Config, rec: RunRecord, log?: string): { co
   };
   if (reason) result.reason = reason;
   if (rec.flaky) { result.flaky = rec.flaky; result.warning = rec.warning; }
+  if (rec.skipped?.length) result.skipped = rec.skipped;
   result.evidence = rows.items;
   if (rows.omitted) result.evidence_omitted = rows.omitted;
   if (rec.matrix) result.matrix = rec.matrix;
@@ -926,16 +931,18 @@ async function cmdRun(argv: string[]): Promise<number> {
     // The journey's own stdout goes to our stderr, never our stdout: stdout carries only done-done's
     // result document (TOON or --json), so a noisy journey cannot break `run --json | JSON.parse`.
     cwd: repo, size,
-    env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
+    env: { ...process.env, ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
     onData: (b) => { process.stderr.write(b); appendFileSync(logFile, b); },
   });
   // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed. A slow stop is final.
   const flaky: string[] = [];
+  const skipped: string[] = [];
   let slow: string | null = null;
   for (const cell of matrix?.required ?? [{}]) {
     const r = await drive(cell);
     let code = r.code ?? 1;
     if (r.slow) slow = slowReason(journey!, size as Size);
+    else if (isSkip(cfg.check.skip_is_not_proof, code)) { skipped.push(cellName(cell)); code = 0; }
     else if (code !== 0 && (await drive(cell)).code === 0) { flaky.push(matrix ? cellName(cell) : journey ?? expanded); code = 0; }
     if (code !== 0) {
       if (!failed.length) rec.exit = code;
@@ -948,6 +955,7 @@ async function cmdRun(argv: string[]): Promise<number> {
     process.stderr.write(`warning: ${rec.warning}\n`);
   }
   reap();
+  settleSkips(rec, skipped, (matrix?.required ?? [{}]).length);
   const sealed = closeRun(repo, cfg, rec, logFile);
   if (slow) return emitted({ code: FAIL, result: { ...sealed.result, slow: true, reason: slow } });
   if (matrix && failed.length) return emitted({ code: FAIL, result: { ...sealed.result, reason: `the run command failed for cell ${failed.join('; ')}` } });
@@ -1176,7 +1184,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
     for (const w of kept) if (!warnings.includes(w)) warnings.push(w);
     if (stale) findings.push({ level: 'fail', why: `${name}: ${stale} (run ${rec.run_id})` });
     if (rec.dirty && !cfg.evidence.allow_dirty) findings.push({ level: 'fail', why: `${name}: captured from a tree with uncommitted changes (run ${rec.run_id}); commit them, then capture again` });
-    if (rec.exit !== null && rec.exit !== 0) findings.push({ level: 'fail', why: `${name}: its run command exited ${rec.exit} (run ${rec.run_id})` });
+    if (rec.exit !== null && rec.exit !== 0) findings.push({ level: 'fail', why: `${name}: ${rec.skipped?.length && rec.exit === SKIP_EXIT ? skipReason(rec.skipped) : `its run command exited ${rec.exit}`} (run ${rec.run_id})` });
   }
   // The approved inventory is the contract, not the subset the claim happened to cite. Enforce it on every
   // claim when configured, so rewording a design-done/release outcome cannot bypass missing screens.
@@ -2278,7 +2286,7 @@ async function runSteps(dir: string): Promise<void> {
       }
       // With a matrix block the journey runs once per required cell with that cell in env.
       const matrix = hasMatrix(cfg.matrix) ? splitMatrix(cfg.matrix!).required : null;
-      const failed: string[] = []; rec.exit = 0;
+      const failed: string[] = []; const skipped: string[] = []; rec.exit = 0;
       let timedOut = false; let running: number | undefined;
       // The timeout bounds the whole verify run's journey: it kills the cell running now and stops the loop.
       const timer = setTimeout(() => {
@@ -2288,7 +2296,7 @@ async function runSteps(dir: string): Promise<void> {
       for (const cell of matrix ?? [{}]) {
         // An async child keeps the heartbeat going while the journey runs. The journey gets its own process group, so a
         // timeout or a dead runner can kill it and everything it started.
-        const child = spawn(rec.command!, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
+        const child = spawn(rec.command!, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
         run.runner!.journey_pgid = child.pid;
         running = child.pid;
         saveRun(dir, run);
@@ -2299,12 +2307,14 @@ async function runSteps(dir: string): Promise<void> {
           if (!rec.exit) rec.exit = 1;
           break;
         }
-        if (code !== 0) {
+        if (isSkip(cfg.check.skip_is_not_proof, code)) skipped.push(cellName(cell));
+        else if (code !== 0) {
           if (!rec.exit) rec.exit = code;
           failed.push(`${cellName(cell)} (exit ${code})`);
         }
       }
       clearTimeout(timer);
+      settleSkips(rec, skipped, (matrix ?? [{}]).length);
       if (run.runner?.instance_pgid) stopInstance(run.runner.instance_pgid);
       if (cfg.base_ref && !failed.length)
         await driveBase(run, cfg, dir, rec, fix, async (where, evidence, env) => {
@@ -3008,6 +3018,21 @@ function showRecord(repo: string, cfg: Config, rec: RunRecord): number {
     ...(rows.omitted && { evidence_omitted: rows.omitted }),
     help: [rec.files.length ? `Check this proof: done-done check --outcome "<what you proved>" ${rel(rec.files[0].path)}` : `Read the run's folder: ${shown(repo, runDir(cfg, rec.run_id))}`],
   });
+  return PASS;
+}
+
+// check.count_false_refusals: every closed run record of this app, grouped by check (see src/falserefusals.ts). Off, it counts nothing.
+function cmdFalseRefusals(argv: string[]): number {
+  parseArgs({ args: argv, options: {} });
+  const cfg = loadConfig(repoRoot());
+  if (!cfg.check.count_false_refusals) {
+    emit({ command: 'report', report: 'false-refusals', switch: 'off', help: ['Nothing was counted: turn it on with check.count_false_refusals: true in .done-done.yaml'] });
+    return PASS;
+  }
+  const checks = countRefusals(loadRecords(cfg).filter((r) => !r.eval && !r.reused_from));
+  const total = (key: 'catches' | 'false_refusals') => checks.reduce((n, c) => n + c[key], 0);
+  const [catches, falses] = [total('catches'), total('false_refusals')];
+  emit({ command: 'report', report: 'false-refusals', switch: 'on', checks, catches, false_refusals: falses, catches_to_false: `${catches}:${falses}`, help: ['A false refusal is a FAIL that a later PASS of the same check on the same git tree showed was wrong; a catch is a FAIL no such PASS follows'] });
   return PASS;
 }
 
@@ -5483,6 +5508,7 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === 'affected') return cmdAffected(rest);
     if (cmd === 'qa') return cmdQa(rest);
     if (cmd === 'after-commit') return await cmdAfterCommit(rest);
+    if (cmd === 'report' && rest[0] === 'false-refusals') return cmdFalseRefusals(rest.slice(1));
     if (cmd === 'status' || cmd === 'report') return cmdStatus(rest, cmd);
     if (cmd === 'attach') return await cmdAttach(rest);
     if (cmd === 'logs') return cmdLogs(rest);
