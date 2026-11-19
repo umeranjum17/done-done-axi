@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseDuration } from './config.js';
+import { commandEnv } from './miseenv.js';
 export const SUITE_ENV = 'DONE_DONE_SUITE';
 export const SUITE_NONE = 'no test suite in this project';
 const has = (repo, f) => existsSync(join(repo, f));
@@ -54,7 +55,7 @@ export async function runSuite(repo, evidenceRoot, commit, command, timeout) {
     const started = Date.now();
     let timedOut = false;
     const exit = await new Promise((done) => {
-        const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, [SUITE_ENV]: commit } });
+        const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), [SUITE_ENV]: commit } });
         const kill = () => { try {
             process.kill(-child.pid, 'SIGKILL');
         }

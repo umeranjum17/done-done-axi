@@ -181,6 +181,6 @@
   },
   "test/mise-shim.test.mjs": {
     "owner": "npm-test",
-    "sha256": "e4c20499ef48a3f9f27d9626557c0fa78b7cd4376c0ebe9fca3d9598c9640dca"
+    "sha256": "ec84fdfd132b390347e4db428d651d5d49463c1f08e2b402f157bf5305310c69"
   }
 }

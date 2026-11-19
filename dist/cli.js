@@ -14,6 +14,7 @@ import { checkDeadline } from './deadline.js';
 import { AGENTS, CHEAP, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, judge, judgeable, judgeEnv, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
+import { commandEnv } from './miseenv.js';
 import { review, reviewBase, TRUSTED_KEYS } from './review.js';
 import { attemptProblem, changedSince, commitFix, dirtyTracked, FIX_SCHEMA, inWorktree, maintainSteps, journeyProposal, named, pathspec, readerProblem, repoState, triage } from './maintain.js';
 import { cellEnv, cellName, cellSuffix, hasMatrix, matrixManifest, splitMatrix } from './matrix.js';
@@ -787,7 +788,7 @@ async function cmdRunLive(repo, cfg, only, clash) {
         throw new UsageError(`journey ${only} has tier ${j.tier ?? '(none)'}, not live`);
     }
     preflightCommands(repo, cfg, Object.entries(only ? { [only]: cfg.live[only] } : cfg.live).map(([label, e]) => ({ label, command: e.command })));
-    const report = await runLive(only ? { [only]: cfg.live[only] } : cfg.live, { cwd: repo, env: process.env, onData: (b) => process.stderr.write(b) });
+    const report = await runLive(only ? { [only]: cfg.live[only] } : cfg.live, { cwd: repo, env: commandEnv(), onData: (b) => process.stderr.write(b) });
     const red = report.rows.filter((r) => r.result === 'red').length;
     emit({
         command: 'run',
@@ -922,7 +923,7 @@ async function cmdRun(argv) {
         // The journey's own stdout goes to our stderr, never our stdout: stdout carries only done-done's
         // result document (TOON or --json), so a noisy journey cannot break `run --json | JSON.parse`.
         cwd: repo, size,
-        env: { ...process.env, ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
+        env: { ...commandEnv(), ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
         onData: (b) => { process.stderr.write(b); appendFileSync(logFile, b); },
     });
     // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed. A slow stop is final.
@@ -1529,7 +1530,7 @@ async function cmdEval(argv) {
     };
     // A command that reads the prompt on stdin and prints the answer; why is set when it did not.
     const sh = (command, input) => {
-        const r = spawnSync(command, { shell: true, cwd: repo, input, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 << 20, env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: dir } });
+        const r = spawnSync(command, { shell: true, cwd: repo, input, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 << 20, env: { ...commandEnv(), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: dir } });
         const out = (r.stdout ?? '').trim();
         return { out, why: r.error && r.status === null ? r.error.message : r.status !== 0 ? `exited ${r.status}: ${(r.stderr ?? '').trim().slice(-200)}` : out ? '' : 'printed nothing' };
     };
@@ -2414,7 +2415,7 @@ async function runSteps(dir) {
                 for (const cell of matrix ?? [{}]) {
                     // An async child keeps the heartbeat going while the journey runs. The journey gets its own process group, so a
                     // timeout or a dead runner can kill it and everything it started.
-                    const child = spawn(rec.command, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
+                    const child = spawn(rec.command, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
                     run.runner.journey_pgid = child.pid;
                     running = child.pid;
                     saveRun(dir, run);
@@ -2441,7 +2442,7 @@ async function runSteps(dir) {
                 if (cfg.base_ref && !failed.length)
                     await driveBase(run, cfg, dir, rec, fix, async (where, evidence, env) => {
                         for (const cell of matrix ?? [{}]) {
-                            const child = spawn(rec.command, { cwd: where, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: evidence, ...env, ...(matrix ? cellEnv(cell) : {}) } });
+                            const child = spawn(rec.command, { cwd: where, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: evidence, ...env, ...(matrix ? cellEnv(cell) : {}) } });
                             spawned(child.pid);
                             const timer = setTimeout(() => killGroup(child.pid), limit);
                             const code = await new Promise((done) => child.on('close', (c) => done(c ?? 1)));
@@ -5527,7 +5528,7 @@ async function cmdTests(argv) {
         return await cmdTestsImprove(repo, picked, skipped, values);
     const measured = [];
     for (const [name, j] of picked)
-        measured.push(await measureJourney(name, j.command, j.size, repo, process.env));
+        measured.push(await measureJourney(name, j.command, j.size, repo, commandEnv()));
     const bad = measured.filter((m) => m.verdict !== 'within bound');
     emit({ command: 'tests measure', measured, skipped, help: bad.length ? [`Slow or failing: ${bad.map((m) => m.journey).join(', ')}; make it faster or give it a larger size`] : [] });
     return bad.length ? FAIL : PASS;
@@ -5542,7 +5543,7 @@ async function valueOf(repo, picked, skipped, values) {
     const faults = listFaults(repo, sourcesOf(repo, values.source ?? []), max);
     if (!faults.length)
         throw new UsageError('no source line offers a fault to plant', 'Name the source files with --source <file>');
-    return await measureValue(repo, picked.map(([name, j]) => ({ name, command: j.command, size: j.size })), faults, process.env);
+    return await measureValue(repo, picked.map(([name, j]) => ({ name, command: j.command, size: j.size })), faults, commandEnv());
 }
 async function cmdTestsValue(repo, picked, skipped, values) {
     const report = await valueOf(repo, picked, skipped, values);
@@ -5575,7 +5576,7 @@ async function cmdTestsApply(repo, journeys, klass, file) {
     catch (e) {
         throw new UsageError(`cannot read the plan file ${file}: ${e.message}`);
     }
-    const r = await applyPlan(repo, parsePlan(text), klass, journeys, process.env);
+    const r = await applyPlan(repo, parsePlan(text), klass, journeys, commandEnv());
     const { refused, ...applied } = r;
     emit({ command: 'tests improve', stage: refused ? 'refused' : 'applied', ...applied, ...(refused && { refused }),
         help: refused ? [refused, 'Nothing was changed'] : [
