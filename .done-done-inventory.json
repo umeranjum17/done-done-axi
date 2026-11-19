@@ -162,5 +162,9 @@
   "test/red-before-green.test.mjs": {
     "owner": "npm-test",
     "sha256": "82ee1b957e30e75104bda64f27e943e603601999367958854e91694fc86dce03"
+  },
+  "test/gut-check.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "dd35e68d400a3e9512490bae6c8b51ae11cd817864bd4326d8cd203084715683"
   }
 }

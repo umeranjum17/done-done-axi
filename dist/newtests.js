@@ -38,7 +38,7 @@ export function runnerFor(file, template) {
         return ['python3', '-m', 'pytest', '-q', file];
     return template.trim() ? { shell: template.replaceAll('{file}', `'${file.replaceAll("'", `'\\''`)}'`) } : null;
 }
-function runAt(cwd, file, template) {
+export function runAt(cwd, file, template) {
     const cmd = runnerFor(file, template);
     if (!cmd)
         return { error: `no runner for ${file}` };

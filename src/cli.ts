@@ -23,6 +23,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { gutCheckAll, type Gut } from './gutcheck.js';
 import { baseCommit, checkNewTests, parseNewTests, type NewTest } from './newtests.js';
 import { runLive } from './live.js';
 import { preflightFault } from './preflight.js';
@@ -1495,7 +1496,7 @@ type Receipt = {
   evals?: string; // `pass <run id>`: the full eval run at this head (only when evals.enabled)
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
   review?: { state: 'approved' | 'skipped'; reason?: string; head?: string; result?: ReviewResult };
-  new_tests?: NewTest[]; // receipt --new-test: each declared new test, red on the base and green at head
+  new_tests?: (Partial<NewTest> & { file: string; gut?: Gut })[]; // receipt --new-test: each declared new test, red on the base and green at head, and caught when its one target is stubbed (check.gut_check)
   scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
   affected?: AffectedProof; // verify --affected-by: the prior receipt this one extends, the files, the journeys and no review again
 };
@@ -1648,9 +1649,9 @@ async function cmdReceipt(argv: string[]): Promise<number> {
   if (declared.error) throw new UsageError(`receipt: ${declared.error}`);
   if (!declared.rest.length) throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
   assertCleanForReceipt(repo);
-  let newTests: NewTest[] | undefined;
-  if (declared.files.length && !cfg.check.red_before_green) process.stderr.write('receipt: --new-test ignored: check.red_before_green is off in the config\n');
-  else if (declared.files.length) {
+  let newTests: Receipt['new_tests'];
+  if (declared.files.length && !cfg.check.red_before_green && !cfg.check.gut_check) process.stderr.write('receipt: --new-test ignored: check.red_before_green is off in the config\n');
+  if (declared.files.length && cfg.check.red_before_green) {
     let found;
     try {
       found = checkNewTests(repo, declared.files, baseCommit(repo, cfg.base_ref, defaultBranch(repo)), cfg.check.test_run);
@@ -1660,6 +1661,16 @@ async function cmdReceipt(argv: string[]): Promise<number> {
     if (found.refusal) return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${found.refusal}`, new_tests: found.rows, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
     newTests = found.rows;
   }
+  if (declared.files.length && cfg.check.gut_check) {
+    let gut;
+    try {
+      gut = gutCheckAll(repo, declared.files, cfg.check.test_run);
+    } catch (e) {
+      throw new UsageError(`receipt: gut check could not run: ${errorText(e)}`);
+    }
+    newTests = gut.rows.map((g) => ({ ...newTests?.find((n) => n.file === g.file), ...g }));
+    if (gut.refusal) return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${gut.refusal}`, new_tests: newTests, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
+  }
   return emitted(recordReceipt(repo, cfg, await runCheck(declared.rest), undefined, undefined, newTests));
 }
 
@@ -1668,7 +1679,7 @@ function assertCleanForReceipt(repo: string): void {
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }, newTests?: NewTest[]): { code: number; result: Record<string, unknown> } {
+function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }, newTests?: Receipt['new_tests']): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.

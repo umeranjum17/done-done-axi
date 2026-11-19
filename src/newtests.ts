@@ -39,9 +39,9 @@ export function runnerFor(file: string, template: string): string[] | { shell: s
   return template.trim() ? { shell: template.replaceAll('{file}', `'${file.replaceAll("'", `'\\''`)}'`) } : null;
 }
 
-type Side = 'green' | 'red' | 'skipped' | { error: string };
+export type Side = 'green' | 'red' | 'skipped' | { error: string };
 
-function runAt(cwd: string, file: string, template: string): Side {
+export function runAt(cwd: string, file: string, template: string): Side {
   const cmd = runnerFor(file, template);
   if (!cmd) return { error: `no runner for ${file}` };
   const env = { ...process.env, JG_TEST_SKIP_EXIT: String(SKIP_EXIT) };

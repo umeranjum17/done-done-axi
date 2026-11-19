@@ -77,7 +77,7 @@ export type Config = {
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
   signoff: { post: boolean; board: string };
-  check: { timeout: string; review_base: boolean; project: string; preflight: boolean; red_before_green: boolean; test_run: string }; // timeout: how long `check`'s plain checks may run before it stops with the line it was judging, e.g. 5m; review_base: take the review base from the policy command `jg-item base <project>` (project '' is the repo folder name); preflight: refuse a run whose command is not found, before it starts; red_before_green: receipt --new-test refuses a declared test that already passes on the base; test_run: the command for a test file no built-in runner covers, {file} its path
+  check: { timeout: string; review_base: boolean; project: string; preflight: boolean; red_before_green: boolean; gut_check: boolean; test_run: string }; // timeout: how long `check`'s plain checks may run before it stops with the line it was judging, e.g. 5m; review_base: take the review base from the policy command `jg-item base <project>` (project '' is the repo folder name); preflight: refuse a run whose command is not found, before it starts; red_before_green: receipt --new-test refuses a declared test that already passes on the base; gut_check: receipt --new-test also refuses a declared test that still passes with its one target stubbed to do nothing; test_run: the command for a test file no built-in runner covers, {file} its path
   suite: { command: string; timeout: string }; // the project's own test suite, run as one proof step; command '' detects it from the repo
   // The judge always runs; there is no key that turns it off.
   // route: claude-code, answerer:<agent> or a key route (openai:key, minimax:key), set by the user ('' until they do); model: '' for that agent's agent_config model.
@@ -173,6 +173,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'check.project': { scope: 'any', type: 'string' },
   'check.preflight': { scope: 'any', type: 'boolean' },
   'check.red_before_green': { scope: 'any', type: 'boolean' },
+  'check.gut_check': { scope: 'any', type: 'boolean' },
   'check.test_run': { scope: 'any', type: 'string' },
   'suite.command': { scope: 'repo', type: 'string' },
   'suite.timeout': { scope: 'any', type: 'duration' },
@@ -461,7 +462,7 @@ function defaultConfig(repo: string): Config {
     affected: { global_paths: [] },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
-    check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, test_run: '' },
+    check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, gut_check: false, test_run: '' },
     suite: { command: '', timeout: '30m' },
     judge: { route: '', fallback_route: '', model: '', cheap_first: false, floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
     trusted: false,

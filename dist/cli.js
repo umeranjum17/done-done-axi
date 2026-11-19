@@ -23,6 +23,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, scoresOf, totals } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { gutCheckAll } from './gutcheck.js';
 import { baseCommit, checkNewTests, parseNewTests } from './newtests.js';
 import { runLive } from './live.js';
 import { preflightFault } from './preflight.js';
@@ -1732,9 +1733,9 @@ async function cmdReceipt(argv) {
         throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
     assertCleanForReceipt(repo);
     let newTests;
-    if (declared.files.length && !cfg.check.red_before_green)
+    if (declared.files.length && !cfg.check.red_before_green && !cfg.check.gut_check)
         process.stderr.write('receipt: --new-test ignored: check.red_before_green is off in the config\n');
-    else if (declared.files.length) {
+    if (declared.files.length && cfg.check.red_before_green) {
         let found;
         try {
             found = checkNewTests(repo, declared.files, baseCommit(repo, cfg.base_ref, defaultBranch(repo)), cfg.check.test_run);
@@ -1745,6 +1746,18 @@ async function cmdReceipt(argv) {
         if (found.refusal)
             return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${found.refusal}`, new_tests: found.rows, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
         newTests = found.rows;
+    }
+    if (declared.files.length && cfg.check.gut_check) {
+        let gut;
+        try {
+            gut = gutCheckAll(repo, declared.files, cfg.check.test_run);
+        }
+        catch (e) {
+            throw new UsageError(`receipt: gut check could not run: ${errorText(e)}`);
+        }
+        newTests = gut.rows.map((g) => ({ ...newTests?.find((n) => n.file === g.file), ...g }));
+        if (gut.refusal)
+            return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${gut.refusal}`, new_tests: newTests, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
     }
     return emitted(recordReceipt(repo, cfg, await runCheck(declared.rest), undefined, undefined, newTests));
 }
