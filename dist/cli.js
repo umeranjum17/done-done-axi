@@ -24,7 +24,7 @@ import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, ev
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { gutCheckAll } from './gutcheck.js';
-import { baseCommit, checkNewTests, parseNewTests } from './newtests.js';
+import { baseCommit, checkNewTests, parseNewTests, SKIP_EXIT } from './newtests.js';
 import { runLive } from './live.js';
 import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
@@ -41,6 +41,7 @@ import { minimumScope, parseList, scopeShape } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape } from './suite.js';
 import { countRefusals } from './falserefusals.js';
 import { sealedPass } from './reuse.js';
+import { isSkip, settleSkips, skipEnv, skipReason } from './skipexit.js';
 import { codeOnly, codeOnlyJourneys, configFault, MARK, namedJourney, releaseArtifacts, RULE, runsFault, STEPS_FILE, STEPS_SHAPE, stepRecordFault, stepsFault } from './proof.js';
 const PASS = 0, FAIL = 1, USAGE = 2, INCONCLUSIVE = 3, WAITING = 4;
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -704,6 +705,8 @@ function closeRun(repo, cfg, rec, log) {
     let reason = '';
     if (now.commit !== rec.commit)
         reason = `HEAD moved from ${rec.commit} to ${now.commit} during the run; evidence is not tied to one commit`;
+    else if (rec.skipped?.length && rec.exit === SKIP_EXIT)
+        reason = skipReason(rec.skipped);
     else if (rec.exit !== null && rec.exit !== 0) {
         const failure = log ? firstFailure(log) : '';
         reason = `the run command exited ${rec.exit}${failure ? `: ${failure}` : ''}`;
@@ -715,7 +718,7 @@ function closeRun(repo, cfg, rec, log) {
     const result = {
         command: 'run',
         // A capture that ran is recorded, never a pass: only the judged check decides whether it proves anything.
-        result: reason ? 'fail' : 'recorded',
+        result: reason ? (rec.skipped?.length && rec.exit === SKIP_EXIT ? 'skipped' : 'fail') : 'recorded',
         run_id: rec.run_id,
         commit: rec.commit,
         dirty: rec.dirty,
@@ -728,6 +731,8 @@ function closeRun(repo, cfg, rec, log) {
         result.flaky = rec.flaky;
         result.warning = rec.warning;
     }
+    if (rec.skipped?.length)
+        result.skipped = rec.skipped;
     result.evidence = rows.items;
     if (rows.omitted)
         result.evidence_omitted = rows.omitted;
@@ -917,17 +922,22 @@ async function cmdRun(argv) {
         // The journey's own stdout goes to our stderr, never our stdout: stdout carries only done-done's
         // result document (TOON or --json), so a noisy journey cannot break `run --json | JSON.parse`.
         cwd: repo, size,
-        env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
+        env: { ...process.env, ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...inst?.env, ...(matrix ? cellEnv(cell) : {}) },
         onData: (b) => { process.stderr.write(b); appendFileSync(logFile, b); },
     });
     // Flaky quarantine: a cell that fails once runs a second time; passing then is named, not failed. A slow stop is final.
     const flaky = [];
+    const skipped = [];
     let slow = null;
     for (const cell of matrix?.required ?? [{}]) {
         const r = await drive(cell);
         let code = r.code ?? 1;
         if (r.slow)
             slow = slowReason(journey, size);
+        else if (isSkip(cfg.check.skip_is_not_proof, code)) {
+            skipped.push(cellName(cell));
+            code = 0;
+        }
         else if (code !== 0 && (await drive(cell)).code === 0) {
             flaky.push(matrix ? cellName(cell) : journey ?? expanded);
             code = 0;
@@ -944,6 +954,7 @@ async function cmdRun(argv) {
         process.stderr.write(`warning: ${rec.warning}\n`);
     }
     reap();
+    settleSkips(rec, skipped, (matrix?.required ?? [{}]).length);
     const sealed = closeRun(repo, cfg, rec, logFile);
     if (slow)
         return emitted({ code: FAIL, result: { ...sealed.result, slow: true, reason: slow } });
@@ -1188,7 +1199,7 @@ async function runCheck(argv, run) {
         if (rec.dirty && !cfg.evidence.allow_dirty)
             findings.push({ level: 'fail', why: `${name}: captured from a tree with uncommitted changes (run ${rec.run_id}); commit them, then capture again` });
         if (rec.exit !== null && rec.exit !== 0)
-            findings.push({ level: 'fail', why: `${name}: its run command exited ${rec.exit} (run ${rec.run_id})` });
+            findings.push({ level: 'fail', why: `${name}: ${rec.skipped?.length && rec.exit === SKIP_EXIT ? skipReason(rec.skipped) : `its run command exited ${rec.exit}`} (run ${rec.run_id})` });
     }
     // The approved inventory is the contract, not the subset the claim happened to cite. Enforce it on every
     // claim when configured, so rewording a design-done/release outcome cannot bypass missing screens.
@@ -2390,6 +2401,7 @@ async function runSteps(dir) {
                 // With a matrix block the journey runs once per required cell with that cell in env.
                 const matrix = hasMatrix(cfg.matrix) ? splitMatrix(cfg.matrix).required : null;
                 const failed = [];
+                const skipped = [];
                 rec.exit = 0;
                 let timedOut = false;
                 let running;
@@ -2402,7 +2414,7 @@ async function runSteps(dir) {
                 for (const cell of matrix ?? [{}]) {
                     // An async child keeps the heartbeat going while the journey runs. The journey gets its own process group, so a
                     // timeout or a dead runner can kill it and everything it started.
-                    const child = spawn(rec.command, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
+                    const child = spawn(rec.command, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
                     run.runner.journey_pgid = child.pid;
                     running = child.pid;
                     saveRun(dir, run);
@@ -2414,13 +2426,16 @@ async function runSteps(dir) {
                             rec.exit = 1;
                         break;
                     }
-                    if (code !== 0) {
+                    if (isSkip(cfg.check.skip_is_not_proof, code))
+                        skipped.push(cellName(cell));
+                    else if (code !== 0) {
                         if (!rec.exit)
                             rec.exit = code;
                         failed.push(`${cellName(cell)} (exit ${code})`);
                     }
                 }
                 clearTimeout(timer);
+                settleSkips(rec, skipped, (matrix ?? [{}]).length);
                 if (run.runner?.instance_pgid)
                     stopInstance(run.runner.instance_pgid);
                 if (cfg.base_ref && !failed.length)

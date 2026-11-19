@@ -174,5 +174,9 @@
   "test/gut-check.test.mjs": {
     "owner": "npm-test",
     "sha256": "dd35e68d400a3e9512490bae6c8b51ae11cd817864bd4326d8cd203084715683"
+  },
+  "test/skip-not-proof.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "5036f5b082833c72fc2e4a3c9f48dbe3af9c0a51bdbd9038d1843f5156d2e67e"
   }
 }

@@ -1,0 +1,10 @@
+// The fixture test command: it records the JG_TEST_SKIP_EXIT it was given, writes a capture and its step record, then exits
+// with EXIT_ALL, or with EXIT_CELL when the matrix cell it runs in is the one named by SKIP_CELL.
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+appendFileSync(process.env.ENV_FILE, `${process.env.JG_TEST_SKIP_EXIT ?? 'unset'}\n`);
+const out = process.env.DONE_DONE_EVIDENCE_ROOT;
+const cell = process.env.DONE_DONE_CELL ?? '';
+// Each cell has its own screen (SCREEN_PNG_<cell>), so no two captures are byte-identical.
+writeFileSync(`${out}/home${cell ? `.${cell}` : ''}.png`, readFileSync(process.env[`SCREEN_PNG${cell ? `_${cell}` : ''}`]));
+writeFileSync(`${out}/steps.json`, JSON.stringify({ target: { version: '1.0.0' }, start: 'a fresh notes app', steps: ['open the home screen'], result: 'home renders' }));
+process.exit(process.env.SKIP_CELL && cell === process.env.SKIP_CELL ? 77 : Number(process.env.EXIT_ALL ?? 0));
