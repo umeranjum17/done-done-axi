@@ -178,5 +178,9 @@
   "test/skip-not-proof.test.mjs": {
     "owner": "npm-test",
     "sha256": "5036f5b082833c72fc2e4a3c9f48dbe3af9c0a51bdbd9038d1843f5156d2e67e"
+  },
+  "test/mise-shim.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "e4c20499ef48a3f9f27d9626557c0fa78b7cd4376c0ebe9fca3d9598c9640dca"
   }
 }

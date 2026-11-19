@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { createServer } from 'node:net';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { parseDuration } from './config.js';
 // A free local port done-done owns: bind 127.0.0.1:0, read it back, release.
 // A fixed port that is already taken can never be used.
@@ -25,6 +26,23 @@ function instanceHome(scratch) {
     for (const d of [home, config, data, cache])
         mkdirSync(d, { recursive: true });
     return { HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data, XDG_CACHE_HOME: cache };
+}
+// The private HOME and XDG folders hide the host's mise config, trust and installs, so a mise shim
+// (python3, node, ...) would fail inside the instance. Point mise back at the host's own folders
+// (only where they exist and the caller set nothing) and trust the host's global config, keeping
+// any trusted paths the caller already set.
+export function miseEnv(base) {
+    const home = base.HOME ?? homedir();
+    const xdg = (name, fallback) => join(base[name] || join(home, fallback), 'mise');
+    const dirs = { MISE_CONFIG_DIR: xdg('XDG_CONFIG_HOME', '.config'), MISE_DATA_DIR: xdg('XDG_DATA_HOME', '.local/share'), MISE_STATE_DIR: xdg('XDG_STATE_HOME', '.local/state'), MISE_CACHE_DIR: xdg('XDG_CACHE_HOME', '.cache') };
+    const out = {};
+    for (const [k, dir] of Object.entries(dirs))
+        if (!base[k] && existsSync(dir))
+            out[k] = dir;
+    const config = join(base.MISE_CONFIG_DIR || dirs.MISE_CONFIG_DIR, 'config.toml');
+    if (existsSync(config))
+        out.MISE_TRUSTED_CONFIG_PATHS = [base.MISE_TRUSTED_CONFIG_PATHS, config].filter(Boolean).join(delimiter);
+    return out;
 }
 async function waitUrl(url, timeoutMs) {
     const end = Date.now() + timeoutMs;
@@ -78,7 +96,7 @@ export async function startInstance(repo, inst, runId, scratch, baseEnv, logFile
     const port = await pickPort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const portEnv = { DONE_DONE_PORT: String(port), DONE_DONE_BASE_URL: baseUrl };
-    const env = { ...baseEnv, ...portEnv, DONE_DONE_RUN_ID: runId, ...instanceHome(scratch), TMPDIR: scratch };
+    const env = { ...baseEnv, ...portEnv, DONE_DONE_RUN_ID: runId, ...miseEnv(baseEnv), ...instanceHome(scratch), TMPDIR: scratch };
     const command = inst.command.replaceAll('${RUN_ID}', runId);
     mkdirSync(dirname(logFile), { recursive: true });
     const fd = openSync(logFile, 'a');
