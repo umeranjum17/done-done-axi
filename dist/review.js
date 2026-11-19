@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,14 +32,36 @@ const schema = (classes) => ({
     additionalProperties: false,
 });
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 });
-// The base to compare with: the one the user named, else origin's default branch, else main.
-export function reviewBase(repo, named) {
-    const base = named ?? (() => { try {
+// The base the policy command names: `${DONE_DONE_ITEM_CMD:-jg-item} base <project>` prints one ref, or exits 2 with a refusal when the project has no policy row.
+export function policyBase(repo, project) {
+    const [cmd, ...pre] = (process.env.DONE_DONE_ITEM_CMD || 'jg-item').split(/\s+/);
+    const r = spawnSync(cmd, [...pre, 'base', project], { cwd: repo, encoding: 'utf8', timeout: 10_000 });
+    const name = cmd.replace(/^.*\//, '');
+    if (r.error?.code === 'ENOENT')
+        throw new Error(`review base command not found: ${name}`);
+    if (r.error)
+        throw new Error(`review: ${name} base ${project} failed: ${r.error.message}`);
+    if (r.status === 2)
+        throw new Error(`review: no policy row for ${project}${/\S/.test(r.stdout) ? ` (${r.stdout.trim()})` : ''}`);
+    if (r.status !== 0)
+        throw new Error(`review: ${name} base ${project} exited ${r.status}: ${(r.stderr || r.stdout).trim()}`);
+    const ref = r.stdout.trim();
+    try {
+        git(repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`);
+    }
+    catch {
+        throw new Error(`review: the policy base ${ref || '(empty)'} for ${project} is not a commit in this repo`);
+    }
+    return ref;
+}
+// The base to compare with: the one the user named, else the policy command's (when `policyProject` is given), else origin's default branch, else main.
+export function reviewBase(repo, named, policyProject) {
+    const base = named ?? (policyProject !== undefined ? policyBase(repo, policyProject) : (() => { try {
         return git(repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').trim();
     }
     catch {
         return 'main';
-    } })();
+    } })());
     try {
         git(repo, 'rev-parse', '--verify', '--quiet', `${base}^{commit}`);
     }

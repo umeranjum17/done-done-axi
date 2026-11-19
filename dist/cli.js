@@ -2496,7 +2496,7 @@ async function runSteps(dir) {
         else if (!cfg.review_enabled)
             proof = { state: 'skipped', reason: 'review disabled in global config' };
         else {
-            const base = run.review?.base ?? reviewBase(run.repo);
+            const base = run.review?.base ?? reviewBase(run.repo, undefined, policyProject(run.repo, cfg));
             const current = p.checked.head.commit;
             const mergeBase = git(run.repo, 'merge-base', base, current);
             if (!git(run.repo, 'diff', '--name-only', mergeBase, current))
@@ -5123,6 +5123,8 @@ function reviewPath(id, repo) {
     const stamp = basename(latest).slice(0, 16).replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, '$1-$2-$3T$4:$5:$6Z');
     return other && Date.parse(other.created) > Date.parse(stamp) ? undefined : latest;
 }
+// The project the policy command is asked about when check.review_base is on, else undefined (the origin/HEAD guess).
+const policyProject = (repo, cfg) => (cfg.check.review_base ? cfg.check.project || basename(repo) : undefined);
 function reviewConfig(repo, base) {
     let projectText = '';
     try {
@@ -5191,7 +5193,7 @@ async function cmdReview(argv) {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true });
     if (positionals.length > 1)
         throw new UsageError('review takes at most one base');
-    const repo = repoRoot(), base = reviewBase(repo, positionals[0]), cfg = reviewConfig(repo, base);
+    const repo = repoRoot(), base = reviewBase(repo, positionals[0], policyProject(repo, loadConfig(repo))), cfg = reviewConfig(repo, base);
     await withChoice('agent', cfg);
     const id = newRunId(git(repo, 'rev-parse', 'HEAD')), dir = reviewDir(id);
     mkdirSync(join(dir, 'agents'), { recursive: true });

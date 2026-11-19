@@ -769,7 +769,7 @@ test('init writes a minimal config that keeps evidence outside the repo, and is 
   assert.equal(d.global_config, `written ${globalYml}`);
   const globalText = readFileSync(globalYml, 'utf8');
   const g = parse(globalText);
-  assert.deepEqual(Object.keys(g), ['review_enabled', 'agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
+  assert.deepEqual(Object.keys(g), ['review_enabled', 'agent_config', 'agent_args_override', 'agent_path_override', 'acpx_path', 'check', 'agent_timeout', 'auto_fix', 'evidence', 'judge'], 'every global key, named as in no-mistakes where the meaning is the same');
   assert.deepEqual([g.agent, g.agent_config.claude, g.agent_config.opencode, g.agent_timeout], [undefined, { model: 'claude-haiku-5-5', effort: 'low' }, { model: 'opencode-go/muse-spark-1.3-contributor', effort: 'low' }, '30m'], 'no agent key until the user picks one, and the cheap defaults');
   for (const key of Object.keys(g)) assert.match(globalText, new RegExp(`# .*\\n${key}:`), `${key} has a comment`);
   assert.equal(g.agent_config.codex, undefined, 'codex has no cheap default, so init writes no codex model');

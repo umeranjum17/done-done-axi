@@ -137,7 +137,7 @@
   },
   "test/cli.test.mjs": {
     "owner": "npm-test",
-    "sha256": "ac8bab3ea067a0440b7ba7314125c57ae91b0c09f2b0540c2dc9b6dffd208a4d"
+    "sha256": "a84412cde73765455646b238a046fcd87562d953c2749da707b352fe00f17e76"
   },
   "test/conformance.test.mjs": {
     "owner": "npm-test",
@@ -146,5 +146,9 @@
   "test/evals.test.mjs": {
     "owner": "npm-test",
     "sha256": "f0892bd012f8718f2b18931d5309bad4cf3ebcb70ca965340374b61aad8bfd85"
+  },
+  "test/review-base-policy.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "c8e70b7975f8ec68b7b67048cf3e34594edea3a793e5ae2269180b108e723d54"
   }
 }

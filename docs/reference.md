@@ -1037,6 +1037,8 @@ An `agent_config` entry merges with the defaults field by field, so `claude: { m
 | `signoff.post` | `false`; `true` lets every `signoff` post its message to the sign-off board, see [Send a run to sign-off](#send-a-run-to-sign-off) |
 | `signoff.board` | none; the board file to post to, else the nearest `.sign-off/` board sign-off-axi finds |
 | `check.timeout` | `5m`; how long `check`'s plain checks (the cited files, their runs and what changed since) may run before `check` stops with an error that names the evidence line it was judging (also valid in the global file) |
+| `check.review_base` | `false`; `true` takes the review base of `review` and verify's review step from the policy command `jg-item base <project>` (`DONE_DONE_ITEM_CMD` names another command), which prints one ref, and refuses with `no policy row for <project>` when the command says there is none; a base named on the command line still wins; `init` writes `true` in a new global config (also valid in the global file) |
+| `check.project` | the repo folder name; the project name `check.review_base` asks the policy command about |
 | `suite.command` | none; the project's own test suite command, run as one proof step, see [Project test suite](#project-test-suite); unset, done-done detects it |
 | `suite.timeout` | `30m`; how long the suite may run before it fails the proof (also valid in the global file) |
 | `agent` | as in the global file; set here, it wins |

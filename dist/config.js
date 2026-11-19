@@ -106,6 +106,8 @@ const KEYS = {
     'signoff.post': { scope: 'repo', type: 'boolean' },
     'signoff.board': { scope: 'repo', type: 'string' },
     'check.timeout': { scope: 'any', type: 'duration' },
+    'check.review_base': { scope: 'any', type: 'boolean' },
+    'check.project': { scope: 'any', type: 'string' },
     'suite.command': { scope: 'repo', type: 'string' },
     'suite.timeout': { scope: 'any', type: 'duration' },
     'judge.model': { scope: 'global', type: 'string' },
@@ -441,7 +443,7 @@ function defaultConfig(repo) {
         affected: { global_paths: [] },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
-        check: { timeout: '5m' },
+        check: { timeout: '5m', review_base: false, project: '' },
         suite: { command: '', timeout: '30m' },
         judge: { route: '', fallback_route: '', model: '', floor: 0.7, max_captures: MAX_CAPTURES, env_file: '', account_command: '', pool_command: '', pool_config: '' },
         trusted: false,
@@ -541,6 +543,11 @@ agent_path_override: {}
 
 # The acpx bridge that starts acp:<target> agents: a name on PATH or an absolute path.
 acpx_path: acpx
+
+# Take every review base from the policy command \`jg-item base <project>\` (DONE_DONE_ITEM_CMD names another command), and
+# refuse when it says the project has no policy row. Set false to guess origin/HEAD, then main, as before.
+check:
+  review_base: true
 
 # How long one agent call (a reader, the judge, the doctor probe) may run: 90s, 30m or 1h.
 agent_timeout: ${AGENT_TIMEOUT}

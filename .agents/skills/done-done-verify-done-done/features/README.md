@@ -25,4 +25,5 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [Live tier](live-tier.md): `done-done run live-tier`; `done-done run --tier live` runs only the `tier: live` entries, each bounded by its own timeout with no agent, one green or red row each (seconds), a red row exits 1 as a result and never a failed landing, and verify, affected and the landing path never run one
 - [Verify drives base_ref beside the head, and a failing base_install names its cause](base-ref-verify.md): run `done-done run base-ref-verify`
 
+- [Review base from policy](review-base-policy.md): `node --test test/review-base-policy.test.mjs`; with `check.review_base` on, `done-done review` takes its base from `jg-item base <project>`, refuses with `no policy row for <project>` or `review base command not found: jg-item`, and a named base still wins
 - [Route fallback](route-fallback.md): `done-done run route-fallback` forces first author and judge failures, verifies YAML/tool-models precedence and actual route records, and rejects product failures without failover.
