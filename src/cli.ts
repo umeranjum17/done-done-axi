@@ -23,6 +23,7 @@ import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, type Row, scoresOf, totals, type Proposal } from './evals.js';
 import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
+import { baseCommit, checkNewTests, parseNewTests, type NewTest } from './newtests.js';
 import { runLive } from './live.js';
 import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
@@ -1494,6 +1495,7 @@ type Receipt = {
   evals?: string; // `pass <run id>`: the full eval run at this head (only when evals.enabled)
   suite?: SuiteRecord; // the project's test suite at this head; a receipt without it was written before the suite step
   review?: { state: 'approved' | 'skipped'; reason?: string; head?: string; result?: ReviewResult };
+  new_tests?: NewTest[]; // receipt --new-test: each declared new test, red on the base and green at head
   scope?: Scope; // the caller-named minimum journey list the run drove, who named it, and the journeys left out
   affected?: AffectedProof; // verify --affected-by: the prior receipt this one extends, the files, the journeys and no review again
 };
@@ -1642,9 +1644,23 @@ async function cmdReceipt(argv: string[]): Promise<number> {
     if (rest.length) throw new UsageError('receipt --verify takes no other arguments');
     return emitted(verifyReceipt(repo, cfg, verifyHead));
   }
-  if (!rest.length) throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
+  const declared = parseNewTests(rest);
+  if (declared.error) throw new UsageError(`receipt: ${declared.error}`);
+  if (!declared.rest.length) throw new UsageError('receipt needs a claim (--outcome "<claim>" <files...> or --from <file|->) or --verify <head>');
   assertCleanForReceipt(repo);
-  return emitted(recordReceipt(repo, cfg, await runCheck(rest)));
+  let newTests: NewTest[] | undefined;
+  if (declared.files.length && !cfg.check.red_before_green) process.stderr.write('receipt: --new-test ignored: check.red_before_green is off in the config\n');
+  else if (declared.files.length) {
+    let found;
+    try {
+      found = checkNewTests(repo, declared.files, baseCommit(repo, cfg.base_ref, defaultBranch(repo)), cfg.check.test_run);
+    } catch (e) {
+      throw new UsageError(`receipt: red-before-green check could not run: ${errorText(e)}`);
+    }
+    if (found.refusal) return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${found.refusal}`, new_tests: found.rows, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
+    newTests = found.rows;
+  }
+  return emitted(recordReceipt(repo, cfg, await runCheck(declared.rest), undefined, undefined, newTests));
 }
 
 function assertCleanForReceipt(repo: string): void {
@@ -1652,15 +1668,15 @@ function assertCleanForReceipt(repo: string): void {
 }
 
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }): { code: number; result: Record<string, unknown> } {
+function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }, newTests?: NewTest[]): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-  let rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(extended && { affected: extended.affected }) };
+  let rec: Receipt = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(newTests && { new_tests: newTests }), ...(extended && { affected: extended.affected }) };
   if (extended) rec = extendReceipt(earlierReceipt(cfg, rec.head), rec, extended.journey);
   const path = writeReceipt(cfg, rec);
-  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+  const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), ...(rec.new_tests && { new_tests: rec.new_tests }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
   return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 
