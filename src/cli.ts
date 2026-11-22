@@ -32,7 +32,8 @@ import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
 import { hygiene } from './hygiene.js';
-import { measureJourney, nightFault, runBounded, shadowBatch, withShadowRun, sizeFault, slowReason, isSize, type Size } from './size.js';
+import { measureJourney, nightFault, runBounded, shadowBatch, withShadowRun, sizeFault, slowReason, isSize, type Size, type ShadowAttempt } from './size.js';
+import { observeFlakes } from './flake-history.js';
 import { SIZES } from './size.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
@@ -2992,12 +2993,35 @@ async function verifyLayer(o: LayerOptions): Promise<number> {
     process.send?.({ plan: planPath });
     const existing = JSON.parse(readFileSync(planPath, 'utf8'));
     if (existing.layer !== o.layer || existing.base !== base || existing.head !== current.commit || JSON.stringify(existing.required) !== JSON.stringify(entries.map(([name]) => name)) || existing.complete !== false || !Number.isInteger(existing.budget_ms) || existing.budget_ms <= 1000 || (o.layer === 'fast' && existing.budget_ms > 300_000)) throw new UsageError('layer plan does not match this incomplete run');
+    if (existing.report && Array.isArray(existing.unfinished) && existing.unfinished.length === 0 && typeof existing.checks_complete === 'boolean') {
+      emit({ command: 'verify', layer: o.layer, mode: 'shadow', result: existing.checks_complete ? 'checks-passed' : 'incomplete', plan: planPath, required: entries.length, ...existing.report, flakes: existing.flakes, layer_duration_ms: existing.duration_ms, full_batch_p95_ms: existing.full_batch_p95_ms, full_batch_samples: existing.full_batch_samples, help: ['Shadow checks do not issue a receipt; the existing verification gate remains required.'] });
+      return existing.checks_complete ? INCONCLUSIVE : FAIL;
+    }
     const remaining = layerRemaining(planPath);
     const journal = join(dirname(planPath), 'events.jsonl');
-    const report = await shadowBatch(entries, { cwd: repo, env: { ...commandEnv(), DONE_DONE_LAYER_PLAN: planPath, DONE_DONE_SHADOW_TIMING: journal }, journal, deadlineMs: remaining + 1000, limits, retry: false, overTargetIsStatus: false });
+    const env = commandEnv(), attempts: ShadowAttempt[] = [];
+    // Enforcement is a controller setting, not an input exposed to the checks themselves.
+    delete env.DONE_DONE_FLAKE_ENFORCE;
+    const inputsBefore = guardSnapshot(repo, cfg.inputs);
+    const report = await shadowBatch(entries, { cwd: repo, env: { ...env, DONE_DONE_LAYER_PLAN: planPath, DONE_DONE_SHADOW_TIMING: journal }, journal, deadlineMs: remaining + 1000, limits, retry: true, retryWhen: (r, name) => !!cfg.journeys[name] && !r.slow && !r.error && r.code !== null && ![77, 126, 127].includes(r.code), onAttempt: a => attempts.push(a), overTargetIsStatus: false });
     const finalPlan = JSON.parse(readFileSync(planPath, 'utf8'));
     const after = head(repo);
-    finalPlan.checks_complete = report.status === 'passed' && report.unfinished_leaves.length === 0 && report.rows.length === entries.length && !after.dirty && after.commit === current.commit;
+    const inputSnapshots = { before: inputsBefore, after: guardSnapshot(repo, cfg.inputs) };
+    const unchangedInputs = JSON.stringify(inputSnapshots.before) === JSON.stringify(inputSnapshots.after);
+    const receipt = verifyReceipt(repo, cfg, current.commit);
+    const verifiedRepair = new Set<string>();
+    if (receipt.code === PASS) {
+      const rec: Receipt = JSON.parse(readFileSync(join(receiptsDir(cfg), `${current.commit}.json`), 'utf8'));
+      for (const run of rec.runs) if (run.journey && run.commit === current.commit) verifiedRepair.add(run.journey);
+    }
+    const flakes = observeFlakes({ root: cfg.evidence.root, env, tree: current.tree, inputs: inputSnapshots, inputsStable: unchangedInputs && !after.dirty && after.commit === current.commit, attempts, journeys: Object.fromEntries(selected), enforce: process.env.DONE_DONE_FLAKE_ENFORCE === '1', passing: new Set(report.rows.filter(r => r.status === 'passed').map(r => r.leaf_id)), verifiedRepair });
+    const safe = unchangedInputs && !after.dirty && after.commit === current.commit;
+    // In shadow mode, a retry is observed but the original result remains the gate result.
+    for (const row of report.rows) row.result_status = row.status === 'passed' || (safe && flakes.muted.has(row.leaf_id)) ? 'passed' : row.status;
+    report.status = report.unfinished_leaves.length === 0 && report.rows.every(r => r.result_status === 'passed') ? 'passed' : 'failed';
+    finalPlan.report = report;
+    finalPlan.flakes = flakes.observations;
+    finalPlan.checks_complete = report.status === 'passed' && report.unfinished_leaves.length === 0 && report.rows.length === entries.length && safe;
     if (after.dirty || after.commit !== current.commit) finalPlan.failure = 'tracked files or HEAD changed during the layer';
     finalPlan.outcomes = report.rows.map(({ leaf_id, result_status, duration_ms }) => ({ name: leaf_id, status: result_status, duration_ms }));
     finalPlan.unfinished = report.unfinished_leaves;
@@ -3017,7 +3041,7 @@ async function verifyLayer(o: LayerOptions): Promise<number> {
     const tmp = `${planPath}.${process.pid}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(finalPlan, null, 2)}\n`, { mode: 0o600 });
     renameSync(tmp, planPath);
-    emit({ command: 'verify', layer: o.layer, mode: 'shadow', result: finalPlan.checks_complete ? 'checks-passed' : 'incomplete', plan: planPath, required: entries.length, ...report, layer_duration_ms: totalMs, full_batch_p95_ms: fullBatchP95, full_batch_samples: fullBatchSamples, help: ['Shadow checks do not issue a receipt; the existing verification gate remains required.'] });
+    emit({ command: 'verify', layer: o.layer, mode: 'shadow', result: finalPlan.checks_complete ? 'checks-passed' : 'incomplete', plan: planPath, required: entries.length, ...report, flakes: flakes.observations, layer_duration_ms: totalMs, full_batch_p95_ms: fullBatchP95, full_batch_samples: fullBatchSamples, help: ['Shadow checks do not issue a receipt; the existing verification gate remains required.'] });
     return finalPlan.checks_complete ? INCONCLUSIVE : FAIL;
   } finally { rmdirSync(lock); }
 }

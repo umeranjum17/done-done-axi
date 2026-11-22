@@ -2,7 +2,7 @@
 // it is stopped and called slow. A repo opts in by sizing any journey: lint then fails a journey with no size and a large
 // one with no `reason:`. Large journeys are night-only: `run` and `tests measure` refuse them without --night.
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { tmpdir } from 'node:os';
@@ -94,7 +94,8 @@ export async function measureJourney(name: string, command: string, size: Size, 
 }
 
 // Shadow batches measure wall time independently of the sum of their parallel children. An optional deadline applies to the batch.
-export async function shadowBatch(entries: [string, string][], opts: { cwd: string; env: NodeJS.ProcessEnv; journal: string; deadlineMs?: number; limits?: Record<string, number>; retry?: boolean; overTargetIsStatus?: boolean }) {
+export type ShadowAttempt = { episode: string; attempt: string; leaf: string; report: string | null; result: Bounded };
+export async function shadowBatch(entries: [string, string][], opts: { cwd: string; env: NodeJS.ProcessEnv; journal: string; deadlineMs?: number; limits?: Record<string, number>; retry?: boolean; overTargetIsStatus?: boolean; onAttempt?: (attempt: ShadowAttempt) => void; retryWhen?: (result: Bounded, name: string) => boolean }) {
   const batch = randomUUID();
   const start = performance.now();
   const startedAt = new Date().toISOString();
@@ -140,10 +141,15 @@ export async function shadowBatch(entries: [string, string][], opts: { cwd: stri
       const executionAt = new Date().toISOString();
       log({ kind: 'start', attempt_id: attemptId, leaf_id: name, started_at: executionAt, start_offset_ms: execution - start, setup_ms: execution - submitted, queue_ms: null });
       const runId = `${batch}-${name}`;
-      const run = (parentAttempt: string) => runBounded(command.replaceAll('${RUN_ID}', runId), { cwd: opts.cwd, signal: controller.signal, timeoutMs: opts.limits?.[name], env: { ...env, DONE_DONE_RUN_ID: runId, DONE_DONE_EVIDENCE_ROOT: dir, DONE_DONE_SHADOW_RUN_ID: batch, DONE_DONE_SHADOW_PARENT_ATTEMPT_ID: parentAttempt, DONE_DONE_SHADOW_LEAF_ID: name }, onData: (b) => process.stderr.write(b) });
+      const run = async (parentAttempt: string) => {
+        const report = join(dir, `${parentAttempt}.junit.xml`);
+        const result = await runBounded(command.replaceAll('${RUN_ID}', runId), { cwd: opts.cwd, signal: controller.signal, timeoutMs: opts.limits?.[name], env: { ...env, DONE_DONE_RUN_ID: runId, DONE_DONE_EVIDENCE_ROOT: dir, DONE_DONE_SHADOW_RUN_ID: batch, DONE_DONE_SHADOW_PARENT_ATTEMPT_ID: parentAttempt, DONE_DONE_SHADOW_LEAF_ID: name, ...(opts.onAttempt ? { DONE_DONE_JUNIT_REPORT: report } : {}) }, onData: (b) => process.stderr.write(b) });
+        if (opts.onAttempt) opts.onAttempt({ episode: attemptId, attempt: parentAttempt, leaf: name, report: existsSync(report) ? readFileSync(report, 'utf8') : null, result });
+        return result;
+      };
       const r = await run(attemptId);
       let final = r, retryMs = 0;
-      if (r.code !== 0 && opts.retry !== false && !controller.signal.aborted) {
+      if (r.code !== 0 && opts.retry !== false && !controller.signal.aborted && (!opts.retryWhen || opts.retryWhen(r, name))) {
         const retryId = randomUUID(), retryStart = performance.now();
         log({ kind: 'retry_start', attempt_id: retryId, parent_attempt_id: attemptId, leaf_id: name, started_at: new Date().toISOString() });
         final = await run(retryId);

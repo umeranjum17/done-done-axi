@@ -37,12 +37,17 @@ const entity = (s: string): string => s.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quo
 });
 
 // A deliberately limited XML reader: unsupported syntax is refused instead of inventing test results.
-export function junit(raw: string) {
+export function junit(raw: string, observe?: (leaf: NativeLeaf, assertion: string | null) => void) {
   if (/<!DOCTYPE|<!ENTITY/i.test(raw)) throw new Error('JUnit DTD and entity declarations are unsupported');
   const token = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<(?:(?:"[^"]*"|'[^']*'|[^'">])*)>/g;
   const stack: string[] = [];
   const leaves: NativeLeaf[] = [];
-  let current: NativeLeaf | null = null, end = 0, root = false;
+  let current: NativeLeaf | null = null, assertion: string | null = null, unsafe = false, end = 0, root = false;
+  const observed: { leaf: NativeLeaf; assertion: string | null }[] = [];
+  const finish = () => {
+    if (!current) throw new Error('unexpected testcase end');
+    leaves.push(current); observed.push({ leaf: current, assertion: unsafe ? null : assertion }); current = null; assertion = null; unsafe = false;
+  };
   for (const match of raw.matchAll(token)) {
     const gap = raw.slice(end, match.index);
     if (gap.includes('<') || /&(?!#x[\da-f]+;|#\d+;|amp;|lt;|gt;|quot;|apos;)/i.test(gap)) throw new Error('malformed or unsupported JUnit XML');
@@ -55,7 +60,7 @@ export function junit(raw: string) {
     const name = m[1].split(':').pop()!;
     if (close) {
       if (stack.pop() !== name) throw new Error(`mismatched JUnit tag ${name}`);
-      if (name === 'testcase') { if (!current) throw new Error('unexpected testcase end'); leaves.push(current); current = null; }
+      if (name === 'testcase') finish();
       continue;
     }
     if (!root) { if (!['testsuite', 'testsuites'].includes(name)) throw new Error('JUnit root must be testsuite or testsuites'); root = true; }
@@ -74,12 +79,18 @@ export function junit(raw: string) {
     if (name === 'testcase') {
       if (current || !attrs.name) throw new Error('JUnit testcase needs a name and cannot be nested');
       current = { id: attrs.id ?? null, name: attrs.name, classname: attrs.classname ?? null, file: attrs.file ?? null, status: 'passed', retries: 0 };
-    } else if (current && ['failure', 'error'].includes(name)) current.status = 'failed';
+    } else if (current && ['failure', 'error'].includes(name)) {
+      current.status = 'failed';
+      // Only a supplied assertion message is comparable; error output alone is not an assertion.
+      if (name === 'error') unsafe = true;
+      if (name === 'failure' && attrs.message?.trim()) assertion = attrs.message.trim();
+    }
     else if (current && name === 'skipped') current.status = 'skipped';
     else if (current && ['rerunFailure', 'rerunError', 'flakyFailure', 'flakyError'].includes(name)) current.retries++;
-    if (self) { if (name === 'testcase') { leaves.push(current!); current = null; } }
+    if (self) { if (name === 'testcase') finish(); }
     else stack.push(name);
   }
   if (!root || stack.length || raw.slice(end).trim()) throw new Error('incomplete JUnit XML');
+  if (observe) for (const item of observed) observe(item.leaf, item.assertion);
   return { format: 'junit', raw, leaves, known: leaves.length || null, attempted: leaves.length ? leaves.filter((x) => x.status !== 'skipped').length : null };
 }

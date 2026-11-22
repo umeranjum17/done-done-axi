@@ -41,7 +41,7 @@
   },
   "journeys/flaky-quarantine.mjs": {
     "owner": "flaky-quarantine",
-    "sha256": "8c5100e6f4afb651f1304f25e1910350fbb33dcdaa22d75ad91fbc9435140da8"
+    "sha256": "af4cd38f92251a9c804345115c6fb7bd7a86ec10661c1117c342263f309031b2"
   },
   "journeys/improve-plan.mjs": {
     "owner": "test-improve",

@@ -1,9 +1,9 @@
 # Flaky quarantine
 
-A journey that fails once and passes on its second run is quarantined: `done-done run` names it in `flaky`, prints one `warning:` line, and the run still passes.
+`done-done verify --layer` records each reported attempt and classifies a fail/pass reversal as suspected. Two independent episodes with the same leaf, intent, tracked tree, declared inputs, environment, command and assertion create one local repair ticket under the evidence root's `.done-done/flakes/tickets`. Tickets name the journey owner, a recovery criterion, a 14-day expiry and diagnosis for a possible product race. A native runner must write its per-attempt JUnit report to `DONE_DONE_JUNIT_REPORT`; absent a report or assertion, no flake is inferred.
 
-Drive: `done-done run flaky-quarantine` runs the flaky-test fixture (a journey that fails first, passes second) in a throwaway repo and reads the run's `--json` result.
+History is shadow-only by default: a confirmed reversal reports `would-mute` and the original failure still blocks. Setting `DONE_DONE_FLAKE_ENFORCE=1` explicitly allows a confirmed matching single-leaf reversal to stop blocking the layer while the leaf continues to run. A red/red, changed environment, skip, timeout, missing tool, changed inputs or a sole critical check remains blocking. Expired tickets escalate as `expired`. A verified receipt containing the repaired journey at a changed tree plus three independent clean repetitions records restoration. Classification and restoration make no judge calls. The existing standalone `done-done run` retry warning remains unchanged.
 
-Prove: flaky-quarantine.log shows exit 0, `result: recorded`, `flaky: ["flaky-check"]` and exactly one warning line; steps.json records the flow. A journey that fails both runs still fails the run.
+Drive: `done-done run flaky-quarantine`. The journey uses isolated synthetic repositories and drives the real `verify --layer fast` CLI, including plan replay. A synthetic local stub judge is used only to prepare the receipt for the repair scenario; the test verifies that the subsequent classifications make no judge calls.
 
-Integration coverage: none yet in test/cli.test.mjs; the journey is the proof.
+Prove: `flaky-quarantine.log` records actual exits, observations, and elapsed milliseconds for red/red, first suspicion, replay, second reversal, shadow and enforced gates, changed environment, skip, missing tool, timeout, sole critical coverage, expiry, and three clean repetitions after verified repair. `steps.json` records the drive. The trial is synthetic; the pilot's real-world false-quarantine rate and performance budget remain unmeasured.

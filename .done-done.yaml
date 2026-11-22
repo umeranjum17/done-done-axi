@@ -42,7 +42,9 @@ journeys:
       # Improved instruction: "Preserve all existing assertions. Add synthetic isolated CLI coverage of tests shadow --deadline: two children individually below their own bounds collectively exceed a short shared deadline, including a delayed child and a TERM-resistant grandchild; check the batch exits nonzero, journal retains unfinished work, and no child survives. Check a successful short batch, invalid and over-300s budgets, and retain before/after timings with no model calls. Use only temporary synthetic fixtures and do not run models or network in the journey. Update existing evidence and steps. The journey must also run standalone when DONE_DONE_RUN_ID is absent."
       node journeys/tier-ci.mjs
   flaky-quarantine:
-    command: node journeys/flaky-quarantine.mjs
+    command:
+      # Improved instruction: "Read src/flake-history.ts src/size.ts src/native-report.ts src/cli.ts. Preserve existing checks. Add isolated synthetic CLI coverage of verify --layer fast: report JUnit per attempt at DONE_DONE_JUNIT_REPORT; declare intent and inputs. Assert red/red remains red, two independent fail/pass episodes record four attempts, suspicion then one repair ticket and would-mute, replay adds nothing, DONE_DONE_FLAKE_ENFORCE=1 mutes a matching leaf while still executing it, changed environment, skip, timeout and missing tools do not qualify, sole critical remains required, expiry escalates and verified repair plus three clean repetitions restores. Zero judge calls; save actual before/after assertions and timings. Use Node MockTimers for clock control. Only synthetic fixtures; do not invoke real services."
+      node journeys/flaky-quarantine.mjs
   inventory-ownership:
     command: node journeys/inventory-ownership.mjs
   qa-plan:
