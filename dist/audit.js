@@ -1,4 +1,23 @@
 import { posix } from 'node:path';
+import { junit } from './native-report.js';
+export function controlObservations(broad, fast, intents) {
+    const paired = !!fast && fast.schema === 1 && fast.complete && broad.complete &&
+        ['project', 'base', 'head', 'inputs', 'environment'].every(k => fast[k] === broad[k]);
+    const rows = [];
+    for (const a of broad.attempts) {
+        if (a.code === 0 || a.code === null || a.slow || a.error || [77, 126, 127].includes(a.code) || !a.report)
+            continue;
+        try {
+            junit(a.report, (leaf, assertion) => {
+                if (leaf.status !== 'failed' || !assertion)
+                    return;
+                rows.push({ project: broad.project, base: broad.base, head: broad.head, path: leaf.file, intent: intents[a.leaf] ?? '', assertion, journey: a.leaf, native_leaf: leaf.id ?? leaf.name, fast_run: paired ? fast.run : null, broad_run: broad.run, attempt: a.attempt, retry: a.attempt !== a.episode, classification: paired && !fast.required.includes(a.leaf) ? 'unresolved-omission' : 'unknown' });
+            });
+        }
+        catch { /* Invalid or absent native reports cannot establish a comparable assertion. */ }
+    }
+    return { paired, rows };
+}
 // Caught: the map selected the journey for the failing commit's diff. Missed: it did not. Recall is caught over failures, null with none.
 export function auditSelection(o) {
     const caught = o.failures.filter((f) => o.selected(f.commit).includes(f.journey));

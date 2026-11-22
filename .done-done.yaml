@@ -73,7 +73,10 @@ journeys:
   test-value:
     command: node journeys/value-marks.mjs
   affected-audit:
-    command: node journeys/affected-audit.mjs
+    command:
+      # Improved instruction: "Preserve all existing checks and steps. Add isolated synthetic CLI coverage of verify --layer fast and release showing advisory durable paired control records in plan.json and misses.jsonl: a fast run omits a release journey whose JUnit report has a failed named assertion, release preserves original red and retry, records same revision and inputs with fast and broad run IDs, classification unresolved-omission, and does not change the map or fast behavior. A missing matching fast record is unknown; missing or invalid reports teach nothing; save actual outputs and timings. Drive only synthetic fixtures, no model or network calls during the generated journey. Read src/audit.ts src/cli.ts journeys/affected-audit.mjs. Keep all additions additive."
+      # Improved instruction: "Fix the failed generated paired-control fixture while preserving the original audit journey and new paired-control assertions. The fast layer rejects size small and opaque commands before writing a plan: use size ci and a tracked test/fast.test.mjs with command node --test test/fast.test.mjs, as journeys/tier-ci.mjs does. All sizes must be ci or local. A malformed native report makes observeFlakes reject the layer before its comparison; use a valid JUnit report without a named failure for the no-observation case. Assert and print stdout and stderr when out.plan is absent so the true CLI error is visible. Preserve paired original failure and retry, missing fast record unknown, missing report no observations, stable fast inventory, and measured timings. Keep only synthetic fixture code and additive coverage."
+      node journeys/affected-audit.mjs
   test-improve:
     command: node journeys/improve-plan.mjs
   test-apply:

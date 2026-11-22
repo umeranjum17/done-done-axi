@@ -1,7 +1,7 @@
 {
   "journeys/affected-audit.mjs": {
     "owner": "affected-audit",
-    "sha256": "5a5aaa841c40685ab9d784acaa1125fcf0ce541971b56baa34d1da5d2543e40a"
+    "sha256": "1fb7ab1d40cb0fd067d26250f42aabb9a563a75ff8365e4b54ac83677a6e8c3c"
   },
   "journeys/affected-proof.mjs": {
     "owner": "affected-proof",

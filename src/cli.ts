@@ -40,7 +40,7 @@ import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange, shadowPlan } from './affected.js';
 import { junit } from './native-report.js';
 import { affectedProof, affectedShape, extendReceipt, noReview, parseFiles, undriven, type AffectedProof } from './affected-proof.js';
-import { addPairs, auditSelection, featureFor, type JourneyFailure } from './audit.js';
+import { addPairs, auditSelection, featureFor, controlObservations, type Control, type JourneyFailure } from './audit.js';
 import { type Covering, planQa, planWrite, type Proved, sealStage, type Write } from './qa.js';
 import { minimumScope, parseList, scopeShape, type Scope } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape, type SuiteRecord } from './suite.js';
@@ -3022,6 +3022,26 @@ async function verifyLayer(o: LayerOptions): Promise<number> {
     }
     const flakes = observeFlakes({ root: cfg.evidence.root, env, tree: current.tree, inputs: inputSnapshots, inputsStable: unchangedInputs && !after.dirty && after.commit === current.commit, attempts, journeys: Object.fromEntries(selected), enforce: process.env.DONE_DONE_FLAKE_ENFORCE === '1', passing: new Set(report.rows.filter(r => r.status === 'passed').map(r => r.leaf_id)), verifiedRepair });
     const safe = unchangedInputs && !after.dirty && after.commit === current.commit;
+    // Store the unmodified native reports and attempt identities before any retry or quarantine
+    // interpretation. A control may only pair with a completed run of the same inputs.
+    const hashControl = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const environment = Object.entries(env).filter(([key]) => !/^(PWD|OLDPWD|SHLVL|_|DONE_DONE_LAYER_GROUPS|DONE_DONE_LAYER_ROOT_PGID)$/.test(key)).sort(([a], [b]) => a.localeCompare(b));
+    const control: Control = { schema: 1, project: repo, base, head: current.commit, inputs: hashControl(inputSnapshots.before), environment: hashControl([process.platform, process.arch, process.version, environment]), run: report.run_id, required: entries.map(([name]) => name), complete: safe && report.unfinished_leaves.length === 0 && report.rows.length === entries.length && (o.layer !== 'fast' || report.rows.every(r => r.status === 'passed')), attempts: attempts.map(a => ({ leaf: a.leaf, attempt: a.attempt, episode: a.episode, code: a.result.code, slow: a.result.slow, ...(a.result.error && { error: a.result.error }), report: a.report })) };
+    finalPlan.control = control;
+    if (o.layer !== 'fast') {
+      const layers = join(cfg.evidence.root, '.done-done', 'layers');
+      const candidates: Control[] = [];
+      if (existsSync(layers)) for (const name of readdirSync(layers)) {
+        const file = join(layers, name, 'plan.json');
+        if (!existsSync(file)) continue;
+        try { const p = JSON.parse(readFileSync(file, 'utf8')); if (p.layer === 'fast' && p.control?.schema === 1) candidates.push(p.control); } catch { /* An unreadable record is not a paired control. */ }
+      }
+      const intents = Object.fromEntries(selected.map(([name, j]) => [name, j.intent ?? '']));
+      const paired = candidates.reverse().map(c => controlObservations(control, c, intents)).find(x => x.paired) ?? controlObservations(control, null, intents);
+      const misses = join(dirname(planPath), 'misses.jsonl');
+      writeFileSync(misses, paired.rows.map(row => JSON.stringify(row)).join('\n') + (paired.rows.length ? '\n' : ''), { mode: 0o600 });
+      finalPlan.control_comparison = { paired: paired.paired, misses, observations: paired.rows.length, mode: 'advisory' };
+    }
     // In shadow mode, a retry is observed but the original result remains the gate result.
     for (const row of report.rows) row.result_status = row.status === 'passed' || (safe && flakes.muted.has(row.leaf_id)) ? 'passed' : row.status;
     report.status = report.unfinished_leaves.length === 0 && report.rows.every(r => r.result_status === 'passed') ? 'passed' : 'failed';
