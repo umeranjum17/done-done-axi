@@ -22,7 +22,7 @@ import { design, interactions, KINDS, redesign, writtenRequirement } from './des
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, scoresOf, totals } from './evals.js';
-import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
+import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, intentInventory, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { gutCheckAll } from './gutcheck.js';
 import { baseCommit, checkNewTests, parseNewTests, SKIP_EXIT } from './newtests.js';
@@ -5489,8 +5489,9 @@ function cmdInventory(argv) {
     if (!inv)
         throw new UsageError(`${INVENTORY_FILE} does not exist, so no test ownership is enforced`, 'Create it with: done-done inventory record <files...> --owner <name> from a done-done run');
     const bad = inventoryFindings(repo, inv);
-    emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
-    return bad.length ? FAIL : PASS;
+    const intents = intentInventory(repo);
+    emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), ...(intents && { intents }), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
+    return bad.length || (intents?.mode === 'enforce' && intents.errors.length) ? FAIL : PASS;
 }
 // `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
 async function cmdTests(argv) {

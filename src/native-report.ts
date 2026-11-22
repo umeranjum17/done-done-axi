@@ -1,5 +1,36 @@
 // Preserve JUnit bytes and report only leaves actually present. Aggregate suite counts cannot identify leaves.
 export type NativeLeaf = { id: string | null; name: string; classname: string | null; file: string | null; status: 'passed' | 'failed' | 'skipped'; retries: number };
+
+// Playwright's JSON reporter emits one spec per declared test, including each expanded
+// parameter case. Projects and retries live inside spec.tests and are not declarations.
+export type IntentDeclaration = { id: string; file: string; name: string; intents: string[]; critical: boolean };
+export function playwrightIntents(raw: string): IntentDeclaration[] {
+  let report: any;
+  try { report = JSON.parse(raw); } catch (e) { throw new Error(`invalid Playwright JSON: ${(e as Error).message}`); }
+  if (!report || !Array.isArray(report.suites) || !Array.isArray(report.errors) || report.errors.length)
+    throw new Error('Playwright JSON must contain suites and no discovery errors');
+  const declarations: IntentDeclaration[] = [], seen = new Set<string>();
+  const visit = (suite: any) => {
+    if (!suite || !Array.isArray(suite.specs) || (suite.suites !== undefined && !Array.isArray(suite.suites))) throw new Error('invalid Playwright suite');
+    for (const spec of suite.specs) {
+      if (!spec || typeof spec.id !== 'string' || !spec.id || typeof spec.title !== 'string' || typeof spec.file !== 'string' || !spec.file || !Array.isArray(spec.tags) || !spec.tags.every((t: unknown) => typeof t === 'string') || !Array.isArray(spec.tests) || !spec.tests.length)
+        throw new Error('invalid Playwright spec: id, title, file, tags and tests are required');
+      if (seen.has(spec.id)) throw new Error(`duplicate Playwright declaration ${spec.id}`);
+      seen.add(spec.id);
+      const tags: string[] = spec.tags.map((t: string) => t.replace(/^@/, ''));
+      for (const test of spec.tests) {
+        if (!Array.isArray(test.annotations)) throw new Error(`Playwright declaration ${spec.id} has no annotations list`);
+        for (const a of test.annotations) if (a?.type === 'intent' && typeof a.description === 'string') tags.push(`intent:${a.description}`);
+      }
+      const intents = [...new Set(tags.filter(t => t.startsWith('intent:')).map(t => t.slice(7)))];
+      if (intents.some(t => !/^[\w.-]+$/.test(t))) throw new Error(`invalid intent tag in ${spec.id}`);
+      declarations.push({ id: spec.id, file: spec.file, name: spec.title, intents, critical: tags.includes('critical') });
+    }
+    for (const child of suite.suites ?? []) visit(child);
+  };
+  for (const suite of report.suites) visit(suite);
+  return declarations;
+}
 const entity = (s: string): string => s.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, x: string) => {
   if (x[0] === '#') return String.fromCodePoint(x[1].toLowerCase() === 'x' ? parseInt(x.slice(2), 16) : parseInt(x.slice(1), 10));
   return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" } as Record<string, string>)[x];

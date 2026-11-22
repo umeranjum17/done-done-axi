@@ -1,3 +1,43 @@
+export function playwrightIntents(raw) {
+    let report;
+    try {
+        report = JSON.parse(raw);
+    }
+    catch (e) {
+        throw new Error(`invalid Playwright JSON: ${e.message}`);
+    }
+    if (!report || !Array.isArray(report.suites) || !Array.isArray(report.errors) || report.errors.length)
+        throw new Error('Playwright JSON must contain suites and no discovery errors');
+    const declarations = [], seen = new Set();
+    const visit = (suite) => {
+        if (!suite || !Array.isArray(suite.specs) || (suite.suites !== undefined && !Array.isArray(suite.suites)))
+            throw new Error('invalid Playwright suite');
+        for (const spec of suite.specs) {
+            if (!spec || typeof spec.id !== 'string' || !spec.id || typeof spec.title !== 'string' || typeof spec.file !== 'string' || !spec.file || !Array.isArray(spec.tags) || !spec.tags.every((t) => typeof t === 'string') || !Array.isArray(spec.tests) || !spec.tests.length)
+                throw new Error('invalid Playwright spec: id, title, file, tags and tests are required');
+            if (seen.has(spec.id))
+                throw new Error(`duplicate Playwright declaration ${spec.id}`);
+            seen.add(spec.id);
+            const tags = spec.tags.map((t) => t.replace(/^@/, ''));
+            for (const test of spec.tests) {
+                if (!Array.isArray(test.annotations))
+                    throw new Error(`Playwright declaration ${spec.id} has no annotations list`);
+                for (const a of test.annotations)
+                    if (a?.type === 'intent' && typeof a.description === 'string')
+                        tags.push(`intent:${a.description}`);
+            }
+            const intents = [...new Set(tags.filter(t => t.startsWith('intent:')).map(t => t.slice(7)))];
+            if (intents.some(t => !/^[\w.-]+$/.test(t)))
+                throw new Error(`invalid intent tag in ${spec.id}`);
+            declarations.push({ id: spec.id, file: spec.file, name: spec.title, intents, critical: tags.includes('critical') });
+        }
+        for (const child of suite.suites ?? [])
+            visit(child);
+    };
+    for (const suite of report.suites)
+        visit(suite);
+    return declarations;
+}
 const entity = (s) => s.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, x) => {
     if (x[0] === '#')
         return String.fromCodePoint(x[1].toLowerCase() === 'x' ? parseInt(x.slice(2), 16) : parseInt(x.slice(1), 10));

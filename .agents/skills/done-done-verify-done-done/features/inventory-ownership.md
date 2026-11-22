@@ -1,9 +1,9 @@
-# Test inventory ownership
+# Test inventory and intent limits
 
-Inventory contract (file discovery, recorded hashes and lifecycle): [Test inventory](../../../../../docs/reference.md#test-inventory).
+Source: `src/inventory.ts`, `src/native-report.ts`, `src/config.ts`, `src/cli.ts`, `journeys/inventory-ownership.mjs`.
 
-Drive: `done-done run inventory-ownership` builds a throwaway repo with two owned test files, lints it clean, adds a stray `test/stray.test.mjs`, hand-edits the owned `journeys/smoke.mjs`, then makes the same edit with a journey command (`done-done run edit-owned`, which calls `done-done inventory record`) and lints again.
+Drive `done-done run inventory-ownership`. The journey builds isolated repositories and captures `inventory-ownership.log` and `steps.json`. It checks ownership, changes made through a run, separate declaration and canonical-intent counts, alias and parameter cases, an unrelated fourth intent at a ceiling of three, the independent critical ceiling, a documented critical increase, competing additions at their merged candidate, shadow reporting, Playwright JSON tags, and invalid identifiers and aliases.
 
-Prove: `inventory-ownership.log` shows PASS, then `FAIL: test inventory: test/stray.test.mjs: test file has no owner entry`, then `FAIL: test inventory: journeys/smoke.mjs: owned by smoke but edited outside a done-done run`, a refused hand `inventory record` (exit 2), and PASS after the journey command's identical edit. No screen: the proof is the run's text log.
+An opt-in `intents` mapping in `.done-done.yaml` sets `mode: shadow` or `enforce`, `ceiling`, `critical_ceiling`, and optionally `native: true`, `aliases`, and `increases`. An increase entry names an `intent`, its coverage `gap`, and its `review`. The previous inventory must identify its leaves before a cap increase. Playwright discovery uses its installed JSON reporter; `@intent:<id>` tags or `intent` annotations identify a question, and `@critical` marks it critical. Untagged files need owned `leaves` in `.done-done-inventory.json`. Each leaf carries an `id`, an `intent`, and an optional `critical` boolean. A journey without owned leaves must declare its `intent` in `.done-done.yaml`; otherwise enforcement refuses it. Recording changed bytes clears the old leaves because they no longer establish coverage. Shadow mode reports gaps without enforcing them.
 
-Repo check: `done-done inventory` run in this checkout exits 0, and `done-done lint` fails a stray test file here by name.
+The inventory result retains every declaration while counting canonical intent IDs once. The deterministic optional advisory helper offers one batch only when its caller supplies both completed final proof and an available cheap slot; it does not call a model. The journey directly checks both gates and the canonical ambiguous pair in the batch.

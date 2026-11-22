@@ -38,6 +38,7 @@ export type ApprovedScreen = { screen: string; size: string; theme: string; mock
 export type ApprovedRedesign = { screen: string; size: string; theme: string; capture: string };
 
 export type Config = {
+  intents: { mode: 'shadow' | 'enforce'; ceiling: number; critical_ceiling: number; native: boolean; aliases: Record<string, string>; increases: { intent: string; gap: string; review: string }[] } | null;
   routes: Routes;
   agent: string; // the agent done-done starts, set by the user; '' until they do
   agent_config: Record<string, { model?: string; effort?: string }>;
@@ -49,7 +50,7 @@ export type Config = {
   auto_fix: Record<string, number>; // per step, as no-mistakes: how many times done-done's agent may fix its findings; 0 (the default) reports only
   app: string;
   skill: string;
-  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string; size?: string; reason?: string }>; // the proof journeys: never an entry of tier live
+  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string; size?: string; reason?: string; intent?: string; critical?: boolean }>; // the proof journeys: never an entry of tier live
   live: Record<string, LiveEntry>; // the journey entries of tier live, by name (see LIVE_TIER)
   // Primitive 17 (input guard): repo-relative paths or globs the drive must leave alone. Empty: today's behaviour.
   inputs: string[];
@@ -129,7 +130,8 @@ const AGENT_TIMEOUT = '30m';
 const MAX_CAPTURES = 10;
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' | 'owners' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' | 'owners' | 'intents' }> = {
+  intents: { scope: 'repo', type: 'intents' },
   'routes.author': { scope: 'global', type: 'routes' },
   'routes.judge': { scope: 'global', type: 'routes' },
   agent: { scope: 'any', type: 'agent' },
@@ -256,6 +258,12 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
     if (key === 'judge.allow_same') throw new UsageError(`${file}: judge.allow_same is gone: any judge the user sets runs, the author's own agent and model too`, `Delete the judge.allow_same line in ${file}`);
     if (!spec) throw new UsageError(`${file}: unknown key ${key}`);
     if (spec.scope !== scope && spec.scope !== 'any') throw new UsageError(`${file}: ${key} may only be set in the ${spec.scope === 'global' ? 'global config' : 'project .done-done.yaml'}`);
+    if (key === 'intents') {
+      const v = (isMap(value) ? { native: false, aliases: {}, increases: [], ...value } : null) as Config['intents'];
+      const valid = v && ['shadow', 'enforce'].includes(v.mode) && typeof v.native === 'boolean' && Number.isInteger(v.ceiling) && v.ceiling >= 0 && Number.isInteger(v.critical_ceiling) && v.critical_ceiling >= 0 && isMap(v.aliases) && Object.entries(v.aliases).every(([k, x]) => /^[\w.-]+$/.test(k) && typeof x === 'string' && /^[\w.-]+$/.test(x)) && Array.isArray(v.increases) && v.increases.every(r => isMap(r) && [r.intent, r.gap, r.review].every(x => typeof x === 'string' && x.trim()));
+      if (!valid) throw new UsageError(`${file}: intents needs mode, nonnegative ceiling and critical_ceiling, aliases mapping and increases [{intent, gap, review}]`);
+      target.intents = v; target.from[key] = scope; continue;
+    }
     const ok =
       spec.type === 'string' ? typeof value === 'string'
       : spec.type === 'boolean' ? typeof value === 'boolean'
@@ -275,7 +283,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && (n as number) >= 0)
       : spec.type === 'matrix' ? !checkMatrix(value)
       : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value as object).every(isRegex)
-      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
+      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade, j.critical].every((b) => b === undefined || typeof b === 'boolean') && (j.intent === undefined || (typeof j.intent === 'string' && /^[\w.-]+$/.test(j.intent))) && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
     const want = {
       journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name; live needs a timeout>, timeout: <duration such as 30s: the bound of a verify run, and of a live check>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
       instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -438,6 +446,7 @@ function readOptional(path: string): string | undefined {
 // The built-in defaults, before any config file is read.
 function defaultConfig(repo: string): Config {
   return {
+    intents: null,
     routes: { author: [], judge: [] },
     agent: '',
     agent_config: Object.fromEntries(Object.entries(CHEAP).map(([a, c]) => [a, { ...c }])),

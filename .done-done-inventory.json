@@ -53,7 +53,7 @@
   },
   "journeys/inventory-ownership.mjs": {
     "owner": "inventory-ownership",
-    "sha256": "555453c042bcd2dd873751ecb5ec6c4fa2f0a96a7a515c9aedb6cc68796051d5"
+    "sha256": "a0792de3df6d3bd8c6025153ab6255c48ab4abc14efa9d503b12dd13f8949a45"
   },
   "journeys/journey-add.mjs": {
     "owner": "journey-add",
