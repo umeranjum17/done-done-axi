@@ -66,7 +66,10 @@ journeys:
   qa-write:
     command: node journeys/qa-write.mjs
   qa-prove:
-    command: node journeys/qa-prove.mjs
+    command:
+      # Improved instruction: "Preserve all existing assertions. Add isolated synthetic end-to-end receipt coverage for src/newtests.ts shadowNewTests: with check.red_before_green enabled, discover added Node tests and declared shell tests; assert a base assertion failure and passing head are an assertion-failed candidate, missing symbol and unsupported runner are no-proof, and a vacuous test gets no-proof. Record actual receipt output and timings in evidence. Use only fixture repositories, no network or model calls in the journey. Leave existing behavior and existing assertions intact."
+      # Improved instruction: "Fix the failed generated check only: the real receipt JSON field is admission_shadow, not admission. Keep all existing assertions and fixtures, and read the top-level admission_shadow field. Preserve every existing journey step and evidence capture."
+      node journeys/qa-prove.mjs
   test-value:
     command: node journeys/value-marks.mjs
   affected-audit:

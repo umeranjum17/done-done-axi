@@ -37,3 +37,4 @@ The repo's maintained verification map; a proof that drives one entry point is i
 - [Mise shim in a sealed run](mise-shim.md): `node --test test/mise-shim.test.mjs`; a private HOME no longer hides the host's mise: its config, data, state and cache folders stay visible and the host's `config.toml` is added to `MISE_TRUSTED_CONFIG_PATHS` (a caller's value is kept and extended), so a shim such as python3 runs, in the instance and in every command done-done spawns (`run -- <cmd>`, a journey, the suite step); a host with no mise config gets no mise variable
 - [Affected journey selection: chains, fallbacks and shadow plans](affected-select.md): run `done-done run affected-select`
 - [Tier filtering and shadow batch deadlines](tier-filtering.md): run `done-done run tier-ci`
+- [QA proof loop, plus isolated shadowNewTests admission coverage through receipt](qa-prove.md): run `done-done run qa-prove`

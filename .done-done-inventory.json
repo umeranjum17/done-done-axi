@@ -81,7 +81,7 @@
   },
   "journeys/qa-prove.mjs": {
     "owner": "qa-prove",
-    "sha256": "ebb665ca134f80b0a3d9c5518331d4977255ce79a7bd9200076acb9a08548721"
+    "sha256": "41278dfe41230d253976ec37bb5a0b60038596ab72ebb9ebde7fa4eade035747"
   },
   "journeys/qa-write.mjs": {
     "owner": "qa-write",
