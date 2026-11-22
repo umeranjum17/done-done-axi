@@ -3,7 +3,8 @@ import { accessSync, constants, mkdirSync, readFileSync, renameSync, statSync, w
 import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { unavailable } from './routes.js';
-import { shadowUsage, withShadowCache, withShadowTier } from './size.js';
+import { shadowTier, shadowUsage, withShadowCache, withShadowTier } from './size.js';
+import { layerRemaining, recordProviderUsage, reserveProvider } from './deadline.js';
 import { accountDetail, agentRun, askAgent, ClaudeUnavailable, JUDGES, notStartable, routeOf, selectFallback, selectJudge } from './agents.js';
 import { CHEAP, home, KEY_ROUTES, parseDuration, tilde, RouteUnavailable, UsageError } from './config.js';
 import { downscaleToPng } from './media.js';
@@ -126,6 +127,43 @@ async function kit() {
         throw new UsageError(`judge: the judge needs Node 22.18 or later (this is ${process.versions.node})`, 'Install Node 22.18 or later, then re-run this command');
     return await import('@byokit/decide');
 }
+// The OpenAI input-count endpoint counts the actual Responses request, including its schema and images. The
+// reservation is persisted before even that request; unsupported routes are refused rather than estimated.
+function budgetedOpenaiFetch(plan, slot) {
+    return async (input, init) => {
+        if (String(input) !== 'https://api.openai.com/v1/responses' || typeof init?.body !== 'string')
+            throw new UsageError('layer cannot safely bound this provider request');
+        const body = JSON.parse(init.body);
+        const allowed = ['model', 'input', 'instructions', 'text', 'max_output_tokens'];
+        if (Object.keys(body).some((k) => !allowed.includes(k)))
+            throw new UsageError('layer cannot safely bound provider request options');
+        const reservation = reserveProvider(plan, slot);
+        if (body.max_output_tokens !== reservation.output)
+            throw new UsageError('layer provider output limit is not enforced');
+        const signal = () => AbortSignal.any([...(init.signal ? [init.signal] : []), AbortSignal.timeout(layerRemaining(plan))]);
+        const countBody = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'max_output_tokens'));
+        const counted = await globalThis.fetch('https://api.openai.com/v1/responses/input_tokens', { ...init, body: JSON.stringify(countBody), signal: signal() });
+        if (!counted.ok)
+            throw new UsageError(`layer input-token count failed (HTTP ${counted.status}); no model request was made`);
+        const count = await counted.json();
+        if (typeof count.input_tokens !== 'number' || !Number.isInteger(count.input_tokens) || count.input_tokens < 0 || count.input_tokens > reservation.input)
+            throw new UsageError(`layer input exceeds or cannot establish the ${reservation.input}-token bound; no model request was made`);
+        const response = await globalThis.fetch(input, { ...init, signal: signal() });
+        if (response.ok) {
+            let usage = {};
+            try {
+                usage = (await response.clone().json()).usage ?? {};
+            }
+            catch { /* usage stays unknown */ }
+            const number = (n) => typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
+            const inTokens = number(usage.input_tokens), outTokens = number(usage.output_tokens);
+            recordProviderUsage(plan, reservation.id, inTokens, outTokens);
+            if ((inTokens !== null && inTokens > reservation.input) || (outTokens !== null && outTokens > reservation.output))
+                throw new UsageError('provider usage exceeded its reserved limit; no receipt can be issued');
+        }
+        return response;
+    };
+}
 // The backend for one judge choice. It checks everything that needs no model call, so doctor can use it too.
 // record: where each agent call writes its call record (the claude-code and answerer routes both run a real agent call);
 // questions: what each request asks, so the answerer can ask its agent for that answer shape; attempts: asks per request
@@ -138,7 +176,17 @@ export async function backend(cfg, choice, record = () => '', questions = { rele
         if (!key)
             throw new RouteUnavailable(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
         const { anthropic, openai, resolve } = await kit();
-        const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 })).ask;
+        const plan = process.env.DONE_DONE_LAYER_PLAN;
+        if (plan && choice.route !== 'openai:key') {
+            layerRemaining(plan);
+            throw new UsageError(`layer cannot safely bound ${choice.route}; no provider request was made`);
+        }
+        if (plan && !shadowTier()) {
+            layerRemaining(plan);
+            throw new UsageError('layer cannot safely batch this additional semantic judgment; final provider allowances are reserved');
+        }
+        const slot = shadowTier() === 'cheap' ? 'cheap' : 'large';
+        const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0, ...(plan && { request: { max_output_tokens: slot === 'cheap' ? 200 : 300 }, fetch: budgetedOpenaiFetch(plan, slot) }) })).ask;
         return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
     }
     const override = cfg.agent_path_override[choice.agent];

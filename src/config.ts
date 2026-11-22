@@ -9,19 +9,14 @@ import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
 import { isSize } from './size.js';
 import { AUTHOR_ROUTES, toolRoutes, validRoutes, type Routes } from './routes.js';
+import { parseDuration, UsageError } from './deadline.js';
+export { parseDuration, UsageError } from './deadline.js';
 
 // The tier of a journey entry that probes a real home and proves nothing: `done-done run --tier live` runs it, bounded by its own
 // timeout, and nothing else does. loadConfig moves these entries out of `journeys` into `live`, so no verify, affected or
 // landing path can see one.
 export const LIVE_TIER = 'live';
-export type LiveEntry = { command: string; timeout: string };
-
-export class UsageError extends Error {
-  // The exact next command, when the error has one.
-  constructor(message: string, readonly help?: string) {
-    super(message);
-  }
-}
+export type LiveEntry = { command: string; timeout: string; spends?: string };
 
 export const INTERACTIONS: Record<string, string> = JSON.parse(readFileSync(new URL('../skills/done-done/interaction-checklist.json', import.meta.url), 'utf8'));
 export type InteractionEvidence = Record<string, { captures?: string[]; not_applicable?: string }>;
@@ -203,12 +198,6 @@ const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
-export const parseDuration = (text: string): number | null => {
-  const m = /^(\d+)(s|m|h)$/.exec(text);
-  const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2] as 's' | 'm' | 'h'] : 0;
-  return ms > 0 && ms <= 2_147_483_647 ? ms : null;
-};
-
 function flatten(doc: unknown, file: string): Map<string, unknown> {
   const out = new Map<string, unknown>();
   if (doc == null) return out;
@@ -515,7 +504,7 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   // A live entry is a probe, not proof: it leaves `journeys` here, so nothing that proves a change can select it.
   for (const [name, j] of Object.entries(cfg.journeys))
     if (j.tier === LIVE_TIER) {
-      cfg.live[name] = { command: j.command, timeout: j.timeout! };
+      cfg.live[name] = { command: j.command, timeout: j.timeout!, ...(j.spends && { spends: j.spends }) };
       delete cfg.journeys[name];
     }
   // The model pool needs both its helper command and the helper's own pool config; it replaces the Claude account command.

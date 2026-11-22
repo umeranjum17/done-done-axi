@@ -38,7 +38,9 @@ journeys:
   journey-improve:
     command: node journeys/journey-add.mjs --improve
   tier-ci:
-    command: node journeys/tier-ci.mjs
+    command:
+      # Improved instruction: "Preserve all existing assertions. Add synthetic isolated CLI coverage of tests shadow --deadline: two children individually below their own bounds collectively exceed a short shared deadline, including a delayed child and a TERM-resistant grandchild; check the batch exits nonzero, journal retains unfinished work, and no child survives. Check a successful short batch, invalid and over-300s budgets, and retain before/after timings with no model calls. Use only temporary synthetic fixtures and do not run models or network in the journey. Update existing evidence and steps. The journey must also run standalone when DONE_DONE_RUN_ID is absent."
+      node journeys/tier-ci.mjs
   flaky-quarantine:
     command: node journeys/flaky-quarantine.mjs
   inventory-ownership:

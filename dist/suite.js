@@ -5,6 +5,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync }
 import { join } from 'node:path';
 import { parseDuration } from './config.js';
 import { commandEnv } from './miseenv.js';
+import { registerGroup, unregisterGroup } from './deadline.js';
 export const SUITE_ENV = 'DONE_DONE_SUITE';
 export const SUITE_NONE = 'no test suite in this project';
 const has = (repo, f) => existsSync(join(repo, f));
@@ -54,17 +55,27 @@ export async function runSuite(repo, evidenceRoot, commit, command, timeout) {
     const fd = openSync(log, 'w');
     const started = Date.now();
     let timedOut = false;
-    const exit = await new Promise((done) => {
-        const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), [SUITE_ENV]: commit } });
-        const kill = () => { try {
-            process.kill(-child.pid, 'SIGKILL');
-        }
-        catch { } };
-        const timer = setTimeout(() => { timedOut = true; kill(); }, parseDuration(timeout) ?? 1_800_000);
-        child.on('error', () => { clearTimeout(timer); done(null); });
-        child.on('close', (code) => { clearTimeout(timer); kill(); done(code); });
-    });
-    closeSync(fd);
+    let exit;
+    try {
+        exit = await new Promise((done) => {
+            const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), [SUITE_ENV]: commit } });
+            if (child.pid)
+                registerGroup(child.pid);
+            const kill = () => { if (child.pid) {
+                try {
+                    process.kill(-child.pid, 'SIGKILL');
+                }
+                catch { }
+                unregisterGroup(child.pid);
+            } };
+            const timer = setTimeout(() => { timedOut = true; kill(); }, parseDuration(timeout) ?? 1_800_000);
+            child.on('error', () => { clearTimeout(timer); kill(); done(null); });
+            child.on('close', (code) => { clearTimeout(timer); kill(); done(code); });
+        });
+    }
+    finally {
+        closeSync(fd);
+    }
     return { command, exit, duration_ms: Date.now() - started, log, ...(timedOut ? { timed_out: true } : {}) };
 }
 // Why a suite record fails the proof, or null.

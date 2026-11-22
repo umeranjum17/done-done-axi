@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { canStart, ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason, type AgentAnswer, type JudgeChoice } from './agents.js';
-import { checkDeadline } from './deadline.js';
+import { cancelGroups, checkDeadline, layerRemaining, processGroupSupported, registerGroup, unregisterGroup } from './deadline.js';
 import { AGENTS, type ApprovedRequirement, CHEAP, type Config, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, type Capture, judge, judgeable, judgeEnv, type Judged, type JudgeCall, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
@@ -33,6 +33,7 @@ import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
 import { hygiene } from './hygiene.js';
 import { measureJourney, nightFault, runBounded, shadowBatch, withShadowRun, sizeFault, slowReason, isSize, type Size } from './size.js';
+import { SIZES } from './size.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange, shadowPlan } from './affected.js';
@@ -202,6 +203,10 @@ const FLAGS: Record<string, string> = {
   '--journeys <list>': 'with verify: the closed list of journeys this run drives (one in this version), so the receipt records minimum scope, the journeys not run, and the affected ones it omits',
   '--named-by <who>': 'with --journeys: who named the list (default caller); the receipt records it',
   '--affected-by <files>': 'with verify: repo files separated by commas that changed; only the journeys they need run (`affected`, local tier when unsure), the receipt extends the prior one and no review runs again',
+  '--layer <fast|release|nightly>': 'run a bounded shadow layer; no receipt is issued',
+  '--base <ref>': 'with verify --layer: the ancestor commit used as the base',
+  '--budget <duration>': 'with verify --layer: total budget, at most 300s for fast',
+  '--plan <file>': 'with verify --layer: resume an incomplete plan without renewing its budget; with tests improve: the proposed plan',
   '--extends <head>': 'with verify --affected-by: the head of the prior receipt to extend (default: the newest receipt before HEAD)',
   '--prove': 'with qa: run the journey that covers the feature through verify, judge it, fix up to --max times and seal a receipt for the commit (stage sealed, or fail)',
   '--max <n>': 'with qa --prove: the most fix attempts (default 2)',
@@ -302,10 +307,11 @@ const COMMANDS: Record<string, { usage: [string, string][]; flags: string[]; mor
       ['done-done verify [<journey>] --outcome "<what a user can now do>" [--claim-id <id>]', 'drive the journey in a run that outlives this command, check its evidence, judge each capture and record a receipt'],
       ['done-done verify --journeys <journey> [--named-by <who>] --outcome "<claim>"', 'minimum journey scope: drive only the journey the caller names; the receipt records the list, who named it, and the journeys it did not run (those `affected` selected too)'],
       ['done-done verify --affected-by <files> [--extends <head>] --outcome "<claim>"', 'drive only the journeys the named files affect (the whole local tier for a file no journey covers) and record a receipt that extends the prior one: its head, the files, the journeys and no review again; writes no journey, starts no reviewer'],
+      ['done-done verify --layer <fast|release|nightly> --base <ref> [--budget <duration>]', 'run bounded shadow checks; the existing verification gate remains required'],
       ['done-done verify --outcome "<claim>" [--feature <name>]', 'with no journey, the author agent drives a verify skill feature and the judge the user set judges its captures'],
       ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process'],
     ],
-    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--affected-by <files>', '--extends <head>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
+    flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--affected-by <files>', '--extends <head>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground', '--layer <fast|release|nightly>', '--base <ref>', '--budget <duration>', '--plan <file>'],
     more: [RUNS_TEXT],
   },
   journey: {
@@ -392,7 +398,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   },
   tests: {
     usage: [
-      ['DONE_DONE_SHADOW_TIMING=<file> done-done tests shadow <journey...>', 'time named journeys together without enforcing a limit or recording proof'],
+      ['DONE_DONE_SHADOW_TIMING=<file> done-done tests shadow [--deadline <duration>] <journey...>', 'time named journeys together; optionally stop the batch at a shared deadline, without recording proof'],
       ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
       ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
       ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
@@ -1725,6 +1731,7 @@ function assertCleanForReceipt(repo: string): void {
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
 function recordReceipt(repo: string, cfg: Config, r: CheckOutcome, reviewProof?: Receipt['review'], extended?: { affected: AffectedProof; journey: string }, newTests?: Receipt['new_tests']): { code: number; result: Record<string, unknown> } {
   if (r.code !== PASS || !r.judgeBlock) return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
+  if (process.env.DONE_DONE_LAYER_PLAN) return { code: INCONCLUSIVE, result: { command: 'receipt', result: 'inconclusive', reason: 'shadow layer outcomes cannot issue a receipt; the existing verification gate remains required' } };
   assertCleanForReceipt(repo);
   // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
   if (!r.cited.length) throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
@@ -2088,6 +2095,7 @@ async function driveBase(run: Run, cfg: Config, dir: string, rec: RunRecord, fix
         : 'npm install');
       if (install) {
         const child = spawn(install, { cwd: wt, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        if (child.pid) registerGroup(child.pid);
         run.runner!.journey_pgid = child.pid;
         let output = '';
         child.stdout.on('data', (data) => { output = (output + data).slice(-8192); });
@@ -2096,6 +2104,7 @@ async function driveBase(run: Run, cfg: Config, dir: string, rec: RunRecord, fix
           child.on('error', (e) => done(e.message));
           child.on('close', (code) => done(code === 0 ? '' : `exit ${code ?? 'unknown'}${output.trim() ? `: ${output.trim()}` : ''}`));
         });
+        if (child.pid && process.env.DONE_DONE_LAYER_GROUPS) { killGroup(child.pid); unregisterGroup(child.pid); }
         if (failure) return `base install (${install}) failed: ${failure}`;
       }
       if (!cfg.instance) return drive(wt, evidence, {});
@@ -2306,10 +2315,12 @@ async function runSteps(dir: string): Promise<void> {
         // An async child keeps the heartbeat going while the journey runs. The journey gets its own process group, so a
         // timeout or a dead runner can kill it and everything it started.
         const child = spawn(rec.command!, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
+        if (child.pid) registerGroup(child.pid);
         run.runner!.journey_pgid = child.pid;
         running = child.pid;
         saveRun(dir, run);
         const code = await new Promise<number>((done) => child.on('close', (c) => done(c ?? 1)));
+        if (child.pid && process.env.DONE_DONE_LAYER_GROUPS) { killGroup(child.pid); unregisterGroup(child.pid); }
         running = undefined;
         if (timedOut) {
           failed.push(`${cellName(cell)} (timed out after ${timeout})`);
@@ -2329,9 +2340,11 @@ async function runSteps(dir: string): Promise<void> {
         await driveBase(run, cfg, dir, rec, fix, async (where, evidence, env) => {
           for (const cell of matrix ?? [{}]) {
             const child = spawn(rec.command!, { cwd: where, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: evidence, ...env, ...(matrix ? cellEnv(cell) : {}) } });
+            if (child.pid) registerGroup(child.pid);
             spawned(child.pid!);
             const timer = setTimeout(() => killGroup(child.pid!), limit!);
             const code = await new Promise<number>((done) => child.on('close', (c) => done(c ?? 1)));
+            if (child.pid && process.env.DONE_DONE_LAYER_GROUPS) { killGroup(child.pid); unregisterGroup(child.pid); }
             clearTimeout(timer);
             if (code) return `the journey exited ${code} for cell ${cellName(cell)}`;
           }
@@ -2843,12 +2856,183 @@ async function preflightVerify(cfg: Config, agentDrives: boolean, tries = cfg.au
   await preflightJudge(cfg, false);
 }
 
+// Layer runs are shadow-only until their outcome and model policy can gate the ordinary receipt.
+// Fast accepts only explicitly sized native commands with a named test file, or a targeted lint/type check.
+const fastLayerCommand = (command: string, tracked: Set<string>, repo: string) => {
+  const c = command.trim();
+  if (/^(?:npx --no-install )?tsc(?: --noEmit)?$/.test(c)) return true;
+  const match = c.match(/^(?:node|nodejs) --test ([\w./-]+\.(?:test|spec)\.(?:js|cjs|mjs))$/)
+    ?? c.match(/^(?:npx --no-install )?(?:jest|vitest) (?:--runTestsByPath |run )([\w./-]+\.(?:test|spec)\.[\w]+)$/)
+    ?? c.match(/^(?:npx --no-install )?eslint ([\w./-]+\.[\w]+)$/)
+    ?? c.match(/^pytest ([\w./-]+\/test_[\w-]+\.py)$/);
+  const path = match?.[1];
+  return !!path && !path.startsWith('/') && !path.split('/').includes('..') && tracked.has(path.replace(/^\.\//, '')) && !symlinkOnPath(repo, join(repo, path));
+};
+
+type LayerOptions = { layer: string; base?: string; budget?: string; plan?: string; only?: string; startedNs?: string; submittedAt?: string };
+
+async function superviseLayer(o: LayerOptions): Promise<number> {
+  if (process.env.DONE_DONE_LAYER_GROUPS) throw new UsageError('a nested layer cannot own its parent layer process groups');
+  if (process.platform !== 'linux') throw new UsageError('layer needs supported Linux process-group isolation');
+  if (o.plan) o = { ...o, plan: resolve(o.plan) };
+  const started = process.hrtime.bigint();
+  const submittedAt = now();
+  const initial = o.budget === undefined ? (o.layer === 'fast' ? 300_000 : 1_800_000) : parseDuration(o.budget);
+  if (initial === null || initial <= 1000 || (o.layer === 'fast' && initial > 300_000)) throw new UsageError('layer budget must be a duration greater than 1s; fast is capped at 300s');
+  const resuming = !!o.plan && existsSync(o.plan);
+  let absoluteDeadline = started + BigInt(initial) * 1_000_000n;
+  if (resuming) {
+    layerRemaining(o.plan!);
+    const prior = JSON.parse(readFileSync(o.plan!, 'utf8'));
+    absoluteDeadline = BigInt(prior.deadline_monotonic_ns);
+  }
+  const groups = mkdtempSync(join(tmpdir(), 'done-done-layer-groups-'));
+  const env = { ...process.env, DONE_DONE_LAYER_GROUPS: groups };
+  const child = spawn(process.execPath, [CLI_PATH, '__layer', JSON.stringify({ ...o, startedNs: started.toString(), submittedAt }), ...(OUT === 'json' ? ['--json'] : []), ...(FULL ? ['--full'] : [])], { cwd: process.cwd(), env, detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  try { if (child.pid) registerGroup(child.pid, env); } catch (error) { rmSync(groups, { recursive: true, force: true }); throw error; }
+  let timedOut = false, stopping = false, planPath = '', timer: NodeJS.Timeout | undefined, killTimer: NodeJS.Timeout | undefined, shutdownError: Error | undefined;
+  const stop = (reason: string) => {
+    if (stopping) return;
+    stopping = true;
+    timedOut = reason === 'deadline';
+    if (planPath) try { appendFileSync(join(dirname(planPath), 'events.jsonl'), `${JSON.stringify({ kind: 'layer_interrupted', reason, at: now() })}\n`, { mode: 0o600 }); } catch (error) { shutdownError = error as Error; }
+    try { cancelGroups(groups, 'SIGTERM'); } catch { /* SIGKILL below will retry and report failure if needed */ }
+    killTimer = setTimeout(() => { try { cancelGroups(groups, 'SIGKILL'); } catch (error) { shutdownError ??= error as Error; } }, 250);
+  };
+  const schedule = (deadline: bigint) => {
+    if (stopping) return;
+    clearTimeout(timer);
+    const left = Number(deadline - process.hrtime.bigint()) / 1_000_000;
+    timer = setTimeout(() => stop('deadline'), Math.max(0, left - 1000));
+  };
+  schedule(absoluteDeadline);
+  child.on('message', (m: unknown) => {
+    const row = m as { budget?: unknown; plan?: unknown };
+    if (typeof row.plan === 'string') planPath = row.plan;
+    if (!resuming && !o.budget && typeof row.budget === 'number' && Number.isInteger(row.budget) && row.budget > 1000 && (o.layer !== 'fast' || row.budget <= 300_000)) schedule(started + BigInt(row.budget) * 1_000_000n);
+  });
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+  const handlers = Object.fromEntries(signals.map((sig) => [sig, () => stop(sig)])) as Record<typeof signals[number], () => void>;
+  for (const sig of signals) process.once(sig, handlers[sig]);
+  try {
+    const code = await new Promise<number>((resolve) => {
+      child.on('error', (error) => { shutdownError = error; resolve(USAGE); });
+      child.on('close', (status) => resolve(status ?? FAIL));
+    });
+    if (stopping && killTimer) await new Promise((resolve) => setTimeout(resolve, 300));
+    if (shutdownError) throw shutdownError;
+    if (timedOut) { emit({ command: 'verify', layer: o.layer, result: 'incomplete', ...(planPath && { plan: planPath }), reason: 'layer deadline expired; no receipt was issued' }); return INCONCLUSIVE; }
+    return stopping ? FAIL : code;
+  } finally {
+    clearTimeout(timer); if (killTimer) clearTimeout(killTimer);
+    for (const sig of signals) process.removeListener(sig, handlers[sig]);
+    if (child.pid) unregisterGroup(child.pid, env);
+    try { cancelGroups(groups, 'SIGKILL'); } finally { rmSync(groups, { recursive: true, force: true }); }
+  }
+}
+
+async function verifyLayer(o: LayerOptions): Promise<number> {
+  const started = o.startedNs && /^\d+$/.test(o.startedNs) ? BigInt(o.startedNs) : process.hrtime.bigint();
+  const executionStartedAt = now();
+  if (!['fast', 'release', 'nightly'].includes(o.layer)) throw new UsageError('--layer must be fast, release or nightly');
+  if (!o.base) throw new UsageError('verify --layer needs --base <ref>');
+  if (o.only && o.layer !== 'fast') throw new UsageError('release and nightly require every outcome; a journey cannot be selected');
+  if (!await processGroupSupported()) throw new UsageError('layer needs working process-group isolation; the host cancellation probe failed');
+  const repo = repoRoot(), cfg = loadConfig(repo), current = head(repo);
+  if (current.dirty) throw new UsageError('verify --layer requires a clean tracked tree');
+  let base: string;
+  try { base = git(repo, 'rev-parse', '--verify', '--end-of-options', `${o.base}^{commit}`); }
+  catch { throw new UsageError(`--base ${o.base} is not a commit`); }
+  if (!isAncestor(repo, base, current.commit)) throw new UsageError('--base must be an ancestor of HEAD');
+  const budget = o.budget === undefined ? (o.layer === 'fast' ? 300_000 : parseDuration(cfg.suite.timeout)) : parseDuration(o.budget);
+  if (budget === null || budget <= 1000 || (o.layer === 'fast' && budget > 300_000)) throw new UsageError('layer budget must be a duration greater than 1s; fast is capped at 300s');
+  process.send?.({ budget });
+  if (o.only && cfg.live[o.only]) throw new UsageError(`live journey ${o.only} cannot run in fast`);
+  const all = Object.entries(cfg.journeys);
+  const fastTiers = new Set(['ci', 'local', 'fast', 'lint', 'types', 'unit', 'behavior', 'e2e']);
+  const selected = o.layer === 'fast' ? all.filter(([name, j]) => o.only ? name === o.only : fastTiers.has(j.tier ?? '')) : all;
+  if (o.only && !selected.length) throw new UsageError(`unknown journey ${o.only}`);
+  const tracked = o.layer === 'fast' ? git(repo, 'ls-files', '-z').split('\0').filter(Boolean) : [];
+  const trackedSet = new Set(tracked);
+  if (o.layer === 'fast') for (const [name, j] of selected) {
+    if (j.size === 'large' || ['nightly', 'night', 'live', 'load'].includes(j.tier ?? '')) throw new UsageError(`journey ${name} is nightly or live and cannot run in fast`);
+    if (!isSize(j.size) || !fastLayerCommand(j.command, trackedSet, repo)) throw new UsageError(`journey ${name} is unsized or opaque broad work and cannot run in fast`);
+  }
+  const changed = git(repo, 'diff', '--name-only', '--no-renames', '-z', base, current.commit).split('\0').filter(Boolean).filter(needsJourney(cfg));
+  const unresolved = changed.filter((file) => !selected.some(([, j]) => j.command.trim().split(/\s+/).some((part) => part.replace(/^\.\//, '') === file)));
+  if (o.layer === 'fast' && unresolved.length) {
+    const mapping = mapDiff(repo, cfg, unresolved, tracked, undefined, () => {
+      if (process.hrtime.bigint() >= started + BigInt(budget) * 1_000_000n - 1_000_000_000n) throw new UsageError('layer deadline expired while selecting checks');
+    });
+    const omitted = mapping.journeys.filter((j) => !selected.some(([name]) => name === j.name));
+    const unmapped = mapping.unmapped;
+    if (mapping.features.length || omitted.length || unmapped.length) throw new UsageError(`fast cannot safely cover this change: ${[...mapping.features.map(f => `feature ${f.name}`), ...omitted.map(j => `journey ${j.name}`), ...unmapped.map(file => `unmapped ${file}`)].join(', ')}`);
+  }
+  if (selected.some(([, j]) => j.spends)) throw new UsageError('layer includes a spending journey; run it through its existing approval gate');
+  if (o.layer !== 'fast' && Object.values(cfg.live).some((j) => j.spends)) throw new UsageError('layer includes a spending live check; no layer work was started');
+  const entries: [string, string][] = selected.map(([name, j]) => [name, j.command]);
+  if (o.layer !== 'fast') entries.push(...Object.entries(cfg.live).map(([name, j]) => [name, j.command] as [string, string]));
+  if (!entries.length) throw new UsageError(`no eligible ${o.layer} outcomes`);
+  const limits = Object.fromEntries([...selected.map(([name, j]) => [name, j.timeout ? parseDuration(j.timeout) : isSize(j.size) ? SIZES[j.size] : budget] as const), ...Object.entries(cfg.live).map(([name, j]) => [name, parseDuration(j.timeout)] as const)].map(([name, ms]) => {
+    if (ms === null) throw new UsageError(`journey ${name} has an invalid timeout`);
+    return [name, ms];
+  }));
+  const planPath = o.plan ? resolve(repo, o.plan) : join(cfg.evidence.root, '.done-done', 'layers', newRunId(current.commit), 'plan.json');
+  mkdirSync(dirname(planPath), { recursive: true });
+  const lock = `${planPath}.run-lock`;
+  try { mkdirSync(lock, { mode: 0o700 }); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new UsageError('layer plan is already running or was interrupted; its allowance cannot be renewed');
+    throw e;
+  }
+  try {
+    if (!existsSync(planPath)) {
+      const plan = { schema: 1, mode: 'shadow', layer: o.layer, base, head: current.commit, changed, submitted_at: o.submittedAt ?? executionStartedAt, queue_started_at: null, queue_source: null, execution_started_at: executionStartedAt, boot_id: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), deadline_monotonic_ns: (started + BigInt(budget) * 1_000_000n).toString(), budget_ms: budget, required: entries.map(([name]) => name), unfinished: entries.map(([name]) => name), complete: false, model_budget: { limit: 5300, slots: { cheap: null, large: null }, attempts: [] } };
+      writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    }
+    process.send?.({ plan: planPath });
+    const existing = JSON.parse(readFileSync(planPath, 'utf8'));
+    if (existing.layer !== o.layer || existing.base !== base || existing.head !== current.commit || JSON.stringify(existing.required) !== JSON.stringify(entries.map(([name]) => name)) || existing.complete !== false || !Number.isInteger(existing.budget_ms) || existing.budget_ms <= 1000 || (o.layer === 'fast' && existing.budget_ms > 300_000)) throw new UsageError('layer plan does not match this incomplete run');
+    const remaining = layerRemaining(planPath);
+    const journal = join(dirname(planPath), 'events.jsonl');
+    const report = await shadowBatch(entries, { cwd: repo, env: { ...commandEnv(), DONE_DONE_LAYER_PLAN: planPath, DONE_DONE_SHADOW_TIMING: journal }, journal, deadlineMs: remaining + 1000, limits, retry: false, overTargetIsStatus: false });
+    const finalPlan = JSON.parse(readFileSync(planPath, 'utf8'));
+    const after = head(repo);
+    finalPlan.checks_complete = report.status === 'passed' && report.unfinished_leaves.length === 0 && report.rows.length === entries.length && !after.dirty && after.commit === current.commit;
+    if (after.dirty || after.commit !== current.commit) finalPlan.failure = 'tracked files or HEAD changed during the layer';
+    finalPlan.outcomes = report.rows.map(({ leaf_id, result_status, duration_ms }) => ({ name: leaf_id, status: result_status, duration_ms }));
+    finalPlan.unfinished = report.unfinished_leaves;
+    let fullBatchSamples = 0, fullBatchP95: number | null = null;
+    const totalMs = Number(process.hrtime.bigint() - (BigInt(finalPlan.deadline_monotonic_ns) - BigInt(finalPlan.budget_ms) * 1_000_000n)) / 1_000_000;
+    finalPlan.duration_ms = totalMs;
+    if (o.layer !== 'fast') {
+      const history = join(cfg.evidence.root, '.done-done', 'layers', 'full-batches.jsonl');
+      mkdirSync(dirname(history), { recursive: true });
+      if (report.unfinished_leaves.length === 0 && report.rows.length === entries.length && report.rows.every((row) => row.result_status !== 'interrupted') && !after.dirty && after.commit === current.commit) appendFileSync(history, `${JSON.stringify({ layer: o.layer, mode: 'shadow', head: current.commit, duration_ms: totalMs, status: report.status })}\n`, { mode: 0o600 });
+      const samples = (existsSync(history) ? readFileSync(history, 'utf8').split('\n').filter(Boolean) : []).map((line) => JSON.parse(line)).filter((row) => row.layer === o.layer && row.mode === 'shadow' && typeof row.duration_ms === 'number' && Number.isFinite(row.duration_ms) && row.duration_ms >= 0).map((row) => row.duration_ms as number).sort((a, b) => a - b);
+      fullBatchSamples = samples.length;
+      if (samples.length) fullBatchP95 = samples[Math.ceil(samples.length * 0.95) - 1];
+    }
+    finalPlan.full_batch_p95_ms = fullBatchP95;
+    finalPlan.full_batch_samples = fullBatchSamples;
+    const tmp = `${planPath}.${process.pid}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(finalPlan, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, planPath);
+    emit({ command: 'verify', layer: o.layer, mode: 'shadow', result: finalPlan.checks_complete ? 'checks-passed' : 'incomplete', plan: planPath, required: entries.length, ...report, layer_duration_ms: totalMs, full_batch_p95_ms: fullBatchP95, full_batch_samples: fullBatchSamples, help: ['Shadow checks do not issue a receipt; the existing verification gate remains required.'] });
+    return finalPlan.checks_complete ? INCONCLUSIVE : FAIL;
+  } finally { rmdirSync(lock); }
+}
+
 async function cmdVerify(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'affected-by': { type: 'string' }, extends: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
+    options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'affected-by': { type: 'string' }, extends: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' }, layer: { type: 'string' }, base: { type: 'string' }, budget: { type: 'string' }, plan: { type: 'string' } },
     allowPositionals: true,
   });
+  if (values.layer !== undefined) {
+    if (positionals.length > 1 || values.outcome !== undefined || values.feature !== undefined || values.journeys !== undefined || values['named-by'] !== undefined || values['affected-by'] !== undefined || values.extends !== undefined || values['claim-id'] !== undefined || values['fix-tries'] !== undefined || values.wait || values['no-wait'] || values.foreground) throw new UsageError('verify --layer takes --base, optional --budget, --plan and at most one fast journey');
+    return superviseLayer({ layer: values.layer, base: values.base, budget: values.budget, plan: values.plan, only: positionals[0] });
+  }
+  if (values.base !== undefined || values.budget !== undefined || values.plan !== undefined) throw new UsageError('--base, --budget and --plan require --layer');
   if (!values.outcome?.trim()) throw new UsageError('verify needs --outcome "<what a user can now do>"');
   const fixTries = values['fix-tries'] === undefined ? undefined : Number(values['fix-tries']);
   if (fixTries !== undefined && !(Number.isInteger(fixTries) && fixTries >= 0)) throw new UsageError('--fix-tries needs a whole number, 0 or more', 'Run: done-done verify <journey> --outcome "<claim>" --fix-tries 2');
@@ -2978,7 +3162,9 @@ async function startRunner(dir: string, how: { foreground?: boolean; 'no-wait'?:
   const child = spawn(process.execPath, [CLI_PATH, '__runner', dir], { cwd: loadRun(dir).repo, detached: true, stdio: ['ignore', fd, fd] });
   child.unref();
   closeSync(fd);
+  if (child.pid) registerGroup(child.pid);
   if (!how['no-wait']) await waitRun(dir, child.pid!);
+  if (child.pid && process.env.DONE_DONE_LAYER_GROUPS && !alive(child.pid)) { killGroup(child.pid); unregisterGroup(child.pid); }
   return { gone: !alive(child.pid!) };
 }
 
@@ -4981,17 +5167,24 @@ function cmdInventory(argv: string[]): number {
 // `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
 async function cmdTests(argv: string[]): Promise<number> {
   if (argv[0] === 'shadow') {
-    const names = argv.slice(1);
+    const submitted = performance.now();
+    const { values, positionals: names } = parseArgs({ args: argv.slice(1), options: { deadline: { type: 'string' } }, allowPositionals: true });
     const journal = process.env.DONE_DONE_SHADOW_TIMING;
     if (!journal) throw new UsageError('tests shadow needs DONE_DONE_SHADOW_TIMING set to a JSONL file');
     if (!names.length || new Set(names).size !== names.length || names.some(n => n.startsWith('-'))) throw new UsageError('tests shadow needs distinct journey names');
+    const budget = values.deadline === undefined ? undefined : parseDuration(values.deadline);
+    if (budget === null || (budget !== undefined && (budget <= 1000 || budget > 300_000))) throw new UsageError('shadow deadline must be greater than 1s and at most 300s');
+    if (budget !== undefined && process.env.DONE_DONE_LAYER_GROUPS) throw new UsageError('a nested shadow deadline cannot own the outer layer process groups');
+    if (budget !== undefined && !await processGroupSupported()) throw new UsageError('shadow deadline needs working process-group isolation; the host cancellation probe failed');
     const repo = repoRoot(), cfg = loadConfig(repo);
     for (const name of names) {
       const journey = cfg.journeys[name];
       if (!journey) throw new UsageError(`unknown journey ${name}`);
       if (journey.spends || journey.size === 'large') throw new UsageError(`journey ${name} cannot run in the shadow pilot`);
     }
-    const report = await shadowBatch(names.map(name => [name, cfg.journeys[name].command]), { cwd: repo, env: commandEnv(), journal });
+    const deadlineMs = budget === undefined ? undefined : budget - (performance.now() - submitted);
+    if (deadlineMs !== undefined && deadlineMs <= 1000) throw new UsageError('shadow deadline expired during setup; nothing ran');
+    const report = await shadowBatch(names.map(name => [name, cfg.journeys[name].command]), { cwd: repo, env: commandEnv(), journal, deadlineMs });
     emit({ command: 'tests shadow', shadow: true, ...report });
     return report.status === 'failed' ? FAIL : PASS;
   }
@@ -5602,6 +5795,11 @@ async function main(argv: string[]): Promise<number> {
     if (cmd === '__runner') {
       await runSteps(rest[0]);
       return PASS;
+    }
+    if (cmd === '__layer') {
+      if (!process.env.DONE_DONE_LAYER_GROUPS || !process.send || rest.length !== 1) throw new UsageError('layer worker needs its parent supervisor');
+      process.env.DONE_DONE_LAYER_ROOT_PGID = String(process.pid);
+      return await verifyLayer(JSON.parse(rest[0]) as LayerOptions);
     }
     if (cmd === '--version') {
       console.log(VERSION + (PRE_RELEASE ? '\npre-release' : ''));

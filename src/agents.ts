@@ -7,6 +7,7 @@ import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, type Co
 import { isExecutable, onPath } from './judge.js';
 import { unavailable } from './routes.js';
 import { shadowUsage } from './size.js';
+import { layerRemaining, registerGroup, unregisterGroup } from './deadline.js';
 
 // How done-done starts a coding agent for one step: a fresh, single-shot session that
 // answers one JSON-schema question. The prompt goes on stdin or in a 0600 prompt file, never in
@@ -477,6 +478,7 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
   const group = c.tools === 'edit';
   return new Promise((done) => {
     const child = spawn(bin, argv, { cwd, env, detached: group });
+    if (group && child.pid) registerGroup(child.pid, env);
     let stdout = '';
     let stderr = '';
     let error: Error | undefined;
@@ -550,6 +552,7 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
     child.on('error', (e) => {
       clearTimeout(timer);
       clearTimeout(idle);
+      if (group && child.pid) unregisterGroup(child.pid, env);
       done({ status: null, stdout, stderr, error: e });
     });
     if (!child.pid) return;
@@ -578,6 +581,7 @@ function start(bin: string, argv: string[], c: AgentCall, cwd: string, input: st
       clearTimeout(idle);
       clearTimeout(drain);
       if (group) kill();
+      if (group && child.pid) unregisterGroup(child.pid, env);
       done({ status, stdout, stderr, error });
     });
     child.stdin.on('error', () => {}); // an agent that exits without reading its stdin
@@ -699,6 +703,11 @@ export function claudeAccount(agent: string, command?: string): Promise<ClaudeAc
 // State owner: this loop. Success (including a product failure) and invalid answers stop;
 // availability advances to the next route; exhaustion reports every attempted route.
 export async function askAgent(c: AgentCall): Promise<AgentAnswer> {
+  const plan = process.env.DONE_DONE_LAYER_PLAN || c.env?.DONE_DONE_LAYER_PLAN;
+  if (plan) {
+    layerRemaining(plan);
+    return { ok: false, error: `layer cannot safely bound the ${c.agent} CLI route; no provider request was made` };
+  }
   const { routes, ...first } = c;
   if (!routes?.length) return askOne(first);
   const attempts = [];
