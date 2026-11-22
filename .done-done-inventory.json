@@ -117,7 +117,7 @@
   },
   "journeys/size-bounds.mjs": {
     "owner": "size-bounds",
-    "sha256": "b067db112c5fb539707af4dbe6156d8d91b73c67a4152146dc4186998a2d6f86"
+    "sha256": "66d8f61ba2adb489ec4ba2d2cf46b33542f4ae9da35a8b338a1a6514cd9f13d2"
   },
   "journeys/tier-ci.mjs": {
     "owner": "tier-ci",

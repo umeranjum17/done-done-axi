@@ -31,7 +31,7 @@ import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
-import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize, type Size } from './size.js';
+import { measureJourney, nightFault, runBounded, shadowBatch, withShadowRun, sizeFault, slowReason, isSize, type Size } from './size.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
 import { mapChange, shadowPlan } from './affected.js';
@@ -391,6 +391,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   },
   tests: {
     usage: [
+      ['DONE_DONE_SHADOW_TIMING=<file> done-done tests shadow <journey...>', 'time named journeys together without enforcing a limit or recording proof'],
       ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
       ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
       ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
@@ -1309,7 +1310,8 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   await withChoice('judge', cfg);
   run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
   const author = () => (run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg));
-  const j = await judge(cfg, () => selectJudge(cfg, author()), claim.outcome, claimCaptures.length ? claimCaptures : captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author()));
+  const usageRunId = run ? basename(run.dir) : runs.size === 1 ? [...runs.keys()][0] : randomBytes(16).toString('hex');
+  const j = await withShadowRun(usageRunId, () => judge(cfg, () => selectJudge(cfg, author()), claim.outcome, claimCaptures.length ? claimCaptures : captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author())));
   // The judge's next step leads the help when its verdict decides the result.
   if (j.judged.some((r) => r.verdict === 'fail')) judgeLevel = 'fail';
   else if (!findings.length && j.judged.some((r) => r.verdict === 'unsure')) judgeLevel = 'inconclusive';
@@ -1343,7 +1345,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   let matches: DesignMatch[] = [];
   if (approved.length) {
     const pairs = approved.map(({ entry, live }) => pairUp(`${entry.screen} / ${entry.size} / ${entry.theme}`, entry.mock, live[0], entry.size));
-    const verdicts = await design(cfg, choice!, pairs, agentRecords);
+    const verdicts = await withShadowRun(usageRunId, () => design(cfg, choice!, pairs, agentRecords));
     matches = verdicts.map((v, i) => {
       const { screen, size, theme } = approved[i].entry;
       if (v.verdict !== 'pass') findings.push({ level: 'fail', why: `approved design: ${screen} / ${size} / ${theme}: ${v.verdict === 'unsure' ? 'match not proven: ' + v.reason : v.defects.map(d => `${d.kind}: ${d.where}`).join('; ')}`, file: v.path });
@@ -1356,7 +1358,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   }
   let redesigned: RedesignMatch[] = [];
   if (redesigns.length) {
-    const verdicts = await redesign(cfg, choice!, redesigns.map(r => r.live[0]), agentRecords);
+    const verdicts = await withShadowRun(usageRunId, () => redesign(cfg, choice!, redesigns.map(r => r.live[0]), agentRecords));
     redesigned = verdicts.map((v, i) => {
       const { screen, size, theme } = redesigns[i].entry;
       const reason = v.failed.length ? v.failed.map(d => `${d.kind}: ${d.where}`).join('; ') : v.reason;
@@ -1368,7 +1370,7 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   const withMock = requirements.filter(({ r }) => r.mock);
   if (withMock.length) {
     const pairs = withMock.map(({ r, live }) => pairUp(`${r.kind} ${r.name}`, r.mock!, live[0]));
-    const verdicts = await design(cfg, choice!, pairs, agentRecords);
+    const verdicts = await withShadowRun(usageRunId, () => design(cfg, choice!, pairs, agentRecords));
     for (const [i, v] of verdicts.entries()) {
       const { r } = withMock[i];
       if (v.verdict !== 'pass') findings.push({ level: 'fail', why: `approved design: ${r.kind} ${r.name}: ${v.verdict === 'unsure' ? 'match not proven: ' + v.reason : v.defects.map(d => `${d.kind}: ${d.where}`).join('; ')}`, file: v.path });
@@ -1376,14 +1378,14 @@ async function runCheck(argv: string[], run?: { dir: string; judging: (code: num
   }
   const written: RequirementMatch[] = [];
   for (const { r, live } of specs) {
-    const v = await writtenRequirement(cfg, choice!, r.name, r.requirement!, live[0], agentRecords);
+    const v = await withShadowRun(usageRunId, () => writtenRequirement(cfg, choice!, r.name, r.requirement!, live[0], agentRecords));
     v.path = receiptPath(repo, cfg, cite(v.path));
     v.basis = r.mock || approved.some(({ entry }) => entry.capture === r.capture) ? 'judged against approved reference image and written requirements' : 'judged against written requirements (no approved reference image)'; written.push(v);
     if (v.verdict !== 'pass') findings.push({ level: 'fail', why: `written requirement: ${r.name}: ${v.reason}`, file: v.path });
   }
   if (basis) { judged.comparison_basis = basis; if (judgeBlock) judgeBlock.comparison_basis = basis; }
   if (written.length && judgeBlock) judgeBlock.approved_requirements = written;
-  const touches = await interactions(cfg, choice!, captures, agentRecords);
+  const touches = await withShadowRun(usageRunId, () => interactions(cfg, choice!, captures, agentRecords));
   for (const r of touches) {
     r.captures = r.captures.map(c => ({ ...c, path: receiptPath(repo, cfg, cite(c.path)) }));
     if (r.status === 'flagged') findings.push({ level: 'fail', why: `interaction checklist: ${r.id}: flagged: ${r.reason}` });
@@ -4975,6 +4977,21 @@ function cmdInventory(argv: string[]): number {
 
 // `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
 async function cmdTests(argv: string[]): Promise<number> {
+  if (argv[0] === 'shadow') {
+    const names = argv.slice(1);
+    const journal = process.env.DONE_DONE_SHADOW_TIMING;
+    if (!journal) throw new UsageError('tests shadow needs DONE_DONE_SHADOW_TIMING set to a JSONL file');
+    if (!names.length || new Set(names).size !== names.length || names.some(n => n.startsWith('-'))) throw new UsageError('tests shadow needs distinct journey names');
+    const repo = repoRoot(), cfg = loadConfig(repo);
+    for (const name of names) {
+      const journey = cfg.journeys[name];
+      if (!journey) throw new UsageError(`unknown journey ${name}`);
+      if (journey.spends || journey.size === 'large') throw new UsageError(`journey ${name} cannot run in the shadow pilot`);
+    }
+    const report = await shadowBatch(names.map(name => [name, cfg.journeys[name].command]), { cwd: repo, env: commandEnv(), journal });
+    emit({ command: 'tests shadow', shadow: true, ...report });
+    return report.status === 'failed' ? FAIL : PASS;
+  }
   const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
   const action = positionals[0];
   if ((action !== 'measure' && action !== 'value' && action !== 'improve') || positionals.length > 2) throw new UsageError('tests needs the action measure, value or improve and at most one journey', 'Re-run as: done-done tests measure|value|improve [<journey>] [--night]');

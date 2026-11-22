@@ -46,7 +46,10 @@ journeys:
   qa-plan:
     command: node journeys/qa-plan.mjs
   size-bounds:
-    command: node journeys/size-bounds.mjs
+    command:
+      # Enhanced focus: "Preserve every existing assertion. Add concise deterministic end-to-end coverage of tests shadow: drive five isolated synthetic journeys together via the built CLI, verify five child exits reconcile with the monotonic batch wall duration and unknown queue origin, plus a failed retry and unfinished records. Exercise provider dispatch accounting with local synthetic direct and CLI routes, including one failed attempt exactly once, a cache hit with zero new calls, missing usage as null, no prompts or credentials in the journal, and known/attempted counts. Keep runtime independent of external services and retain actual output as evidence."
+      # Improved instruction: "Fix the failed generated assertions using the actual JSONL schema in src/size.ts: use kind=batch_exit with duration_ms for batch wall time, and the five kind=exit rows with start_offset_ms/end_offset_ms for reconciliation; target_ms is a target, not a child duration. Check queue_source and queue_ms null, retry_start/retry_exit and interrupted/unfinished via a safe isolated child. Assert input_tokens_or_null and output_tokens_or_null are null on provider_attempt rows lacking usage, not that all fields containing usage are null (the batch count is a string). Remove the invalid copyFileSync of a file onto itself. Check the failed CLI dispatch is journaled exactly once and cache hit makes zero new calls. Add a deterministic local synthetic direct API dispatch failure and missing-usage case with no network, prompt or credential leakage. Keep all original size-bound checks, keep total additions compact, and save actual logs."
+      node journeys/size-bounds.mjs
   check-fan-out:
     command: node journeys/check-fan-out.mjs
   affected-select:

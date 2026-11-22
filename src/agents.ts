@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, type Config, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, RouteUnavailable, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
 import { unavailable } from './routes.js';
+import { shadowUsage } from './size.js';
 
 // How done-done starts a coding agent for one step: a fresh, single-shot session that
 // answers one JSON-schema question. The prompt goes on stdin or in a 0600 prompt file, never in
@@ -448,6 +449,25 @@ export function selectFallback(cfg: Config, found: { agent: string; model: strin
 
 type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
 
+// Read only known numeric usage fields; the response body and answer never enter the shadow journal.
+function cliUsage(stdout: string) {
+  const lines = [stdout, ...stdout.split('\n').filter(line => line.startsWith('{')).reverse()];
+  for (const line of lines) {
+    try {
+      const value = JSON.parse(line) as Record<string, unknown>;
+      const usage = value.usage && typeof value.usage === 'object' ? value.usage as Record<string, unknown> : null;
+      if (!usage) continue;
+      const number = (x: unknown) => typeof x === 'number' && Number.isFinite(x) ? x : null;
+      const input = number(usage.input_tokens), output = number(usage.output_tokens);
+      const read = number(usage.cache_read_input_tokens), write = number(usage.cache_creation_input_tokens);
+      const estimate = number(value.total_cost_usd);
+      return { usage_source: 'cli', input_tokens_or_null: input, output_tokens_or_null: output, cache_read_write_or_null: read === null && write === null ? null : { read, write }, dated_estimate_or_null: estimate === null ? null : { amount: estimate, currency: 'USD', observed_at: new Date().toISOString(), source: 'cli_reported_estimate' } };
+    } catch {}
+  }
+  return {};
+}
+
+
 const DRAIN_MS = 500;
 const OUTPUT_CAP = 64 << 20;
 
@@ -738,6 +758,7 @@ async function askOne(c: AgentCall): Promise<AgentAnswer> {
   let cwd = c.cwd;
   let res: Ran | undefined;
   let attempts = 0;
+  let dispatches = 0;
   let out: AgentAnswer;
   let failure: string | undefined;
   let verdict: Record<string, unknown> | undefined;
@@ -779,7 +800,15 @@ async function askOne(c: AgentCall): Promise<AgentAnswer> {
       if (adapter.file) writeFileSync(join(dir, 'prompt.md'), promptText, { mode: 0o600 });
       const input = adapter.file ? '' : adapter.stdin ? adapter.stdin(call, promptText) : promptText;
       const remain = Math.max(1_000, Math.min(call.timeoutMs, deadline - Date.now()));
-      res = await start(bin, argv(dir), { ...call, timeoutMs: remain }, cwd, input, env, adapter.streams ? call.idleMs ?? AGENT_IDLE_MS : 0);
+      const dispatchStart = performance.now();
+      const dispatchReason = dispatches++ ? 'retry' : 'dispatch';
+      try {
+        res = await start(bin, argv(dir), { ...call, timeoutMs: remain }, cwd, input, env, adapter.streams ? call.idleMs ?? AGENT_IDLE_MS : 0);
+      } catch (error) {
+        shadowUsage({ step: call.tools === 'none' ? 'judge' : call.tools, reason: dispatchReason, route_model_version: `${call.agent}:${call.model}`, elapsed_ms: performance.now() - dispatchStart, terminal_status: 'failed' });
+        throw error;
+      }
+      shadowUsage({ step: call.tools === 'none' ? 'judge' : call.tools, reason: dispatchReason, route_model_version: `${call.agent}:${call.model}`, ...(process.env.DONE_DONE_SHADOW_TIMING ? cliUsage(res.stdout) : {}), elapsed_ms: performance.now() - dispatchStart, terminal_status: res.error || res.status !== 0 ? 'failed' : 'completed' });
       if (res.error) {
         if (await moveOn(res.error.message)) { attempts--; continue; }
         throw res.error;
