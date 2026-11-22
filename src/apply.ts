@@ -1,7 +1,7 @@
 // Apply an approved test plan (`done-done tests improve --apply <drop|move> --plan <file>`, stage `applied`). One verdict class
 // per call, so each change set stays small and lands on its own ticket branch. Nothing is written until the kept tests have
 // been rerun against the faults the plan recorded: a plan that would leave a fault caught by no test is refused.
-//   drop  remove the journey from .done-done.yaml, delete its script when no kept journey runs it, forget its inventory entry
+//   drop  refused while recorded fault overlap cannot prove all outcomes survive
 //   move  set the journey's size to the smaller one the plan names
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import { parseDocument } from 'yaml';
 import { UsageError } from './config.js';
 import { forget, isTestFile } from './inventory.js';
 import type { Plan, Row } from './improve.js';
-import { isSize } from './size.js';
+import { isSize, SIZES } from './size.js';
 import { measureValue, type Fault, type TestRun } from './value.js';
 
 export const MAX_CHANGE_LINES = 300;
@@ -21,6 +21,7 @@ export type Applied = { class: Apply; tests: string[]; lines: number; seconds: {
 
 const CONFIG = '.done-done.yaml';
 const same = (a: Fault, b: Fault) => a.file === b.file && a.line === b.line && a.now === b.now;
+const combinationRefusal = (klass: Apply) => klass === 'drop' ? 'not provably lossless: recorded fault overlap does not prove each positive outcome and refusal survives; keep both checks' : null;
 
 // The plan file is the JSON `tests improve --plan-only --json` printed; this checks the parts apply reads.
 export function parsePlan(text: string): Plan {
@@ -65,6 +66,7 @@ function refusal(plan: Plan, rows: Row[], klass: Apply, journeys: Journeys, repo
   for (const r of rows) {
     if (!journeys[r.test]) return `the plan names ${r.test}, which .done-done.yaml no longer defines: the plan is stale`;
     if (klass === 'move' && !isSize(r.to)) return `the plan moves ${r.test} to ${r.to ?? 'no size'}, which is not ci, local or large`;
+    if (klass === 'move' && (!isSize(journeys[r.test].size) || SIZES[r.to!] > SIZES[journeys[r.test].size as keyof typeof SIZES])) return `cannot demote ${r.test}: no independent fast replacement has been proven`;
   }
   for (const f of plan.faults) {
     const line = existsSync(join(repo, f.file)) ? readFileSync(join(repo, f.file), 'utf8').split('\n')[f.line - 1] : undefined;
@@ -78,6 +80,8 @@ export async function applyPlan(repo: string, plan: Plan, klass: Apply, journeys
   const rows = plan.rows.filter((r) => r.action === klass);
   if (!rows.length) throw new UsageError(`the plan has no ${klass} rows`, 'Pick a class the plan proposes: done-done tests improve --apply drop|move --plan <file>');
   const done = (extra: Partial<Applied>): Applied => ({ class: klass, tests: rows.map((r) => r.test), lines: 0, seconds: { before: 0, after: 0 }, kept: 0, ...extra });
+  const unsafeCombination = combinationRefusal(klass);
+  if (unsafeCombination) return done({ refused: unsafeCombination });
   const stale = refusal(plan, rows, klass, journeys, repo);
   if (stale) return done({ refused: stale });
 

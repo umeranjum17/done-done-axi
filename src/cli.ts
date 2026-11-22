@@ -400,8 +400,8 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     usage: [
       ['DONE_DONE_SHADOW_TIMING=<file> done-done tests shadow [--deadline <duration>] <journey...>', 'time named journeys together; optionally stop the batch at a shared deadline, without recording proof'],
       ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
-      ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
-      ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
+      ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose repairs and size changes, and report combinations that are not provably lossless; changes no file'],
+      ['done-done tests improve --apply <drop|move> --plan <file>', 'apply a move after fault replay; refuse drops when recorded faults do not prove all outcomes survive'],
       ['done-done tests value [<journey>] [--night] [--shadow] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
     ],
     flags: ['--night', '--shadow', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
@@ -413,11 +413,11 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   test catches the same set), slop (catches none), duplicate (a faster test, or an earlier-named one at equal speed, catches exactly the same faults; duplicate_of names it), failing (fails on
   the clean copy). The work copy is only read and nothing is recorded as proof. Exit 1 when any test is slop, duplicate or failing.
   \`tests value --shadow\` reports fresh mutation observations without failing or proposing deletion; it needs ownership declarations and installed runners.
-  \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: one row per test (action keep, drop for slop or a duplicate, move with \`to\` when a real
-  test's measured time fits a smaller size with 3x headroom, fix for a failing one, each with its reason), gaps, the planted faults that no test caught, as file:line, and faults, every planted fault. It writes no file and exits 0.
+  \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: keep possible duplicates, fix unproductive or failing checks, or move a real
+  test to a smaller size when its measured time fits with 3x headroom. Candidate combinations lacking outcome proof are reported as not provably lossless. It writes no file and exits 0.
   \`tests improve --apply drop|move --plan <file>\` applies one class of a saved plan (stage applied). It first reruns the kept tests, at their new sizes, against the plan's recorded faults: if a fault the plan
   said was caught is caught by no kept test, or a kept test now fails, or the plan is stale (a source line or journey changed), or the change set is over 300 lines, it is refused (stage refused, exit 1) and writes nothing.
-  Otherwise drop removes the journeys from .done-done.yaml, deletes their scripts that no kept journey runs and forgets their inventory entries; move sets the smaller size. It reports the tests' summed clean-run seconds
+  Drop is refused because recorded fault overlap does not prove that each outcome and refusal survives. Move sets the smaller size. It reports the tests' summed clean-run seconds
   before and after. Commit each class alone on its own ticket branch; fill gaps with \`done-done qa "<feature>" --write\``],
   },
   'after-commit': {
@@ -5241,16 +5241,16 @@ async function cmdTestsValue(repo: string, picked: [string, { command: string; s
   const report = await valueOf(repo, picked, skipped, values);
   const bad = report.tests.filter((t) => t.verdict !== 'real');
   emit({ command: 'tests value', faults: report.faults.map((f) => `${f.file}:${f.line} ${f.was.trim()} => ${f.now.trim()}`), tests: report.tests, skipped,
-    help: bad.length ? [`Not worth keeping as is: ${bad.map((t) => `${t.test} (${t.verdict})`).join(', ')}; delete a slop or duplicate test, or fix a failing one`] : [] });
+    help: bad.length ? [`Review: ${bad.map((t) => `${t.test} (${t.verdict})`).join(', ')}; fault overlap alone does not authorize removal`] : [] });
   return bad.length ? FAIL : PASS;
 }
 
 // `tests improve --plan-only`: stage proposed. Inventory (the journeys), measure and value (one valued run), then keep/drop/move rows and the gaps. Changes no file.
 async function cmdTestsImprove(repo: string, picked: [string, { command: string; size?: string }][], skipped: string[], values: { faults?: string; source?: string[] }): Promise<number> {
   const report = await valueOf(repo, picked, skipped, values);
-  const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.faults, report.uncaught);
+  const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.faults, report.uncaught, loadConfig(repo).app);
   const act = (a: string) => plan.rows.filter((r) => r.action === a).map((r) => r.test);
-  emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, faults: plan.faults, skipped,
+  emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, faults: plan.faults, combinations: plan.combinations, skipped,
     help: [
       ...(act('drop').length ? [`Drop: ${act('drop').join(', ')}`] : []),
       ...plan.rows.filter((r) => r.action === 'move').map((r) => `Move ${r.test} to size ${r.to}`),
