@@ -9,7 +9,7 @@
   },
   "journeys/affected-select.mjs": {
     "owner": "affected-select",
-    "sha256": "1374a7e882f3f71a117630c6edb34373566309e2166869ecc726759b467a0420"
+    "sha256": "fd145ba85c8fabe373a52d4ae345aeae1978951272ddfffd4cbf386669efebd7"
   },
   "journeys/after-commit.mjs": {
     "owner": "after-commit",
@@ -159,6 +159,18 @@
     "owner": "npm-test",
     "sha256": "5189a0b641a5f43dc958d4eb1dc80bbe68ed1dd3ab6f22796d10209869a765db"
   },
+  "test/gut-check.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "dd35e68d400a3e9512490bae6c8b51ae11cd817864bd4326d8cd203084715683"
+  },
+  "test/mise-shim.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "ec84fdfd132b390347e4db428d651d5d49463c1f08e2b402f157bf5305310c69"
+  },
+  "test/red-before-green.test.mjs": {
+    "owner": "npm-test",
+    "sha256": "82ee1b957e30e75104bda64f27e943e603601999367958854e91694fc86dce03"
+  },
   "test/reuse-sealed-pass.test.mjs": {
     "owner": "npm-test",
     "sha256": "c8fe9561ceb314239c890ef01503c48657e81f60466b32275d4ce7871660d5d3"
@@ -167,20 +179,8 @@
     "owner": "npm-test",
     "sha256": "c8e70b7975f8ec68b7b67048cf3e34594edea3a793e5ae2269180b108e723d54"
   },
-  "test/red-before-green.test.mjs": {
-    "owner": "npm-test",
-    "sha256": "82ee1b957e30e75104bda64f27e943e603601999367958854e91694fc86dce03"
-  },
-  "test/gut-check.test.mjs": {
-    "owner": "npm-test",
-    "sha256": "dd35e68d400a3e9512490bae6c8b51ae11cd817864bd4326d8cd203084715683"
-  },
   "test/skip-not-proof.test.mjs": {
     "owner": "npm-test",
     "sha256": "5036f5b082833c72fc2e4a3c9f48dbe3af9c0a51bdbd9038d1843f5156d2e67e"
-  },
-  "test/mise-shim.test.mjs": {
-    "owner": "npm-test",
-    "sha256": "ec84fdfd132b390347e4db428d651d5d49463c1f08e2b402f157bf5305310c69"
   }
 }

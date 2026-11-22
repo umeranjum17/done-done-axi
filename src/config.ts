@@ -73,7 +73,7 @@ export type Config = {
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
-  affected: { global_paths: string[] }; // globs of files every journey depends on: a change to one runs the whole local tier
+  affected: { global_paths: string[]; owners: Record<string, { tests: string[]; inputs: string[] }> }; // globs of files every journey depends on: a change to one runs the whole local tier
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
   signoff: { post: boolean; board: string };
@@ -129,7 +129,7 @@ const AGENT_TIMEOUT = '30m';
 const MAX_CAPTURES = 10;
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' | 'owners' }> = {
   'routes.author': { scope: 'global', type: 'routes' },
   'routes.judge': { scope: 'global', type: 'routes' },
   agent: { scope: 'any', type: 'agent' },
@@ -166,6 +166,7 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'checks.moved_from': { scope: 'repo', type: 'boolean' },
   'checks.generated_paths': { scope: 'repo', type: 'string[]' },
   'affected.global_paths': { scope: 'repo', type: 'string[]' },
+  'affected.owners': { scope: 'repo', type: 'owners' },
   'signoff.post': { scope: 'repo', type: 'boolean' },
   'signoff.board': { scope: 'repo', type: 'string' },
   'check.timeout': { scope: 'any', type: 'duration' },
@@ -261,6 +262,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
       : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
       : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
+      : spec.type === 'owners' ? isMap(value) && Object.entries(value).every(([name, row]) => !!name.trim() && isMap(row) && Object.keys(row).sort().join(',') === 'inputs,tests' && [row.inputs, row.tests].every((items) => Array.isArray(items) && items.length > 0 && items.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))))
       : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
       : spec.type === 'agent' ? isAgent(value)
       : spec.type === 'route' ? isJudgeRoute(value)
@@ -291,6 +293,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       route: ROUTE_FORM,
       routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
       inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
+      owners: 'a map of owner names to {tests: [repo-relative paths or globs], inputs: [repo-relative paths or globs]}',
     } as Record<string, string>;
     if (key === 'judge.route' && (value === 'auto' || value === '')) throw new UsageError(`${file}: judge.route ${value === '' ? 'must not be empty; to leave it unset, remove the key' : 'auto is gone: done-done never picks the judge, the user sets it'}`, `Delete the judge.route line in ${file}, then run: done-done init --judge <agent> --judge-model <model>`);
     if (key === 'agent' && value === '') throw new UsageError(`${file}: agent must not be empty; to leave it unset, remove the key`);
@@ -462,7 +465,7 @@ function defaultConfig(repo: string): Config {
     base_install: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
-    affected: { global_paths: [] },
+    affected: { global_paths: [], owners: {} },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
     check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, gut_check: false, reuse_pass: false, count_false_refusals: false, skip_is_not_proof: false, test_run: '' },

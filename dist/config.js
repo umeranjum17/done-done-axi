@@ -103,6 +103,7 @@ const KEYS = {
     'checks.moved_from': { scope: 'repo', type: 'boolean' },
     'checks.generated_paths': { scope: 'repo', type: 'string[]' },
     'affected.global_paths': { scope: 'repo', type: 'string[]' },
+    'affected.owners': { scope: 'repo', type: 'owners' },
     'signoff.post': { scope: 'repo', type: 'boolean' },
     'signoff.board': { scope: 'repo', type: 'string' },
     'check.timeout': { scope: 'any', type: 'duration' },
@@ -207,19 +208,20 @@ function apply(target, text, file, scope) {
                 : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
                     : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
                         : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
-                            : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
-                                : spec.type === 'agent' ? isAgent(value)
-                                    : spec.type === 'route' ? isJudgeRoute(value)
-                                        : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
-                                            : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
-                                                : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
-                                                    : spec.type === 'bin' ? isBin(value)
-                                                        : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
-                                                            : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
-                                                                : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
-                                                                    : spec.type === 'matrix' ? !checkMatrix(value)
-                                                                        : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                            : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
+                            : spec.type === 'owners' ? isMap(value) && Object.entries(value).every(([name, row]) => !!name.trim() && isMap(row) && Object.keys(row).sort().join(',') === 'inputs,tests' && [row.inputs, row.tests].every((items) => Array.isArray(items) && items.length > 0 && items.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))))
+                                : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
+                                    : spec.type === 'agent' ? isAgent(value)
+                                        : spec.type === 'route' ? isJudgeRoute(value)
+                                            : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
+                                                : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
+                                                    : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
+                                                        : spec.type === 'bin' ? isBin(value)
+                                                            : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
+                                                                : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
+                                                                    : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
+                                                                        : spec.type === 'matrix' ? !checkMatrix(value)
+                                                                            : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
+                                                                                : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
         const want = {
             journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name; live needs a timeout>, timeout: <duration such as 30s: the bound of a verify run, and of a live check>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -237,6 +239,7 @@ function apply(target, text, file, scope) {
             route: ROUTE_FORM,
             routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
             inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
+            owners: 'a map of owner names to {tests: [repo-relative paths or globs], inputs: [repo-relative paths or globs]}',
         };
         if (key === 'judge.route' && (value === 'auto' || value === ''))
             throw new UsageError(`${file}: judge.route ${value === '' ? 'must not be empty; to leave it unset, remove the key' : 'auto is gone: done-done never picks the judge, the user sets it'}`, `Delete the judge.route line in ${file}, then run: done-done init --judge <agent> --judge-model <model>`);
@@ -448,7 +451,7 @@ function defaultConfig(repo) {
         base_install: '',
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
-        affected: { global_paths: [] },
+        affected: { global_paths: [], owners: {} },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
         check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, gut_check: false, reuse_pass: false, count_false_refusals: false, skip_is_not_proof: false, test_run: '' },

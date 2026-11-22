@@ -34,7 +34,8 @@ import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js'
 import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize } from './size.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
-import { mapChange } from './affected.js';
+import { mapChange, shadowPlan } from './affected.js';
+import { junit } from './native-report.js';
 import { affectedProof, affectedShape, extendReceipt, noReview, parseFiles, undriven } from './affected-proof.js';
 import { addPairs, auditSelection, featureFor } from './audit.js';
 import { planQa, planWrite, sealStage } from './qa.js';
@@ -223,6 +224,9 @@ const FLAGS = {
     '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init; evals stay off too, since the prompt set needs the agent',
     '--setup': 'install health: git, config, evidence_root, agent and judge only; the verify skill and a repo with no journeys are warnings, and the journey rows are skipped',
     '--audit': 'with affected, a commit range: add each journey that failed at a receipted commit the map did not select to the feature map, and print recall',
+    '--shadow <plan.json>': 'with affected: write an advisory test selection plan; the existing journey gate remains authoritative',
+    '--report <junit.xml>': 'with affected --shadow: preserve and inspect a JUnit report for the named head',
+    '--report-head <commit>': 'with --report: the report revision, which must match HEAD',
     '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
     '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
     '--hook <agent>': 'also add a SessionStart hook to .claude/settings.json (claude), .codex/hooks.json (codex) or .gemini/settings.json (gemini) that shows `done-done` to each session, or a plugin to .opencode/plugins (opencode) or an extension to .pi/extensions (pi) that adds it to the first message of each session (opt-in)',
@@ -413,7 +417,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
             ['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"],
             ['done-done affected --audit <range>', 'compare failed journey runs with the commits\' receipts, add each missed file/journey pair to the feature map, and print recall'],
         ],
-        flags: ['--audit'],
+        flags: ['--audit', '--shadow <plan.json>', '--report <junit.xml>', '--report-head <commit>'],
         more: [`affected: model-free. The change is the diff from <base>, else from the newest receipt before HEAD (the commits since the last proof),
   else from the merge base with the default branch (origin/HEAD, origin/main, origin/master, main, master), plus uncommitted changes to tracked files;
   evidence.ignore_paths and .done-done-receipts/ need nothing. A journey is needed when its command runs a changed file; a feature
@@ -5800,7 +5804,11 @@ function cmdAffectedAudit(range) {
 }
 // `done-done affected [<base>]`: the journeys a change needs, and exit 1 until a receipt for HEAD covers them.
 function cmdAffected(argv) {
-    const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { audit: { type: 'string' } } });
+    const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { audit: { type: 'string' }, shadow: { type: 'string' }, report: { type: 'string' }, 'report-head': { type: 'string' } } });
+    if ((values.report !== undefined || values['report-head'] !== undefined) && (!values.shadow || !values.report || !values['report-head']))
+        throw new UsageError('affected --report requires --shadow and --report-head');
+    if (values.audit !== undefined && values.shadow !== undefined)
+        throw new UsageError('affected --shadow cannot be combined with --audit');
     if (values.audit !== undefined) {
         if (positionals.length)
             throw new UsageError('affected --audit takes a range, not a base', 'Re-run as: done-done affected --audit <range>');
@@ -5811,6 +5819,79 @@ function cmdAffected(argv) {
     const repo = repoRoot();
     const cfg = loadConfig(repo);
     const a = affectedOf(repo, cfg, positionals[0]);
+    if (values.shadow !== undefined) {
+        if (!a.base)
+            throw new UsageError('affected --shadow needs a base commit');
+        if (dirtyTracked(repo).length)
+            throw new UsageError('affected --shadow requires a clean tracked tree');
+        const at = (revision) => {
+            const listed = git(repo, 'ls-tree', '-r', '--name-only', '-z', revision).split('\0').filter(Boolean);
+            const conf = spawnSync('git', ['show', `${revision}:.done-done.yaml`], { cwd: repo, encoding: 'utf8' });
+            const owners = loadConfig(repo, conf.status === 0 ? conf.stdout : '').affected.owners;
+            return { tracked: listed, owners };
+        };
+        if (!isAncestor(repo, a.base.commit, a.now.commit))
+            throw new UsageError('affected --shadow requires an ancestor base revision');
+        const states = [at(a.base.commit), at(a.now.commit)];
+        const binary = join(repo, 'node_modules', '.bin', 'jest');
+        const native = { tool: 'jest', version: null, queries: [] };
+        if (!existsSync(binary))
+            native.error = 'installed Jest adapter unavailable';
+        else {
+            const version = spawnSync(binary, ['--version'], { cwd: repo, encoding: 'utf8', timeout: 30000 });
+            if (version.status !== 0)
+                native.error = `Jest version query failed: ${version.error?.message ?? version.stderr.trim()}`;
+            else
+                native.version = version.stdout.trim();
+            if (!native.error)
+                for (const input of a.changed) {
+                    const args = ['--findRelatedTests', input, '--listTests', '--json', '--runInBand'];
+                    if (!states[1].tracked.includes(input)) {
+                        native.queries.push({ input, args, files: [], raw: '', error: `Jest cannot query deleted input ${input}` });
+                        continue;
+                    }
+                    const started = Date.now();
+                    const r = spawnSync(binary, args, { cwd: repo, encoding: 'utf8', timeout: 30000, maxBuffer: 16 << 20 });
+                    let files = [], error;
+                    if (r.status !== 0)
+                        error = `Jest query failed for ${input}: ${r.error?.message ?? r.stderr.trim()}`;
+                    else
+                        try {
+                            const parsed = JSON.parse(r.stdout);
+                            if (!Array.isArray(parsed) || !parsed.every((p) => typeof p === 'string'))
+                                throw new Error('expected a JSON file list');
+                            files = parsed.map((p) => relative(repo, resolve(repo, p)).split(sep).join('/'));
+                            if (files.some((p) => p.startsWith('../') || !states[1].tracked.includes(p)))
+                                throw new Error('file list names paths outside the tracked head');
+                        }
+                        catch (e) {
+                            files = [];
+                            error = `Jest query for ${input}: ${e.message}`;
+                        }
+                    native.queries.push({ input, args, files, raw: r.stdout ?? '', stderr: r.stderr ?? '', duration_ms: Date.now() - started, ...(error && { error }) });
+                }
+        }
+        const plan = shadowPlan({ base: a.base.commit, head: a.now.commit, changed: a.changed, states, native });
+        let report;
+        if (values.report && values['report-head']) {
+            let reportHead;
+            try {
+                reportHead = git(repo, 'rev-parse', '--verify', `${values['report-head']}^{commit}`);
+            }
+            catch {
+                throw new UsageError('affected --report-head is not a commit in this checkout');
+            }
+            if (reportHead !== a.now.commit)
+                throw new UsageError('affected --report-head does not match HEAD');
+            try {
+                report = junit(readFileSync(values.report, 'utf8'));
+            }
+            catch (e) {
+                throw new UsageError(`affected --report: ${e.message}`);
+            }
+        }
+        writeFileSync(values.shadow, `${JSON.stringify({ ...plan, ...(report && { report: { head: a.now.commit, ...report } }) }, null, 2)}\n`);
+    }
     const fresh = a.proof === 'fresh';
     const changed = cap(a.changed);
     const why = (w) => (FULL || w.length <= 3 ? w.join('; ') : `${w.slice(0, 3).join('; ')}; +${w.length - 3} more (--full lists them)`);
