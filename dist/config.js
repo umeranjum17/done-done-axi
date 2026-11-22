@@ -105,6 +105,8 @@ const KEYS = {
     'checks.generated_paths': { scope: 'repo', type: 'string[]' },
     'affected.global_paths': { scope: 'repo', type: 'string[]' },
     'affected.owners': { scope: 'repo', type: 'owners' },
+    'hygiene.shell_faults': { scope: 'repo', type: 'shell_faults' },
+    'hygiene.adapters': { scope: 'repo', type: 'hygiene_adapters' },
     'signoff.post': { scope: 'repo', type: 'boolean' },
     'signoff.board': { scope: 'repo', type: 'string' },
     'check.timeout': { scope: 'any', type: 'duration' },
@@ -130,7 +132,7 @@ const KEYS = {
     'judge.pool_config': { scope: 'global', type: 'string' },
     'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['routes', 'affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
+const SECTIONS = new Set(['routes', 'affected', 'hygiene', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
@@ -218,20 +220,22 @@ function apply(target, text, file, scope) {
                 : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
                     : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
                         : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
-                            : spec.type === 'owners' ? isMap(value) && Object.entries(value).every(([name, row]) => !!name.trim() && isMap(row) && Object.keys(row).sort().join(',') === 'inputs,tests' && [row.inputs, row.tests].every((items) => Array.isArray(items) && items.length > 0 && items.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))))
-                                : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
-                                    : spec.type === 'agent' ? isAgent(value)
-                                        : spec.type === 'route' ? isJudgeRoute(value)
-                                            : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
-                                                : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
-                                                    : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
-                                                        : spec.type === 'bin' ? isBin(value)
-                                                            : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
-                                                                : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
-                                                                    : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
-                                                                        : spec.type === 'matrix' ? !checkMatrix(value)
-                                                                            : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
-                                                                                : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade, j.critical].every((b) => b === undefined || typeof b === 'boolean') && (j.intent === undefined || (typeof j.intent === 'string' && /^[\w.-]+$/.test(j.intent))) && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
+                            : spec.type === 'hygiene_adapters' ? isMap(value) && Object.entries(value).every(([ext, r]) => /^\.[a-z0-9]+$/.test(ext) && isMap(r) && Object.keys(r).sort().join(',') === 'command,report' && typeof r.command === 'string' && !!r.command.trim() && r.command.includes('DONE_DONE_HYGIENE_TEST') && r.command.includes('DONE_DONE_HYGIENE_INPUTS') && typeof r.report === 'string' && !!r.report.trim() && !isAbsolute(r.report) && !r.report.split('/').includes('..'))
+                                : spec.type === 'shell_faults' ? Array.isArray(value) && value.every((r) => isMap(r) && Object.keys(r).sort().join(',') === 'file,now,review,was' && typeof r.file === 'string' && r.file.endsWith('.sh') && !isAbsolute(r.file) && !r.file.split('/').includes('..') && [r.was, r.now, r.review].every((v) => typeof v === 'string' && !!v.trim()) && r.was !== r.now)
+                                    : spec.type === 'owners' ? isMap(value) && Object.entries(value).every(([name, row]) => !!name.trim() && isMap(row) && Object.keys(row).sort().join(',') === 'inputs,tests' && [row.inputs, row.tests].every((items) => Array.isArray(items) && items.length > 0 && items.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))))
+                                        : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
+                                            : spec.type === 'agent' ? isAgent(value)
+                                                : spec.type === 'route' ? isJudgeRoute(value)
+                                                    : spec.type === 'agent_config' ? isMap(value) && Object.entries(value).every(([a, c]) => isAgent(a) && isMap(c) && Object.entries(c).every(([k, m]) => ['model', 'effort'].includes(k) && typeof m === 'string'))
+                                                        : spec.type === 'args' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && Array.isArray(v) && v.every((x) => typeof x === 'string'))
+                                                            : spec.type === 'paths' ? isMap(value) && Object.entries(value).every(([a, v]) => AGENTS.includes(a) && isBin(v))
+                                                                : spec.type === 'bin' ? isBin(value)
+                                                                    : spec.type === 'duration' ? typeof value === 'string' && parseDuration(value) !== null
+                                                                        : spec.type === 'count' ? typeof value === 'number' && Number.isInteger(value) && value >= 1
+                                                                            : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && n >= 0)
+                                                                                : spec.type === 'matrix' ? !checkMatrix(value)
+                                                                                    : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value).every(isRegex)
+                                                                                        : isMap(value) && Object.values(value).every((j) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade, j.critical].every((b) => b === undefined || typeof b === 'boolean') && (j.intent === undefined || (typeof j.intent === 'string' && /^[\w.-]+$/.test(j.intent))) && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
         const want = {
             journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name; live needs a timeout>, timeout: <duration such as 30s: the bound of a verify run, and of a live check>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
             instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -249,6 +253,8 @@ function apply(target, text, file, scope) {
             route: ROUTE_FORM,
             routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
             inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
+            hygiene_adapters: 'extension keys mapped to {command, report}; command uses DONE_DONE_HYGIENE_TEST and DONE_DONE_HYGIENE_INPUTS, report is a repo-relative mutation-testing-elements JSON file',
+            shell_faults: 'a list of {file: <repo-relative shell file>, was: <unique text>, now: <replacement>, review: <review reference>}',
             owners: 'a map of owner names to {tests: [repo-relative paths or globs], inputs: [repo-relative paths or globs]}',
         };
         if (key === 'judge.route' && (value === 'auto' || value === ''))
@@ -463,6 +469,7 @@ function defaultConfig(repo) {
         evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
         secrets: { patterns: {}, allow: [] },
         affected: { global_paths: [], owners: {} },
+        hygiene: { shell_faults: [], adapters: {} },
         checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
         signoff: { post: false, board: '' },
         check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, gut_check: false, reuse_pass: false, count_false_refusals: false, skip_is_not_proof: false, test_run: '' },

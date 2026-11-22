@@ -31,6 +31,7 @@ import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan, type Apply } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
+import { hygiene } from './hygiene.js';
 import { measureJourney, nightFault, runBounded, shadowBatch, withShadowRun, sizeFault, slowReason, isSize, type Size } from './size.js';
 import { look } from './look.js';
 import { scanSecrets, type Leak } from './secrets.js';
@@ -395,9 +396,9 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
       ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
       ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
       ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
-      ['done-done tests value [<journey>] [--night] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
+      ['done-done tests value [<journey>] [--night] [--shadow] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
     ],
-    flags: ['--night', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
+    flags: ['--night', '--shadow', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
     more: [`test sizes: set journeys.<name>.size to ci (15s), local (300s) or large (900s). \`run\` stops a journey past its bound and fails it as slow.
   A large journey needs journeys.<name>.reason and is night-only: \`run\` and \`tests measure\` refuse it without --night. Once any journey has a size,
   \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed.
@@ -405,6 +406,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   non-test source file git tracks), in a scratch copy per fault, and runs every test there. A test that fails on a fault catches it. Verdicts: real (catches a fault, and no faster
   test catches the same set), slop (catches none), duplicate (a faster test, or an earlier-named one at equal speed, catches exactly the same faults; duplicate_of names it), failing (fails on
   the clean copy). The work copy is only read and nothing is recorded as proof. Exit 1 when any test is slop, duplicate or failing.
+  \`tests value --shadow\` reports fresh mutation observations without failing or proposing deletion; it needs ownership declarations and installed runners.
   \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: one row per test (action keep, drop for slop or a duplicate, move with \`to\` when a real
   test's measured time fits a smaller size with 3x headroom, fix for a failing one, each with its reason), gaps, the planted faults that no test caught, as file:line, and faults, every planted fault. It writes no file and exits 0.
   \`tests improve --apply drop|move --plan <file>\` applies one class of a saved plan (stage applied). It first reruns the kept tests, at their new sizes, against the plan's recorded faults: if a fault the plan
@@ -4993,7 +4995,7 @@ async function cmdTests(argv: string[]): Promise<number> {
     emit({ command: 'tests shadow', shadow: true, ...report });
     return report.status === 'failed' ? FAIL : PASS;
   }
-  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
+  const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, shadow: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
   const action = positionals[0];
   if ((action !== 'measure' && action !== 'value' && action !== 'improve') || positionals.length > 2) throw new UsageError('tests needs the action measure, value or improve and at most one journey', 'Re-run as: done-done tests measure|value|improve [<journey>] [--night]');
   if (action === 'improve' && !values['plan-only'] === !values.apply) throw new UsageError('tests improve needs exactly one of --plan-only or --apply <drop|move> --plan <file>', 'Re-run as: done-done tests improve --plan-only, or done-done tests improve --apply drop --plan plan.json');
@@ -5013,6 +5015,15 @@ async function cmdTests(argv: string[]): Promise<number> {
     if (why) skipped.push(`${name}: ${why.replace(/^journey \S+ /, '')}`); else picked.push([name, j]);
   }
   if (named && !picked.length) throw new UsageError(`journey ${named} was not ${action === 'measure' ? 'measured' : 'valued'}: ${skipped[0]}`, `${action === 'measure' ? `Set journeys.${named}.size in .done-done.yaml` : 'Pick a journey that spends nothing'}${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
+  if (values.shadow && action !== 'value') throw new UsageError('--shadow belongs to tests value');
+  if (action === 'value' && values.shadow) {
+    const budget = values.faults === undefined ? DEFAULT_FAULTS : Number(values.faults);
+    if (!Number.isInteger(budget) || budget < 1) throw new UsageError('--faults must be a whole number of at least 1');
+    if (!picked.length) throw new UsageError('no journey can be valued');
+    const report = await hygiene(repo, picked.map(([name, j]) => ({ name, command: j.command, size: j.size })), cfg, commandEnv(), values.source ?? [], budget);
+    emit({ command: 'tests value', ...report, skipped });
+    return PASS;
+  }
   if (action === 'value') return await cmdTestsValue(repo, picked, skipped, values);
   if (action === 'improve' && values.apply) return await cmdTestsApply(repo, cfg.journeys, values.apply as Apply, values.plan!);
   if (action === 'improve') return await cmdTestsImprove(repo, picked, skipped, values);
