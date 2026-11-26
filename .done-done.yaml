@@ -38,27 +38,45 @@ journeys:
   journey-improve:
     command: node journeys/journey-add.mjs --improve
   tier-ci:
-    command: node journeys/tier-ci.mjs
+    command:
+      # Improved instruction: "Preserve all existing assertions. Add synthetic isolated CLI coverage of tests shadow --deadline: two children individually below their own bounds collectively exceed a short shared deadline, including a delayed child and a TERM-resistant grandchild; check the batch exits nonzero, journal retains unfinished work, and no child survives. Check a successful short batch, invalid and over-300s budgets, and retain before/after timings with no model calls. Use only temporary synthetic fixtures and do not run models or network in the journey. Update existing evidence and steps. The journey must also run standalone when DONE_DONE_RUN_ID is absent."
+      node journeys/tier-ci.mjs
   flaky-quarantine:
-    command: node journeys/flaky-quarantine.mjs
+    command:
+      # Improved instruction: "Read src/flake-history.ts src/size.ts src/native-report.ts src/cli.ts. Preserve existing checks. Add isolated synthetic CLI coverage of verify --layer fast: report JUnit per attempt at DONE_DONE_JUNIT_REPORT; declare intent and inputs. Assert red/red remains red, two independent fail/pass episodes record four attempts, suspicion then one repair ticket and would-mute, replay adds nothing, DONE_DONE_FLAKE_ENFORCE=1 mutes a matching leaf while still executing it, changed environment, skip, timeout and missing tools do not qualify, sole critical remains required, expiry escalates and verified repair plus three clean repetitions restores. Zero judge calls; save actual before/after assertions and timings. Use Node MockTimers for clock control. Only synthetic fixtures; do not invoke real services."
+      node journeys/flaky-quarantine.mjs
   inventory-ownership:
     command: node journeys/inventory-ownership.mjs
   qa-plan:
     command: node journeys/qa-plan.mjs
   size-bounds:
-    command: node journeys/size-bounds.mjs
+    command:
+      # Enhanced focus: "Preserve every existing assertion. Add concise deterministic end-to-end coverage of tests shadow: drive five isolated synthetic journeys together via the built CLI, verify five child exits reconcile with the monotonic batch wall duration and unknown queue origin, plus a failed retry and unfinished records. Exercise provider dispatch accounting with local synthetic direct and CLI routes, including one failed attempt exactly once, a cache hit with zero new calls, missing usage as null, no prompts or credentials in the journal, and known/attempted counts. Keep runtime independent of external services and retain actual output as evidence."
+      # Improved instruction: "Fix the failed generated assertions using the actual JSONL schema in src/size.ts: use kind=batch_exit with duration_ms for batch wall time, and the five kind=exit rows with start_offset_ms/end_offset_ms for reconciliation; target_ms is a target, not a child duration. Check queue_source and queue_ms null, retry_start/retry_exit and interrupted/unfinished via a safe isolated child. Assert input_tokens_or_null and output_tokens_or_null are null on provider_attempt rows lacking usage, not that all fields containing usage are null (the batch count is a string). Remove the invalid copyFileSync of a file onto itself. Check the failed CLI dispatch is journaled exactly once and cache hit makes zero new calls. Add a deterministic local synthetic direct API dispatch failure and missing-usage case with no network, prompt or credential leakage. Keep all original size-bound checks, keep total additions compact, and save actual logs."
+      node journeys/size-bounds.mjs
   check-fan-out:
     command: node journeys/check-fan-out.mjs
   affected-select:
-    command: node journeys/affected-select.mjs
+    command:
+      # Enhanced focus: "Read src/affected.ts src/native-report.ts src/config.ts src/cli.ts and dist/cli.js. Exercise done-done affected main --shadow <plan.json> using clean committed synthetic fixture repositories. affected.owners maps each owner to tests and inputs glob lists. plan JSON has picks rows {test, owner, input, reason}, native queries and fallback, counts.extras and optional report when --report <junit.xml> --report-head HEAD are supplied. Use a local synthetic node_modules/.bin/jest executable to emulate a runner and make a 92 leaf owner fixture with exactly 91 extras; shared input selects both owners; a nonempty Jest result misses a subprocess input that its declaration restores, and removing that owner requires fallback. Include rename, deletion, glob member, unavailable runner, wrong report revision, JUnit parameter IDs, retries and summary-only unknown counts. Preserve every existing journey check. Use synthetic fixtures only."
+      # Improved instruction: "Repair the generated shadow journey fixture after its check failed. Read src/affected.ts src/native-report.ts src/config.ts src/cli.ts and journeys/affected-select.mjs. The synthetic Jest executable must emit a nonempty version for --version and JSON arrays for --findRelatedTests --listTests --json, not newline paths. Deleted inputs must retain their declared picks and require conservative fallback, and a mismatched --report-head must be rejected without a plan. Preserve all other assertions and coverage; inspect stdout as well as stderr on a CLI failure. Keep the 92 leaf, shared owner, subprocess, unowned, glob, JUnit retry and summary cases."
+      # Improved instruction: "Read src/affected.ts src/cli.ts src/native-report.ts journeys/affected-select.mjs and .agents/skills/done-done-verify-done-done/features/affected-select.md. Preserve all checks. On the same 92-leaf synthetic fixture, first drive the existing gate with done-done affected main and assert and record its result and measured wall time, then drive the shadow plan and assert and record 92 selected with 91 extras and its measured wall time. Clearly identify the existing gate as the before/control, not a prior binary; budget remains unmeasured. The generated checks documentation must state explicitly that its latest corrections supersede earlier stale statements: deletion causes incomplete fallback, wrong report revision is rejected with no plan, and the script is run by done-done after generation. Do not claim unperformed checks."
+      # Improved instruction: "Read src/affected.ts src/cli.ts journeys/affected-select.mjs. Preserve all existing checks and captures. Add one synthetic end-to-end scenario: base commit declares core owner, head commit removes that owner from affected.owners and changes src/core/value.mjs, Jest returns a nonempty core test file list. Drive affected main --shadow plan.json; assert complete false, fallback names removed head declaration or head tests without owners, and base-declared picks remain in the plan. Record the actual result in the journey log. No model or network in the generated journey."
+      node journeys/affected-select.mjs
   qa-write:
     command: node journeys/qa-write.mjs
   qa-prove:
-    command: node journeys/qa-prove.mjs
+    command:
+      # Improved instruction: "Preserve all existing assertions. Add isolated synthetic end-to-end receipt coverage for src/newtests.ts shadowNewTests: with check.red_before_green enabled, discover added Node tests and declared shell tests; assert a base assertion failure and passing head are an assertion-failed candidate, missing symbol and unsupported runner are no-proof, and a vacuous test gets no-proof. Record actual receipt output and timings in evidence. Use only fixture repositories, no network or model calls in the journey. Leave existing behavior and existing assertions intact."
+      # Improved instruction: "Fix the failed generated check only: the real receipt JSON field is admission_shadow, not admission. Keep all existing assertions and fixtures, and read the top-level admission_shadow field. Preserve every existing journey step and evidence capture."
+      node journeys/qa-prove.mjs
   test-value:
     command: node journeys/value-marks.mjs
   affected-audit:
-    command: node journeys/affected-audit.mjs
+    command:
+      # Improved instruction: "Preserve all existing checks and steps. Add isolated synthetic CLI coverage of verify --layer fast and release showing advisory durable paired control records in plan.json and misses.jsonl: a fast run omits a release journey whose JUnit report has a failed named assertion, release preserves original red and retry, records same revision and inputs with fast and broad run IDs, classification unresolved-omission, and does not change the map or fast behavior. A missing matching fast record is unknown; missing or invalid reports teach nothing; save actual outputs and timings. Drive only synthetic fixtures, no model or network calls during the generated journey. Read src/audit.ts src/cli.ts journeys/affected-audit.mjs. Keep all additions additive."
+      # Improved instruction: "Fix the failed generated paired-control fixture while preserving the original audit journey and new paired-control assertions. The fast layer rejects size small and opaque commands before writing a plan: use size ci and a tracked test/fast.test.mjs with command node --test test/fast.test.mjs, as journeys/tier-ci.mjs does. All sizes must be ci or local. A malformed native report makes observeFlakes reject the layer before its comparison; use a valid JUnit report without a named failure for the no-observation case. Assert and print stdout and stderr when out.plan is absent so the true CLI error is visible. Preserve paired original failure and retry, missing fast record unknown, missing report no observations, stable fast inventory, and measured timings. Keep only synthetic fixture code and additive coverage."
+      node journeys/affected-audit.mjs
   test-improve:
     command: node journeys/improve-plan.mjs
   test-apply:

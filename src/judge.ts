@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import type { Backend, Question } from '@byokit/decide';
 import { unavailable } from './routes.js';
+import { shadowTier, shadowUsage, withShadowCache, withShadowTier } from './size.js';
+import { layerRemaining, recordProviderUsage, reserveProvider, type ProviderSlot } from './deadline.js';
 import { accountDetail, agentRun, askAgent, ClaudeUnavailable, type JudgeChoice, JUDGES, notStartable, routeOf, selectFallback, selectJudge } from './agents.js';
 import { CHEAP, type Config, home, KEY_ROUTES, parseDuration, tilde, RouteUnavailable, UsageError } from './config.js';
 import { downscaleToPng, type Verdict } from './media.js';
@@ -144,6 +146,35 @@ async function kit() {
 
 export type Judge = { ask: Backend['ask']; resolve: typeof import('@byokit/decide/slim').resolve; lastError: () => string; unavailable?: () => boolean };
 
+// The OpenAI input-count endpoint counts the actual Responses request, including its schema and images. The
+// reservation is persisted before even that request; unsupported routes are refused rather than estimated.
+function budgetedOpenaiFetch(plan: string, slot: ProviderSlot): typeof fetch {
+  return async (input, init) => {
+    if (String(input) !== 'https://api.openai.com/v1/responses' || typeof init?.body !== 'string') throw new UsageError('layer cannot safely bound this provider request');
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    const allowed = ['model', 'input', 'instructions', 'text', 'max_output_tokens'];
+    if (Object.keys(body).some((k) => !allowed.includes(k))) throw new UsageError('layer cannot safely bound provider request options');
+    const reservation = reserveProvider(plan, slot);
+    if (body.max_output_tokens !== reservation.output) throw new UsageError('layer provider output limit is not enforced');
+    const signal = () => AbortSignal.any([...(init.signal ? [init.signal] : []), AbortSignal.timeout(layerRemaining(plan))]);
+    const countBody = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'max_output_tokens'));
+    const counted = await globalThis.fetch('https://api.openai.com/v1/responses/input_tokens', { ...init, body: JSON.stringify(countBody), signal: signal() });
+    if (!counted.ok) throw new UsageError(`layer input-token count failed (HTTP ${counted.status}); no model request was made`);
+    const count = await counted.json() as { input_tokens?: unknown };
+    if (typeof count.input_tokens !== 'number' || !Number.isInteger(count.input_tokens) || count.input_tokens < 0 || count.input_tokens > reservation.input) throw new UsageError(`layer input exceeds or cannot establish the ${reservation.input}-token bound; no model request was made`);
+    const response = await globalThis.fetch(input, { ...init, signal: signal() });
+    if (response.ok) {
+      let usage: { input_tokens?: unknown; output_tokens?: unknown } = {};
+      try { usage = ((await response.clone().json()) as { usage?: typeof usage }).usage ?? {}; } catch { /* usage stays unknown */ }
+      const number = (n: unknown) => typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
+      const inTokens = number(usage.input_tokens), outTokens = number(usage.output_tokens);
+      recordProviderUsage(plan, reservation.id, inTokens, outTokens);
+      if ((inTokens !== null && inTokens > reservation.input) || (outTokens !== null && outTokens > reservation.output)) throw new UsageError('provider usage exceeded its reserved limit; no receipt can be issued');
+    }
+    return response;
+  };
+}
+
 // The backend for one judge choice. It checks everything that needs no model call, so doctor can use it too.
 // record: where each agent call writes its call record (the claude-code and answerer routes both run a real agent call);
 // questions: what each request asks, so the answerer can ask its agent for that answer shape; attempts: asks per request
@@ -155,7 +186,11 @@ export async function backend(cfg: Config, choice: JudgeChoice, record: (request
     const key = process.env[name] ?? judgeEnv(cfg)[name];
     if (!key) throw new RouteUnavailable(`judge: ${choice.route} needs your own API key in ${name}, which is not set`, `Export ${name} with your key, or list it in the file judge.env_file names, then re-run this command`);
     const { anthropic, openai, resolve } = await kit();
-    const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0 })).ask;
+    const plan = process.env.DONE_DONE_LAYER_PLAN;
+    if (plan && choice.route !== 'openai:key') { layerRemaining(plan); throw new UsageError(`layer cannot safely bound ${choice.route}; no provider request was made`); }
+    if (plan && !shadowTier()) { layerRemaining(plan); throw new UsageError('layer cannot safely batch this additional semantic judgment; final provider allowances are reserved'); }
+    const slot: ProviderSlot = shadowTier() === 'cheap' ? 'cheap' : 'large';
+    const ask = (choice.route === 'minimax:key' ? anthropic({ model: choice.model, key, supportsImages: true, maxRetries: 0, maxTokens: 4096, fetch: minimaxFetch }) : openai({ model: choice.model, key, supportsImages: true, maxRetries: 0, ...(plan && { request: { max_output_tokens: slot === 'cheap' ? 200 : 300 }, fetch: budgetedOpenaiFetch(plan, slot) }) })).ask;
     return { ask, resolve, lastError: () => '', detail: `${name} is set and the judge kit is present` };
   }
   const override = cfg.agent_path_override[choice.agent];
@@ -221,7 +256,7 @@ export function prepare(c: Capture): { mime: string; bytes: Buffer } | string {
 // with its cause, never a verdict: the command stops with no result and no receipt.
 // An answer the kit cannot read (all-zero probabilities, an option left out) would abstain on every question as if the
 // judge were unsure, so it is asked once more, and one that still cannot be read is an error too.
-export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, state: unknown, questions: Record<string, Question>, images: Record<string, { mime: string; bytes: Buffer }>, sharedParts: string | string[] = '', onCall?: (spent: Spent) => void): Promise<Record<string, ReturnType<Judge['resolve']>>> {
+export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, state: unknown, questions: Record<string, Question>, images: Record<string, { mime: string; bytes: Buffer }>, sharedParts: string | string[] = '', onCall?: (spent: Spent) => void, cacheIdentity: string | null = null): Promise<Record<string, ReturnType<Judge['resolve']>>> {
   const again = 'Fix the cause above (done-done doctor checks the judge), then run this again';
   type Resolved = Record<string, ReturnType<Judge['resolve']>>;
   let answers: Resolved;
@@ -240,10 +275,27 @@ export async function askJudge(cfg: Config, be: Judge, choice: JudgeChoice, stat
   const noLists = (a: Resolved) => Object.keys(questions).filter((k) => questions[k].answerFields?.some(f => FIELDS.includes(f)) && coverageOf(a[k]) === undefined);
   const unreadable = (a: Resolved) => [...malformed(a), ...noLists(a)];
   try {
+    let dispatches = 0;
     const ask = async () => {
-      const got = resolved(await be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)!), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` }))));
+      const reason = dispatches++ ? 'retry' : 'dispatch';
+      const dispatchStart = performance.now();
+      let got: Resolved;
+      try {
+        got = resolved(await withShadowCache(cacheIdentity, () => be.ask(state, questions, AbortSignal.timeout(parseDuration(cfg.agent_timeout)!), Object.entries(images).map(([id, i]) => ({ id, mime: i.mime, dataUrl: `data:${i.mime};base64,${i.bytes.toString('base64')}` })))));
+      } catch (error) {
+        if (Object.hasOwn(KEY_ROUTES, choice.route)) shadowUsage({ step: 'judge', reason, cache_identity: cacheIdentity, route_model_version: `${choice.route}:${choice.model}`, elapsed_ms: performance.now() - dispatchStart, terminal_status: 'failed' });
+        throw error;
+      }
       // One request, one call: the kit puts the backend's usage on every answer of it, and a backend that reported none leaves it off.
-      const usage = Object.values(got).find((a) => a.usage)?.usage;
+      const one = Object.values(got).find((a) => a.usage || a.raw);
+      const usage = one?.usage;
+      const raw = one?.raw && typeof one.raw === 'object' ? one.raw as Record<string, unknown> : {};
+      const rawUsage = raw.usage && typeof raw.usage === 'object' ? raw.usage as Record<string, unknown> : {};
+      const inputDetails = rawUsage.input_tokens_details && typeof rawUsage.input_tokens_details === 'object' ? rawUsage.input_tokens_details as Record<string, unknown> : {};
+      const numeric = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : null;
+      const cacheRead = numeric(rawUsage.cache_read_input_tokens) ?? numeric(inputDetails.cached_tokens);
+      const cacheWrite = numeric(rawUsage.cache_creation_input_tokens);
+      if (Object.hasOwn(KEY_ROUTES, choice.route)) shadowUsage({ step: 'judge', reason, cache_identity: cacheIdentity, route_model_version: `${choice.route}:${choice.model}`, provider_request_id: typeof raw.id === 'string' ? raw.id : null, usage_source: usage ? 'provider' : null, input_tokens_or_null: usage?.input_tokens ?? null, output_tokens_or_null: usage?.output_tokens ?? null, cache_read_write_or_null: cacheRead === null && cacheWrite === null ? null : { read: cacheRead, write: cacheWrite }, elapsed_ms: performance.now() - dispatchStart, terminal_status: 'completed' });
       onCall?.({ model: choice.model, tokens_in: usage?.input_tokens ?? null, tokens_out: usage?.output_tokens ?? null });
       return got;
     };
@@ -311,7 +363,7 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
   if (cheap.length === 2) {
     try {
       // The pair runs one after the other, and each answers the whole check on its own route and model.
-      const [a, b] = [await judgeOn(cfg, () => cheap[0], outcome, captures, join(records, 'cheap-1'), tally('cheap')), await judgeOn(cfg, () => cheap[1], outcome, captures, join(records, 'cheap-2'), tally('cheap'))];
+      const [a, b] = [await withShadowTier('cheap', () => judgeOn(cfg, () => cheap[0], outcome, captures, join(records, 'cheap-1'), tally('cheap'))), await withShadowTier('cheap', () => judgeOn(cfg, () => cheap[1], outcome, captures, join(records, 'cheap-2'), tally('cheap')))];
       if (a.judged.length === b.judged.length && a.judged.every((r, i) => r.verdict === b.judged[i].verdict))
         return { ...a, choice: cheap[0], calls, detail: [`the cheap judges ${cheap[0].model} and ${cheap[1].model} agree`, a.detail].filter(Boolean).join('; ') };
       note = `the cheap judges ${cheap[0].model} and ${cheap[1].model} disagree, so ${first.model} judged`;
@@ -320,7 +372,7 @@ export async function judge(cfg: Config, choose: () => JudgeChoice, outcome: str
       note = `the cheap judges did not answer (${(e as Error).message}), so ${first.model} judged`;
     }
   }
-  const { value, choice, failures } = await onJudgeRoutes(cfg, first, (choice, i) => judgeOn(cfg, () => choice, outcome, captures, i ? join(records, `route-${i + 1}`) : records, tally('large')), fallback);
+  const { value, choice, failures } = await onJudgeRoutes(cfg, first, (choice, i) => withShadowTier('large', () => judgeOn(cfg, () => choice, outcome, captures, i ? join(records, `route-${i + 1}`) : records, tally('large'))), fallback);
   return { ...value, calls, detail: [note, failures.length ? `${choice.route} ${choice.model} answered after ${failures.join('; ')}` : '', value.detail].filter(Boolean).join('; ') };
 }
 
@@ -372,8 +424,10 @@ async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, cap
   const { route, model } = choice;
   const key = createHash('sha256').update(JSON.stringify([VERSION, captures.map((c) => [c.name, c.sha256, c.before?.name, c.before?.sha256]), outcome, route, model, choice.effort, cfg.judge.floor])).digest('hex');
   const hit = readCache(dir, key);
-  if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r: Judged) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r))))
+  if (Array.isArray(hit?.judged) && hit.judged.length === rows.length && hit.judged.every((r: Judged) => ['pass', 'fail', 'unsure'].includes(r?.verdict) && typeof r.reason === 'string' && (r.parts === undefined || coverageOf(r)))) {
+    shadowUsage({ kind: 'cache', attempt_id: null, call_id: null, step: 'judge', cache_identity: key, cache_hit: true, route_model_version: `${route}:${model}`, terminal_status: 'hit', elapsed_ms: 0 });
     return { judged: hit.judged.map((r: Judged) => ({ ...r, cached: true })), notJudged, choice, missing: hit.missing ?? [] };
+  }
 
   const questions: Record<string, ChoiceQuestion> = {};
   const images: Record<string, { mime: string; bytes: Buffer }> = {};
@@ -401,7 +455,7 @@ async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, cap
       const one = { [id]: shape };
       const call = join(records, `judge-${stamp}-${Object.keys(answers).length + 1}`);
       const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, one);
-      Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : '', onCall));
+      Object.assign(answers, await askJudge(cfg, be, choice, { outcome, [id]: state[id], ...(parts?.length && { shared_parts: parts }) }, one, Object.fromEntries((shape.images ?? []).map((image) => [image, images[image]])), parts?.length ? parts : '', onCall, key));
       if (!parts?.length) parts = lists(answers[id]).parts as string[];
     }
     if (parts?.length) {
@@ -410,7 +464,7 @@ async function judgeBatch(cfg: Config, choice: JudgeChoice, outcome: string, cap
   } else {
     const call = join(records, `judge-${stamp}-1`);
     const be = await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, questions);
-    Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0', onCall));
+    Object.assign(answers, await askJudge(cfg, be, choice, state, questions, images, 'capture_0', onCall, key));
   }
   const judged: Judged[] = rows.map(({ row, c }, i) => {
     const a = answers[`capture_${i}`];
@@ -460,6 +514,7 @@ async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, 
     // parts is unreadable, and asking the model again is the miss readCache promises.
     const stored = hit && coverageOf(hit);
     if (['pass', 'fail', 'unsure'].includes(hit?.verdict) && typeof hit.reason === 'string' && (hit.parts === undefined || stored)) {
+      shadowUsage({ kind: 'cache', attempt_id: null, call_id: null, step: 'judge', cache_identity: key, cache_hit: true, route_model_version: `${route}:${model}`, terminal_status: 'hit', elapsed_ms: 0 });
       judged.push({ ...row, verdict: hit.verdict, reason: hit.reason, ...(hit.seen && { seen: hit.seen }), ...(stored?.parts.length ? stored : {}), cached: true });
       continue;
     }
@@ -484,8 +539,8 @@ async function judgeOn(cfg: Config, choose: () => JudgeChoice, outcome: string, 
     // Every shape asks the same answer keys, so the first one sets the answer schema the whole check's backend sends.
     be ??= await backend(cfg, choice, (request) => `${call}-${request}.agent.json`, { relevance: shape });
     const answers = 'text' in input
-      ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {}, '', onCall)
-      : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input }, '', onCall);
+      ? await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }), ...(before && 'text' in before && { before: before.text }), capture: input.text }, { relevance: shape }, {}, '', onCall, key)
+      : await askJudge(cfg, be, choice, { outcome, name: basename(c.name), ...(pair && { before_name: basename(pair.name) }) }, { relevance: shape }, beforeId && before && 'mime' in before ? { [beforeId]: before, [captureId]: input } : { [captureId]: input }, '', onCall, key);
     const a = answers.relevance;
     const options: Record<string, string> = shape.options;
     const reason = a.personReason || a.rationale || options[String(a.answer)] || '';

@@ -7,3 +7,5 @@ Drive: `node --test test/red-before-green.test.mjs` builds throwaway git repos w
 Prove: a test that already passes on the base exits 1 with `already passes on the base` and writes no receipt (`receipt --verify HEAD` fails); a test that fails on the base and passes at head exits 0 with `new_tests` base `red`; an exit-77 test, a head failure and an unknown extension each exit 1; no flag leaves the receipt unchanged; the switch off warns once. No screen: the proof is the CLI's text output.
 
 Integration coverage: test/red-before-green.test.mjs (6 cases).
+
+Shadow observation: when `check.red_before_green` is enabled, receipts also discover added tests in the base-to-head diff and report `admission_shadow` for them and declared tests. A Node assertion failure on the base and a passing head are an `assertion-failed` candidate only: the intended assertion and independent oracle have not been established. Other runners, setup failures, skipped tests and unrecognized results are `no-proof`; counts are separate. This advisory does not alter the existing receipt gate. Independent oracle validation and held-out fault scoring are not implemented.

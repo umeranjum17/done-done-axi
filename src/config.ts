@@ -9,19 +9,14 @@ import { type Evals, parseEvals } from './evals.js';
 import type { Secrets } from './secrets.js';
 import { isSize } from './size.js';
 import { AUTHOR_ROUTES, toolRoutes, validRoutes, type Routes } from './routes.js';
+import { parseDuration, UsageError } from './deadline.js';
+export { parseDuration, UsageError } from './deadline.js';
 
 // The tier of a journey entry that probes a real home and proves nothing: `done-done run --tier live` runs it, bounded by its own
 // timeout, and nothing else does. loadConfig moves these entries out of `journeys` into `live`, so no verify, affected or
 // landing path can see one.
 export const LIVE_TIER = 'live';
-export type LiveEntry = { command: string; timeout: string };
-
-export class UsageError extends Error {
-  // The exact next command, when the error has one.
-  constructor(message: string, readonly help?: string) {
-    super(message);
-  }
-}
+export type LiveEntry = { command: string; timeout: string; spends?: string };
 
 export const INTERACTIONS: Record<string, string> = JSON.parse(readFileSync(new URL('../skills/done-done/interaction-checklist.json', import.meta.url), 'utf8'));
 export type InteractionEvidence = Record<string, { captures?: string[]; not_applicable?: string }>;
@@ -38,6 +33,7 @@ export type ApprovedScreen = { screen: string; size: string; theme: string; mock
 export type ApprovedRedesign = { screen: string; size: string; theme: string; capture: string };
 
 export type Config = {
+  intents: { mode: 'shadow' | 'enforce'; ceiling: number; critical_ceiling: number; native: boolean; aliases: Record<string, string>; increases: { intent: string; gap: string; review: string }[] } | null;
   routes: Routes;
   agent: string; // the agent done-done starts, set by the user; '' until they do
   agent_config: Record<string, { model?: string; effort?: string }>;
@@ -49,7 +45,7 @@ export type Config = {
   auto_fix: Record<string, number>; // per step, as no-mistakes: how many times done-done's agent may fix its findings; 0 (the default) reports only
   app: string;
   skill: string;
-  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string; size?: string; reason?: string }>; // the proof journeys: never an entry of tier live
+  journeys: Record<string, { command: string; timeout?: string; spends?: string; core?: boolean; upgrade?: boolean; tier?: string; size?: string; reason?: string; intent?: string; critical?: boolean }>; // the proof journeys: never an entry of tier live
   live: Record<string, LiveEntry>; // the journey entries of tier live, by name (see LIVE_TIER)
   // Primitive 17 (input guard): repo-relative paths or globs the drive must leave alone. Empty: today's behaviour.
   inputs: string[];
@@ -73,7 +69,8 @@ export type Config = {
   evidence: { local_root: string; root: string; allow_dirty: boolean; ignore_paths: string[] };
   // Primitive 15 (evidence secret scan): extra secret regexes by name, and regexes a known-safe match may match.
   secrets: Secrets;
-  affected: { global_paths: string[] }; // globs of files every journey depends on: a change to one runs the whole local tier
+  affected: { global_paths: string[]; owners: Record<string, { tests: string[]; inputs: string[] }> }; // globs of files every journey depends on: a change to one runs the whole local tier
+  hygiene: { shell_faults: { file: string; was: string; now: string; review: string }[]; adapters: Record<string, { command: string; report: string }> };
   checks: { fix_title: string; upstream_catch_up: boolean; moved_from: boolean; generated_paths: string[] }; // the last three tune lint's size rules
   // The sign-off board handoff: post is the standing opt-in (false until the user sets it), board the board file ('' lets sign-off-axi pick its nearest .sign-off/ board).
   signoff: { post: boolean; board: string };
@@ -129,7 +126,8 @@ const AGENT_TIMEOUT = '30m';
 const MAX_CAPTURES = 10;
 
 // Where each key may be set. Global-only keys describe the machine; repo-only keys describe the project; `any` may be in either.
-const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' }> = {
+const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 'boolean' | 'number' | 'string[]' | 'inputs' | 'journeys' | 'instance' | 'matrix' | 'dom' | 'look' | 'evals' | 'approved_design' | 'approved_redesign' | 'approved_requirements' | 'interaction_checklist' | 'agent' | 'agent_config' | 'route' | 'args' | 'paths' | 'bin' | 'duration' | 'auto_fix' | 'regexes' | 'count' | 'routes' | 'owners' | 'intents' | 'shell_faults' | 'hygiene_adapters' }> = {
+  intents: { scope: 'repo', type: 'intents' },
   'routes.author': { scope: 'global', type: 'routes' },
   'routes.judge': { scope: 'global', type: 'routes' },
   agent: { scope: 'any', type: 'agent' },
@@ -166,6 +164,9 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'checks.moved_from': { scope: 'repo', type: 'boolean' },
   'checks.generated_paths': { scope: 'repo', type: 'string[]' },
   'affected.global_paths': { scope: 'repo', type: 'string[]' },
+  'affected.owners': { scope: 'repo', type: 'owners' },
+  'hygiene.shell_faults': { scope: 'repo', type: 'shell_faults' },
+  'hygiene.adapters': { scope: 'repo', type: 'hygiene_adapters' },
   'signoff.post': { scope: 'repo', type: 'boolean' },
   'signoff.board': { scope: 'repo', type: 'string' },
   'check.timeout': { scope: 'any', type: 'duration' },
@@ -191,18 +192,12 @@ const KEYS: Record<string, { scope: 'global' | 'repo' | 'any'; type: 'string' | 
   'judge.pool_config': { scope: 'global', type: 'string' },
   'judge.fallback_route': { scope: 'global', type: 'route' },
 };
-const SECTIONS = new Set(['routes', 'affected', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
+const SECTIONS = new Set(['routes', 'affected', 'hygiene', 'evidence', 'secrets', 'checks', 'judge', 'signoff', 'suite', 'check']);
 const MAPS = new Set(['auto_fix', 'agent_config', 'agent_args_override', 'agent_path_override']);
 
 export const home = () => process.env.DONE_DONE_HOME || join(homedir(), '.done-done');
 
 // A duration such as 90s, 30m or 1h, in milliseconds; null when the text is not one or is not a delay a timer can run.
-export const parseDuration = (text: string): number | null => {
-  const m = /^(\d+)(s|m|h)$/.exec(text);
-  const ms = m ? Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2] as 's' | 'm' | 'h'] : 0;
-  return ms > 0 && ms <= 2_147_483_647 ? ms : null;
-};
-
 function flatten(doc: unknown, file: string): Map<string, unknown> {
   const out = new Map<string, unknown>();
   if (doc == null) return out;
@@ -255,12 +250,21 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
     if (key === 'judge.allow_same') throw new UsageError(`${file}: judge.allow_same is gone: any judge the user sets runs, the author's own agent and model too`, `Delete the judge.allow_same line in ${file}`);
     if (!spec) throw new UsageError(`${file}: unknown key ${key}`);
     if (spec.scope !== scope && spec.scope !== 'any') throw new UsageError(`${file}: ${key} may only be set in the ${spec.scope === 'global' ? 'global config' : 'project .done-done.yaml'}`);
+    if (key === 'intents') {
+      const v = (isMap(value) ? { native: false, aliases: {}, increases: [], ...value } : null) as Config['intents'];
+      const valid = v && ['shadow', 'enforce'].includes(v.mode) && typeof v.native === 'boolean' && Number.isInteger(v.ceiling) && v.ceiling >= 0 && Number.isInteger(v.critical_ceiling) && v.critical_ceiling >= 0 && isMap(v.aliases) && Object.entries(v.aliases).every(([k, x]) => /^[\w.-]+$/.test(k) && typeof x === 'string' && /^[\w.-]+$/.test(x)) && Array.isArray(v.increases) && v.increases.every(r => isMap(r) && [r.intent, r.gap, r.review].every(x => typeof x === 'string' && x.trim()));
+      if (!valid) throw new UsageError(`${file}: intents needs mode, nonnegative ceiling and critical_ceiling, aliases mapping and increases [{intent, gap, review}]`);
+      target.intents = v; target.from[key] = scope; continue;
+    }
     const ok =
       spec.type === 'string' ? typeof value === 'string'
       : spec.type === 'boolean' ? typeof value === 'boolean'
       : spec.type === 'number' ? typeof value === 'number' && value >= 0 && value <= 1
       : spec.type === 'string[]' ? Array.isArray(value) && value.every((v) => typeof v === 'string')
       : spec.type === 'inputs' ? Array.isArray(value) && value.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))
+      : spec.type === 'hygiene_adapters' ? isMap(value) && Object.entries(value).every(([ext, r]) => /^\.[a-z0-9]+$/.test(ext) && isMap(r) && Object.keys(r).sort().join(',') === 'command,report' && typeof r.command === 'string' && !!r.command.trim() && r.command.includes('DONE_DONE_HYGIENE_TEST') && r.command.includes('DONE_DONE_HYGIENE_INPUTS') && typeof r.report === 'string' && !!r.report.trim() && !isAbsolute(r.report) && !r.report.split('/').includes('..'))
+      : spec.type === 'shell_faults' ? Array.isArray(value) && value.every((r) => isMap(r) && Object.keys(r).sort().join(',') === 'file,now,review,was' && typeof r.file === 'string' && r.file.endsWith('.sh') && !isAbsolute(r.file) && !r.file.split('/').includes('..') && [r.was, r.now, r.review].every((v) => typeof v === 'string' && !!v.trim()) && r.was !== r.now)
+      : spec.type === 'owners' ? isMap(value) && Object.entries(value).every(([name, row]) => !!name.trim() && isMap(row) && Object.keys(row).sort().join(',') === 'inputs,tests' && [row.inputs, row.tests].every((items) => Array.isArray(items) && items.length > 0 && items.every((v) => typeof v === 'string' && inputPattern(v) !== '' && !isAbsolute(v) && !v.split('/').includes('..'))))
       : spec.type === 'routes' ? validRoutes(value, key === 'routes.judge')
       : spec.type === 'agent' ? isAgent(value)
       : spec.type === 'route' ? isJudgeRoute(value)
@@ -273,7 +277,7 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       : spec.type === 'auto_fix' ? isMap(value) && Object.entries(value).every(([k, n]) => AUTO_FIX_STEPS.includes(k) && Number.isInteger(n) && (n as number) >= 0)
       : spec.type === 'matrix' ? !checkMatrix(value)
       : spec.type === 'regexes' ? (key === 'secrets.allow' ? Array.isArray(value) : isMap(value)) && Object.values(value as object).every(isRegex)
-      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade].every((b) => b === undefined || typeof b === 'boolean') && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
+      : isMap(value) && Object.values(value).every((j: any) => j && typeof j.command === 'string' && (j.spends === undefined || (typeof j.spends === 'string' && j.spends.trim() !== '')) && [j.core, j.upgrade, j.critical].every((b) => b === undefined || typeof b === 'boolean') && (j.intent === undefined || (typeof j.intent === 'string' && /^[\w.-]+$/.test(j.intent))) && (j.tier === undefined || typeof j.tier === 'string') && (j.size === undefined || isSize(j.size)) && (j.reason === undefined || typeof j.reason === 'string') && (j.tier !== LIVE_TIER || (typeof j.timeout === 'string' && parseDuration(j.timeout) !== null)));
     const want = {
       journeys: 'a map of name: {command: <string>, spends: <what a run spends>, core: <true for the core user journey>, upgrade: <true for the upgrade-in-place journey>, tier: <tier name; live needs a timeout>, timeout: <duration such as 30s: the bound of a verify run, and of a live check>, size: <ci (15s), local (300s) or large (900s, night-only, needs reason)>, reason: <why a large test needs its time>}',
       instance: '{command: <string>, ready: {url: <http url>} or {command: <shell command>}, ready_timeout: <duration>}',
@@ -291,6 +295,9 @@ function apply(target: Config, text: string | undefined, file: string, scope: 'g
       route: ROUTE_FORM,
       routes: 'a non-empty ordered list of {harness, model, effort?} profiles supported by this author or judge',
       inputs: 'a list of repo-relative paths or globs, not absolute and with no .. segment',
+      hygiene_adapters: 'extension keys mapped to {command, report}; command uses DONE_DONE_HYGIENE_TEST and DONE_DONE_HYGIENE_INPUTS, report is a repo-relative mutation-testing-elements JSON file',
+      shell_faults: 'a list of {file: <repo-relative shell file>, was: <unique text>, now: <replacement>, review: <review reference>}',
+      owners: 'a map of owner names to {tests: [repo-relative paths or globs], inputs: [repo-relative paths or globs]}',
     } as Record<string, string>;
     if (key === 'judge.route' && (value === 'auto' || value === '')) throw new UsageError(`${file}: judge.route ${value === '' ? 'must not be empty; to leave it unset, remove the key' : 'auto is gone: done-done never picks the judge, the user sets it'}`, `Delete the judge.route line in ${file}, then run: done-done init --judge <agent> --judge-model <model>`);
     if (key === 'agent' && value === '') throw new UsageError(`${file}: agent must not be empty; to leave it unset, remove the key`);
@@ -435,6 +442,7 @@ function readOptional(path: string): string | undefined {
 // The built-in defaults, before any config file is read.
 function defaultConfig(repo: string): Config {
   return {
+    intents: null,
     routes: { author: [], judge: [] },
     agent: '',
     agent_config: Object.fromEntries(Object.entries(CHEAP).map(([a, c]) => [a, { ...c }])),
@@ -462,7 +470,8 @@ function defaultConfig(repo: string): Config {
     base_install: '',
     evidence: { local_root: join(home(), 'evidence'), root: '', allow_dirty: false, ignore_paths: [] },
     secrets: { patterns: {}, allow: [] },
-    affected: { global_paths: [] },
+    affected: { global_paths: [], owners: {} },
+    hygiene: { shell_faults: [], adapters: {} },
     checks: { fix_title: '^(fix|bugfix|hotfix)\\b', upstream_catch_up: false, moved_from: false, generated_paths: [] },
     signoff: { post: false, board: '' },
     check: { timeout: '5m', review_base: false, project: '', preflight: false, red_before_green: false, gut_check: false, reuse_pass: false, count_false_refusals: false, skip_is_not_proof: false, test_run: '' },
@@ -495,7 +504,7 @@ export function loadConfig(repo: string, projectText?: string | null): Config {
   // A live entry is a probe, not proof: it leaves `journeys` here, so nothing that proves a change can select it.
   for (const [name, j] of Object.entries(cfg.journeys))
     if (j.tier === LIVE_TIER) {
-      cfg.live[name] = { command: j.command, timeout: j.timeout! };
+      cfg.live[name] = { command: j.command, timeout: j.timeout!, ...(j.spends && { spends: j.spends }) };
       delete cfg.journeys[name];
     }
   // The model pool needs both its helper command and the helper's own pool config; it replaces the Claude account command.

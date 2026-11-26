@@ -1,4 +1,5 @@
 import { posix } from 'node:path';
+import { junit } from './native-report.js';
 
 // `done-done affected --audit <range>`: how often the feature map selected the journey that later failed. A full run that fails a
 // journey at a commit whose receipt never ran it is a selection miss when `affected` did not pick that journey for the commit's
@@ -8,6 +9,26 @@ import { posix } from 'node:path';
 export type JourneyFailure = { commit: string; journey: string };
 export type Miss = JourneyFailure & { files: string[] };
 export type Audit = { caught: JourneyFailure[]; missed: Miss[]; recall: number | null };
+
+// Advisory observations only: neither a process exit nor an unpaired report proves a product defect.
+export type ControlAttempt = { leaf: string; attempt: string; episode: string; code: number | null; slow: boolean; error?: string; report: string | null };
+export type Control = { schema: 1; project: string; base: string; head: string; inputs: string; environment: string; run: string; required: string[]; complete: boolean; attempts: ControlAttempt[] };
+
+export function controlObservations(broad: Control, fast: Control | null, intents: Record<string, string>) {
+  const paired = !!fast && fast.schema === 1 && fast.complete && broad.complete &&
+    ['project', 'base', 'head', 'inputs', 'environment'].every(k => fast[k as keyof Control] === broad[k as keyof Control]);
+  const rows: object[] = [];
+  for (const a of broad.attempts) {
+    if (a.code === 0 || a.code === null || a.slow || a.error || [77, 126, 127].includes(a.code) || !a.report) continue;
+    try {
+      junit(a.report, (leaf, assertion) => {
+        if (leaf.status !== 'failed' || !assertion) return;
+        rows.push({ project: broad.project, base: broad.base, head: broad.head, path: leaf.file, intent: intents[a.leaf] ?? '', assertion, journey: a.leaf, native_leaf: leaf.id ?? leaf.name, fast_run: paired ? fast!.run : null, broad_run: broad.run, attempt: a.attempt, retry: a.attempt !== a.episode, classification: paired && !fast!.required.includes(a.leaf) ? 'unresolved-omission' : 'unknown' });
+      });
+    } catch { /* Invalid or absent native reports cannot establish a comparable assertion. */ }
+  }
+  return { paired, rows };
+}
 
 // Caught: the map selected the journey for the failing commit's diff. Missed: it did not. Recall is caught over failures, null with none.
 export function auditSelection(o: { failures: JourneyFailure[]; selected: (commit: string) => string[]; changed: (commit: string) => string[] }): Audit {

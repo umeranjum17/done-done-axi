@@ -1,6 +1,7 @@
 import { matchesGlob, posix } from 'node:path';
 import { reacher } from './deps.js';
 import { codeOnly } from './proof.js';
+import { isTestFile } from './inventory.js';
 
 // `done-done affected`: which journeys a diff needs, from the verify skill's feature map and the paths it cites. Model-free:
 // a journey is hit when its command names a changed file; a feature file (features/<name>.md) is hit when it cites a changed
@@ -119,4 +120,63 @@ export function mapChange(o: { changed: string[]; tracked: string[]; journeys: J
   }
   const list = (m: Map<string, string[]>) => [...m].map(([name, why]) => ({ name, why: [...new Set(why)] }));
   return { journeys: list(journeys), features: list(features), unmapped, fallback, runs };
+}
+
+// Each candidate carries the changed input and owner that made it relevant. Native runner lists are
+// file lists, not dependency witnesses; declarations separately cover helpers and subprocess inputs.
+export function shadowPlan(o: {
+  base: string; head: string; changed: string[];
+  states: { tracked: string[]; owners: Record<string, { tests: string[]; inputs: string[] }> }[];
+  native: { tool: string; version: string | null; queries: { input: string; args: string[]; files: string[]; raw: string; stderr?: string; duration_ms?: number; error?: string }[]; error?: string };
+}) {
+  const picks = new Map<string, { test: string; owner: string; input: string; reason: string }>();
+  const unknown = new Set(o.changed);
+  const owners = new Map<string, Set<string>>();
+  const add = (test: string, owner: string, input: string, reason: string) => {
+    const row = { test, owner, input, reason };
+    picks.set(JSON.stringify(row), row);
+  };
+  for (const state of o.states) for (const [owner, declaration] of Object.entries(state.owners)) {
+    const tests = state.tracked.filter((p) => declaration.tests.some((g) => matchesGlob(p, g)));
+    for (const test of tests) owners.set(test, new Set([...(owners.get(test) ?? []), owner]));
+    for (const input of o.changed) {
+      const pattern = declaration.inputs.find((g) => matchesGlob(input, g));
+      if (!pattern || !tests.length) continue;
+      unknown.delete(input);
+      for (const test of tests) add(test, owner, input, `declared input ${pattern}`);
+    }
+  }
+  const missingOwners = new Set<string>();
+  for (const query of o.native.queries) for (const test of query.files) {
+    const found = owners.get(test);
+    if (!found?.size) missingOwners.add(test);
+    else for (const owner of found) add(test, owner, query.input, 'runner-reported file list');
+  }
+  const known = new Set(o.states.flatMap((state) => state.tracked.filter(isTestFile)));
+  const unowned = [...known].filter((test) => !owners.has(test));
+  const current = o.states[o.states.length - 1];
+  const lost = o.states[0] === current ? [] : Object.entries(o.states[0].owners).flatMap(([owner, before]) => {
+    const after = current.owners[owner];
+    return o.changed.filter((input) => before.inputs.some((g) => matchesGlob(input, g))
+      && (!after || !after.inputs.some((g) => matchesGlob(input, g))
+        || !current.tracked.some((test) => after.tests.some((g) => matchesGlob(test, g)))))
+      .map((input) => `${owner}: ${input}`);
+  });
+  const headUnowned = current.tracked.filter((p) => isTestFile(p) && !Object.values(current.owners).some((owner) => owner.tests.some((g) => matchesGlob(p, g))));
+  const broad = o.changed.filter((p) => /(^|\/)(?:package(?:-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|jest\.config\.[^/]+|nx\.json|BUILD(?:\.bazel)?)$/.test(p));
+  const problems = [o.native.error, ...o.native.queries.map((q) => q.error),
+    unowned.length ? `independently enumerated tests without owners: ${unowned.join(', ')}` : '',
+    headUnowned.length ? `head tests without owners: ${headUnowned.join(', ')}` : '',
+    lost.length ? `declarations removed at head: ${lost.join(', ')}` : '',
+    broad.length ? `configuration or lockfile changed: ${broad.join(', ')}` : '',
+    unknown.size ? `inputs without declared owners: ${[...unknown].join(', ')}` : '',
+    missingOwners.size ? `tests without owners: ${[...missingOwners].join(', ')}` : ''].filter(Boolean);
+  return {
+    schema: 1, mode: 'shadow', base: o.base, head: o.head,
+    complete: problems.length === 0, fallback: problems.length ? problems : null,
+    unknown: [...unknown], picks: [...picks.values()], native: o.native,
+    usage: { step: 'selection', reason: 'shadow affected test picks', model_calls: 0 },
+    counts: { known: known.size, attempted: null, selected: new Set([...picks.values()].map((p) => p.test)).size, extras: [...new Set([...picks.values()].map((p) => p.test))].filter((p) => !o.native.queries.some((q) => q.files.includes(p))).length },
+    cache_identity: { base: o.base, head: o.head },
+  };
 }

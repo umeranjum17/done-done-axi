@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-// Test plan apply proof (Q14): on the improve-test fixture, `tests improve --apply` refuses a plan that would drop the only test
-// catching a fault, writes nothing for it, then applies the drop class (slop and slow-duplicate) and the move class on their own,
-// keeps every fault the plan said was caught, measures a shorter summed time, and a gap-filling journey added through the normal
-// `journey add` writer closes the one gap. A stub agent answers `journey add`, so the proof needs no model and spends nothing.
+// Drive the test-improvement plan on a synthetic fixture: unproven drops and demotions are refused,
+// repair keys persist across CLI processes, a faster-tier move replays faults, and a new journey closes the gap.
+// A stub agent answers `journey add`, so the proof needs no model and spends nothing.
 import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -60,37 +59,37 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stri
   const planFile = join(plans, 'plan.json');
   writeFileSync(planFile, JSON.stringify(proposal.doc));
   const row = Object.fromEntries(proposal.doc.rows.map((x) => [x.test, x]));
-  assert.equal(row.slop.action, 'drop'); assert.equal(row['slow-duplicate'].action, 'drop'); assert.equal(row['local-check'].action, 'move');
+  assert.equal(row.slop.action, 'fix'); assert.equal(row['slow-duplicate'].action, 'keep'); assert.equal(row['local-check'].action, 'move');
+  assert.ok(proposal.doc.combinations.some((pair) => pair.tests.includes('slow-duplicate') && pair.reason === 'not provably lossless'));
   assert.equal(proposal.doc.gaps.length, 1);
 
-  // A plan that also drops `real` would leave the add and isEven faults caught by no test: refused, nothing written.
+  // Fault overlap alone cannot prove that dropping this check preserves all outcomes.
   const greedy = structuredClone(proposal.doc);
-  greedy.rows.find((x) => x.test === 'real').action = 'drop';
+  greedy.rows.find((x) => x.test === 'slow-duplicate').action = 'drop';
   const greedyFile = join(plans, 'greedy.json');
   writeFileSync(greedyFile, JSON.stringify(greedy));
   const refused = dd('greedy plan', 'tests', 'improve', '--apply', 'drop', '--plan', greedyFile);
-  assert.equal(refused.status, 1, 'a plan losing fault coverage is refused');
+  assert.equal(refused.status, 1, 'an unproven combination is refused');
   assert.equal(refused.doc.stage, 'refused');
-  assert.match(refused.doc.refused, /coverage lost/);
-  assert.match(refused.doc.refused, /src\/math\.mjs/);
+  assert.match(refused.doc.refused, /not provably lossless/);
   assert.equal(sh('git status --porcelain'), '', 'a refused plan writes nothing');
   log += 'git status --porcelain is empty after the refused plan\n';
 
-  // The drop class: two redundant tests go, every fault the plan said was caught is still caught, the summed time falls.
-  const dropped = dd('drop class', 'tests', 'improve', '--apply', 'drop', '--plan', planFile);
-  assert.equal(dropped.status, 0);
-  assert.equal(dropped.doc.stage, 'applied');
-  assert.deepEqual(dropped.doc.tests.sort(), ['slop', 'slow-duplicate']);
-  assert.ok(dropped.doc.seconds.after < dropped.doc.seconds.before, `time falls: ${JSON.stringify(dropped.doc.seconds)}`);
-  assert.ok(dropped.doc.lines > 0 && dropped.doc.lines <= 300);
-  assert.deepEqual(journeys(), ['local-check', 'real']);
-  assert.ok(!existsSync(join(dir, 'tests/slop.mjs')) && !existsSync(join(dir, 'tests/slow-duplicate.mjs')), 'the dropped scripts are deleted');
-  assert.ok(existsSync(join(dir, 'tests/real.mjs')), 'the kept script stays');
-  commit('drop two redundant tests');
-  log += `-> drop class: ${dropped.doc.tests.join(', ')} removed; ${dropped.doc.seconds.before}s -> ${dropped.doc.seconds.after}s\n`;
+  const demotion = structuredClone(proposal.doc);
+  demotion.rows.find((x) => x.test === 'local-check').to = 'large';
+  const demotionFile = join(plans, 'demotion.json');
+  writeFileSync(demotionFile, JSON.stringify(demotion));
+  const rejectedDemotion = dd('unproven demotion', 'tests', 'improve', '--apply', 'move', '--plan', demotionFile);
+  assert.equal(rejectedDemotion.status, 1);
+  assert.match(rejectedDemotion.doc.refused, /no independent fast replacement/);
+  assert.equal(sh('git status --porcelain'), '', 'a refused demotion writes nothing');
 
-  // The move class is its own change set, from a fresh plan.
-  const second = dd('plan after drop', 'tests', 'improve', '--plan-only');
+  assert.deepEqual(journeys(), ['local-check', 'real', 'slop', 'slow-duplicate']);
+  assert.ok(existsSync(join(dir, 'tests/slow-duplicate.mjs')), 'the possible duplicate stays');
+
+  // The faster-tier move is its own change set, from a fresh plan.
+  const second = dd('plan with checks retained', 'tests', 'improve', '--plan-only');
+  assert.equal(second.doc.rows.find((r) => r.test === 'slop').repair_key, row.slop.repair_key, 'the same cause keeps its repair key across CLI processes');
   writeFileSync(planFile, JSON.stringify(second.doc));
   const moved = dd('move class', 'tests', 'improve', '--apply', 'move', '--plan', planFile);
   assert.equal(moved.status, 0);
@@ -112,8 +111,8 @@ writeFileSync(join(process.env.DONE_DONE_EVIDENCE_ROOT, 'steps.json'), JSON.stri
   writeFileSync(join(evidence, 'steps.json'), JSON.stringify({
     target: { version: JSON.parse(readFileSync('package.json', 'utf8')).version },
     start: 'improve-test fixture committed clean: real, slop, slow-duplicate and local-check tests with one untested isBig line',
-    steps: ['Save the proposal', 'Apply a plan that also drops real and see it refused', 'Apply the drop class', 'Apply the move class', 'Add a journey for the gap through journey add', 'Plan again'],
-    result: `refused coverage loss with a clean tree; dropped slop and slow-duplicate (${dropped.doc.seconds.before}s to ${dropped.doc.seconds.after}s); moved local-check to ci; is-big closes the gap`,
+    steps: ['Save the proposal', 'Apply a plan that drops the possible duplicate and see it refused', 'Apply the move class', 'Add a journey for the gap through journey add', 'Plan again'],
+    result: 'refused an unproven combination with a clean tree; kept the checks; moved local-check to ci; is-big closes the gap',
   }, null, 2));
 } finally {
   rmSync(scratch, { recursive: true, force: true });

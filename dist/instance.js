@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { parseDuration } from './config.js';
 import { miseEnv } from './miseenv.js';
+import { registerGroup, unregisterGroup } from './deadline.js';
 // A free local port done-done owns: bind 127.0.0.1:0, read it back, release.
 // A fixed port that is already taken can never be used.
 const pickPort = () => new Promise((resolve, reject) => {
@@ -48,16 +49,22 @@ function tryCommand(command, env, cwd, timeoutMs) {
     return new Promise((resolve) => {
         // Its own group, so the kill also stops what the shell started.
         const child = spawn(command, { cwd, shell: true, detached: true, stdio: 'ignore', env });
+        if (child.pid)
+            registerGroup(child.pid, env);
         const timer = setTimeout(() => {
-            stopInstance(child.pid);
+            stopInstance(child.pid, env);
             resolve(false);
         }, timeoutMs);
         child.on('error', () => {
             clearTimeout(timer);
+            if (child.pid)
+                unregisterGroup(child.pid, env);
             resolve(false);
         });
         child.on('close', (code) => {
             clearTimeout(timer);
+            if (env.DONE_DONE_LAYER_GROUPS && child.pid)
+                stopInstance(child.pid, env);
             resolve(code === 0);
         });
     });
@@ -85,23 +92,33 @@ export async function startInstance(repo, inst, runId, scratch, baseEnv, logFile
     const fd = openSync(logFile, 'a');
     const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env });
     closeSync(fd);
+    if (child.pid)
+        registerGroup(child.pid, env);
     const pgid = child.pid;
     child.unref?.();
     const timeoutMs = parseDuration(inst.ready_timeout);
     const byUrl = inst.ready.url !== undefined;
-    const ready = byUrl
-        ? await waitUrl(expand(inst.ready.url, env), timeoutMs)
-        : await waitCommand(inst.ready.command.replaceAll('${RUN_ID}', runId), env, repo, timeoutMs);
+    let ready;
+    try {
+        ready = byUrl
+            ? await waitUrl(expand(inst.ready.url, env), timeoutMs)
+            : await waitCommand(inst.ready.command.replaceAll('${RUN_ID}', runId), env, repo, timeoutMs);
+    }
+    catch (error) {
+        stopInstance(pgid, env);
+        throw error;
+    }
     if (!ready) {
-        stopInstance(pgid);
+        stopInstance(pgid, env);
         const what = byUrl ? `GET ${inst.ready.url} never returned 2xx` : 'readiness command never exited 0';
         throw new Error(`instance not ready within ${inst.ready_timeout}: ${what} (port ${port} owned by this run; the instance was killed)`);
     }
     return { pgid, env: portEnv };
 }
-export const stopInstance = (pgid) => {
+export const stopInstance = (pgid, env = process.env) => {
     try {
         process.kill(-pgid, 'SIGKILL');
     }
     catch { /* already exited */ }
+    unregisterGroup(pgid, env);
 };

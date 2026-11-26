@@ -6,6 +6,8 @@ import { stripVTControlCharacters } from 'node:util';
 import { AGENTS, ANSWERER_JUDGES, CHEAP, FALLBACK_ROUTES, JUDGE_DEFAULT, EFFORT_FLAGS, KEY_ROUTE_MODELS, KEY_ROUTES, parseDuration, RouteUnavailable, UsageError } from './config.js';
 import { isExecutable, onPath } from './judge.js';
 import { unavailable } from './routes.js';
+import { shadowUsage } from './size.js';
+import { layerRemaining, registerGroup, unregisterGroup } from './deadline.js';
 // argv never carries the prompt: it goes on stdin, or (file: true) into a 0600 prompt file the argv points at.
 // done-done parses the answer, validates it against the schema, and asks a tool-less call again, at most ASK_ATTEMPTS calls.
 const ASK_ATTEMPTS = 3;
@@ -440,6 +442,25 @@ export function selectFallback(cfg, found) {
     const route = cfg.judge.fallback_route || FALLBACK_ROUTES[cfg.judge.route];
     return route && route !== cfg.judge.route ? selectJudge({ ...cfg, judge: { ...cfg.judge, route, model: '' } }, found) : undefined;
 }
+// Read only known numeric usage fields; the response body and answer never enter the shadow journal.
+function cliUsage(stdout) {
+    const lines = [stdout, ...stdout.split('\n').filter(line => line.startsWith('{')).reverse()];
+    for (const line of lines) {
+        try {
+            const value = JSON.parse(line);
+            const usage = value.usage && typeof value.usage === 'object' ? value.usage : null;
+            if (!usage)
+                continue;
+            const number = (x) => typeof x === 'number' && Number.isFinite(x) ? x : null;
+            const input = number(usage.input_tokens), output = number(usage.output_tokens);
+            const read = number(usage.cache_read_input_tokens), write = number(usage.cache_creation_input_tokens);
+            const estimate = number(value.total_cost_usd);
+            return { usage_source: 'cli', input_tokens_or_null: input, output_tokens_or_null: output, cache_read_write_or_null: read === null && write === null ? null : { read, write }, dated_estimate_or_null: estimate === null ? null : { amount: estimate, currency: 'USD', observed_at: new Date().toISOString(), source: 'cli_reported_estimate' } };
+        }
+        catch { }
+    }
+    return {};
+}
 const DRAIN_MS = 500;
 const OUTPUT_CAP = 64 << 20;
 // One agent process. An edit step gets its own process group, so whatever it started (a dev server, a browser) is
@@ -448,6 +469,8 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
     const group = c.tools === 'edit';
     return new Promise((done) => {
         const child = spawn(bin, argv, { cwd, env, detached: group });
+        if (group && child.pid)
+            registerGroup(child.pid, env);
         let stdout = '';
         let stderr = '';
         let error;
@@ -531,6 +554,8 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
         child.on('error', (e) => {
             clearTimeout(timer);
             clearTimeout(idle);
+            if (group && child.pid)
+                unregisterGroup(child.pid, env);
             done({ status: null, stdout, stderr, error: e });
         });
         if (!child.pid)
@@ -564,6 +589,8 @@ function start(bin, argv, c, cwd, input, env, idleMs) {
             clearTimeout(drain);
             if (group)
                 kill();
+            if (group && child.pid)
+                unregisterGroup(child.pid, env);
             done({ status, stdout, stderr, error });
         });
         child.stdin.on('error', () => { }); // an agent that exits without reading its stdin
@@ -705,6 +732,11 @@ export function claudeAccount(agent, command) {
 // State owner: this loop. Success (including a product failure) and invalid answers stop;
 // availability advances to the next route; exhaustion reports every attempted route.
 export async function askAgent(c) {
+    const plan = process.env.DONE_DONE_LAYER_PLAN || c.env?.DONE_DONE_LAYER_PLAN;
+    if (plan) {
+        layerRemaining(plan);
+        return { ok: false, error: `layer cannot safely bound the ${c.agent} CLI route; no provider request was made` };
+    }
     const { routes, ...first } = c;
     if (!routes?.length)
         return askOne(first);
@@ -772,6 +804,7 @@ async function askOne(c) {
     let cwd = c.cwd;
     let res;
     let attempts = 0;
+    let dispatches = 0;
     let out;
     let failure;
     let verdict;
@@ -824,7 +857,16 @@ async function askOne(c) {
                 writeFileSync(join(dir, 'prompt.md'), promptText, { mode: 0o600 });
             const input = adapter.file ? '' : adapter.stdin ? adapter.stdin(call, promptText) : promptText;
             const remain = Math.max(1_000, Math.min(call.timeoutMs, deadline - Date.now()));
-            res = await start(bin, argv(dir), { ...call, timeoutMs: remain }, cwd, input, env, adapter.streams ? call.idleMs ?? AGENT_IDLE_MS : 0);
+            const dispatchStart = performance.now();
+            const dispatchReason = dispatches++ ? 'retry' : 'dispatch';
+            try {
+                res = await start(bin, argv(dir), { ...call, timeoutMs: remain }, cwd, input, env, adapter.streams ? call.idleMs ?? AGENT_IDLE_MS : 0);
+            }
+            catch (error) {
+                shadowUsage({ step: call.tools === 'none' ? 'judge' : call.tools, reason: dispatchReason, route_model_version: `${call.agent}:${call.model}`, elapsed_ms: performance.now() - dispatchStart, terminal_status: 'failed' });
+                throw error;
+            }
+            shadowUsage({ step: call.tools === 'none' ? 'judge' : call.tools, reason: dispatchReason, route_model_version: `${call.agent}:${call.model}`, ...(process.env.DONE_DONE_SHADOW_TIMING ? cliUsage(res.stdout) : {}), elapsed_ms: performance.now() - dispatchStart, terminal_status: res.error || res.status !== 0 ? 'failed' : 'completed' });
             if (res.error) {
                 if (await moveOn(res.error.message)) {
                     attempts--;

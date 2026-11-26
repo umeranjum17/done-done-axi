@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join, normalize } from 'node:path';
+import { isTestFile } from './inventory.js';
 
 // What a receipt records per declared test: how it ran on the base, and that it passed at head (a head that is not green refuses).
 export type NewTest = { file: string; base: 'red' | 'green' | 'skipped'; head: 'green' };
@@ -98,4 +99,40 @@ export function checkNewTests(repo: string, files: string[], base: string, templ
     try { git(repo, 'worktree', 'remove', '--force', wt); } catch { /* never added, or already gone */ }
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+// Shadow admission records only assertion failures, not arbitrary process failures. This does not
+// replace the existing receipt gate: oracle provenance and the intended assertion remain unknown.
+export type AdmissionShadow = { base: string; head: string; rows: { file: string; result: 'assertion-failed' | 'no-proof'; reason: string }[]; assertion_failures: number; no_proof: number; error?: string };
+
+export function shadowNewTests(repo: string, declared: string[], base: string): AdmissionShadow {
+  const head = git(repo, 'rev-parse', 'HEAD');
+  const added = git(repo, 'diff', '--diff-filter=A', '--name-only', '-z', base, head).split('\0').filter(isTestFile);
+  const files = [...new Set([...added, ...declared])].sort();
+  const rows: AdmissionShadow['rows'] = [];
+  const scratch = mkdtempSync(join(tmpdir(), 'done-done-admission-'));
+  const wt = join(scratch, 'base');
+  try {
+    git(repo, 'worktree', 'add', '-q', '--detach', wt, base);
+    for (const file of files) {
+      const rel = normalize(file);
+      const unknown = (reason: string) => rows.push({ file, result: 'no-proof', reason });
+      if (isAbsolute(rel) || rel.startsWith('..')) { unknown('path outside repository'); continue; }
+      if (!['.js', '.mjs'].includes(extname(rel))) { unknown('runner does not expose structured assertion failures'); continue; }
+      try { git(repo, 'cat-file', '-e', `HEAD:${rel}`); } catch { unknown('test is not committed at HEAD'); continue; }
+      const run = (cwd: string) => spawnSync(process.execPath, ['--test', '--test-reporter=tap', rel], { cwd, encoding: 'utf8', timeout: BOUND_MS, maxBuffer: 8 * 1024 * 1024 });
+      const fixed = run(repo);
+      if (fixed.error || fixed.status !== 0 || /# SKIP\b|# TODO\b/.test(fixed.stdout)) { unknown('head failed, skipped, or could not run'); continue; }
+      mkdirSync(dirname(join(wt, rel)), { recursive: true });
+      copyFileSync(join(repo, rel), join(wt, rel));
+      const bad = run(wt);
+      if (bad.error || bad.status !== 1 || !/code: ['"]ERR_ASSERTION['"]/.test(bad.stdout) || /# SKIP\b|# TODO\b/.test(bad.stdout)) { unknown('base did not report an assertion failure'); continue; }
+      // The runner supplies no link between this assertion and the claimed bug; it is a candidate, not proof.
+      rows.push({ file, result: 'assertion-failed', reason: 'assertion failed on base and test passed at head; intended assertion and independent oracle unverified' });
+    }
+  } finally {
+    try { git(repo, 'worktree', 'remove', '--force', wt); } catch { /* never added or already removed */ }
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  return { base, head, rows, assertion_failures: rows.filter(r => r.result === 'assertion-failed').length, no_proof: rows.filter(r => r.result === 'no-proof').length };
 }

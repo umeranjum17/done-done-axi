@@ -10,7 +10,7 @@ import { parseArgs } from 'node:util';
 import { encode } from '@toon-format/toon';
 import { Document, parseDocument } from 'yaml';
 import { canStart, ACPX_INSTALL, agentChoices, agentPath, agentRun, askAgent, findBin, JUDGES, modelFor, noAgent, noJudge, notStartable, routeOf, selectAgent, selectFallback, selectJudge, toollessReason } from './agents.js';
-import { checkDeadline } from './deadline.js';
+import { cancelGroups, checkDeadline, layerRemaining, processGroupSupported, registerGroup, unregisterGroup } from './deadline.js';
 import { AGENTS, CHEAP, INTERACTIONS, globalConfigText, home, inputPattern, isAgent, isJudgeRoute, LIVE_TIER, loadConfig, parseDuration, tilde, UsageError } from './config.js';
 import { backend, judge, judgeable, judgeEnv, onPath, quote, screen } from './judge.js';
 import { startInstance, stopInstance } from './instance.js';
@@ -22,21 +22,25 @@ import { design, interactions, KINDS, redesign, writtenRequirement } from './des
 import { checkMedia } from './media.js';
 import { domIssues, domRecord, isDomRecord, lookIssues, SQUASHED_TEXT } from './dom.js';
 import { BASELINE_SCHEMA, baselinePrompt, criteriaOf, detectAi, EVALS_SCHEMA, evalsProblem, evalsPrompt, evalsYaml, judgePrompt, judgeSchema, PROMPTS_FILE, promptsJsonl, README_FILE, readmeMd, readPrompts, reportMd, RUBRIC_FILE, rubricMd, scoresOf, totals } from './evals.js';
-import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
+import { findings as inventoryFindings, INVENTORY_FILE, inventoryFault, intentInventory, entryScript, loadInventory, record as recordInventory, describe as describeFinding } from './inventory.js';
 import { lint } from './lint.js';
 import { gutCheckAll } from './gutcheck.js';
-import { baseCommit, checkNewTests, parseNewTests, SKIP_EXIT } from './newtests.js';
+import { baseCommit, checkNewTests, parseNewTests, shadowNewTests, SKIP_EXIT } from './newtests.js';
 import { runLive } from './live.js';
 import { preflightFault } from './preflight.js';
 import { planImprove } from './improve.js';
 import { applyPlan, APPLIES, parsePlan } from './apply.js';
 import { DEFAULT_FAULTS, listFaults, measureValue, sourcesOf } from './value.js';
-import { measureJourney, nightFault, runBounded, sizeFault, slowReason, isSize } from './size.js';
+import { hygiene } from './hygiene.js';
+import { measureJourney, nightFault, runBounded, shadowBatch, withShadowRun, sizeFault, slowReason, isSize } from './size.js';
+import { observeFlakes } from './flake-history.js';
+import { SIZES } from './size.js';
 import { look } from './look.js';
 import { scanSecrets } from './secrets.js';
-import { mapChange } from './affected.js';
+import { mapChange, shadowPlan } from './affected.js';
+import { junit } from './native-report.js';
 import { affectedProof, affectedShape, extendReceipt, noReview, parseFiles, undriven } from './affected-proof.js';
-import { addPairs, auditSelection, featureFor } from './audit.js';
+import { addPairs, auditSelection, featureFor, controlObservations } from './audit.js';
 import { planQa, planWrite, sealStage } from './qa.js';
 import { minimumScope, parseList, scopeShape } from './scope.js';
 import { runSuite, SUITE_ENV, suiteCommand, suiteFault, suiteLine, suiteShape } from './suite.js';
@@ -196,6 +200,10 @@ const FLAGS = {
     '--journeys <list>': 'with verify: the closed list of journeys this run drives (one in this version), so the receipt records minimum scope, the journeys not run, and the affected ones it omits',
     '--named-by <who>': 'with --journeys: who named the list (default caller); the receipt records it',
     '--affected-by <files>': 'with verify: repo files separated by commas that changed; only the journeys they need run (`affected`, local tier when unsure), the receipt extends the prior one and no review runs again',
+    '--layer <fast|release|nightly>': 'run a bounded shadow layer; no receipt is issued',
+    '--base <ref>': 'with verify --layer: the ancestor commit used as the base',
+    '--budget <duration>': 'with verify --layer: total budget, at most 300s for fast',
+    '--plan <file>': 'with verify --layer: resume an incomplete plan without renewing its budget; with tests improve: the proposed plan',
     '--extends <head>': 'with verify --affected-by: the head of the prior receipt to extend (default: the newest receipt before HEAD)',
     '--prove': 'with qa: run the journey that covers the feature through verify, judge it, fix up to --max times and seal a receipt for the commit (stage sealed, or fail)',
     '--max <n>': 'with qa --prove: the most fix attempts (default 2)',
@@ -223,6 +231,9 @@ const FLAGS = {
     '--no-skill': 'with --agent: write the config but skip the agent-written verify skill (no agent call, no spend); the user writes it later with done-done init; evals stay off too, since the prompt set needs the agent',
     '--setup': 'install health: git, config, evidence_root, agent and judge only; the verify skill and a repo with no journeys are warnings, and the journey rows are skipped',
     '--audit': 'with affected, a commit range: add each journey that failed at a receipted commit the map did not select to the feature map, and print recall',
+    '--shadow <plan.json>': 'with affected: write an advisory test selection plan; the existing journey gate remains authoritative',
+    '--report <junit.xml>': 'with affected --shadow: preserve and inspect a JUnit report for the named head',
+    '--report-head <commit>': 'with --report: the report revision, which must match HEAD',
     '--before': 'record HEAD at PreToolUse; without it consume the matching PostToolUse event and capture the commit',
     '--after-commit': 'with --hook claude, opt in to Bash lifecycle hooks that rerun affected journeys after a commit and propose missing skill coverage (no agent or judge started)',
     '--hook <agent>': 'also add a SessionStart hook to .claude/settings.json (claude), .codex/hooks.json (codex) or .gemini/settings.json (gemini) that shows `done-done` to each session, or a plugin to .opencode/plugins (opencode) or an extension to .pi/extensions (pi) that adds it to the first message of each session (opt-in)',
@@ -293,10 +304,11 @@ const COMMANDS = {
             ['done-done verify [<journey>] --outcome "<what a user can now do>" [--claim-id <id>]', 'drive the journey in a run that outlives this command, check its evidence, judge each capture and record a receipt'],
             ['done-done verify --journeys <journey> [--named-by <who>] --outcome "<claim>"', 'minimum journey scope: drive only the journey the caller names; the receipt records the list, who named it, and the journeys it did not run (those `affected` selected too)'],
             ['done-done verify --affected-by <files> [--extends <head>] --outcome "<claim>"', 'drive only the journeys the named files affect (the whole local tier for a file no journey covers) and record a receipt that extends the prior one: its head, the files, the journeys and no review again; writes no journey, starts no reviewer'],
+            ['done-done verify --layer <fast|release|nightly> --base <ref> [--budget <duration>]', 'run bounded shadow checks; the existing verification gate remains required'],
             ['done-done verify --outcome "<claim>" [--feature <name>]', 'with no journey, the author agent drives a verify skill feature and the judge the user set judges its captures'],
             ['done-done verify [<journey>] --outcome "<claim>" --no-wait | --wait | --foreground', 'return at once, wait until the run ends or waits at its gate (default), or run in this process'],
         ],
-        flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--affected-by <files>', '--extends <head>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground'],
+        flags: ['--outcome "<what a user can now do>"', '--feature <name>', '--journeys <list>', '--named-by <who>', '--affected-by <files>', '--extends <head>', '--claim-id <id>', '--fix-tries <n>', '--wait', '--no-wait', '--foreground', '--layer <fast|release|nightly>', '--base <ref>', '--budget <duration>', '--plan <file>'],
         more: [RUNS_TEXT],
     },
     journey: {
@@ -383,12 +395,13 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
     },
     tests: {
         usage: [
+            ['DONE_DONE_SHADOW_TIMING=<file> done-done tests shadow [--deadline <duration>] <journey...>', 'time named journeys together; optionally stop the batch at a shared deadline, without recording proof'],
             ['done-done tests measure [<journey>] [--night]', 'run each sized journey 5 times and report its five timings against its size bound'],
-            ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose a test plan, stage proposed: keep, drop, move (to a smaller size) per test and the gaps no test protects; changes no file'],
-            ['done-done tests improve --apply <drop|move> --plan <file>', 'apply one class of a saved plan (tests improve --plan-only --json): rerun the kept tests against the plan\'s faults, refuse if any fault loses its catcher or the change is over 300 lines, else edit .done-done.yaml and delete the dropped scripts'],
-            ['done-done tests value [<journey>] [--night] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
+            ['done-done tests improve --plan-only [<journey>] [--night] [--faults <n>] [--source <file>]', 'propose repairs and size changes, and report combinations that are not provably lossless; changes no file'],
+            ['done-done tests improve --apply <drop|move> --plan <file>', 'apply a move after fault replay; refuse drops when recorded faults do not prove all outcomes survive'],
+            ['done-done tests value [<journey>] [--night] [--shadow] [--faults <n>] [--source <file>]', 'plant faults in scratch copies, run each test against them and mark every test real, slop (catches nothing), duplicate (a faster test catches the same) or failing'],
         ],
-        flags: ['--night', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
+        flags: ['--night', '--shadow', '--faults <n>', '--source <file>', '--plan-only', '--apply <class>', '--plan <file>'],
         more: [`test sizes: set journeys.<name>.size to ci (15s), local (300s) or large (900s). \`run\` stops a journey past its bound and fails it as slow.
   A large journey needs journeys.<name>.reason and is night-only: \`run\` and \`tests measure\` refuse it without --night. Once any journey has a size,
   \`done-done lint\` fails a journey with no size and a large one with no reason. \`tests measure\` records nothing as proof; exit 1 when a journey was slow or failed.
@@ -396,11 +409,12 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
   non-test source file git tracks), in a scratch copy per fault, and runs every test there. A test that fails on a fault catches it. Verdicts: real (catches a fault, and no faster
   test catches the same set), slop (catches none), duplicate (a faster test, or an earlier-named one at equal speed, catches exactly the same faults; duplicate_of names it), failing (fails on
   the clean copy). The work copy is only read and nothing is recorded as proof. Exit 1 when any test is slop, duplicate or failing.
-  \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: one row per test (action keep, drop for slop or a duplicate, move with \`to\` when a real
-  test's measured time fits a smaller size with 3x headroom, fix for a failing one, each with its reason), gaps, the planted faults that no test caught, as file:line, and faults, every planted fault. It writes no file and exits 0.
+  \`tests value --shadow\` reports fresh mutation observations without failing or proposing deletion; it needs ownership declarations and installed runners.
+  \`tests improve --plan-only\` runs the same valuation and answers with stage proposed: keep possible duplicates, fix unproductive or failing checks, or move a real
+  test to a smaller size when its measured time fits with 3x headroom. Candidate combinations lacking outcome proof are reported as not provably lossless. It writes no file and exits 0.
   \`tests improve --apply drop|move --plan <file>\` applies one class of a saved plan (stage applied). It first reruns the kept tests, at their new sizes, against the plan's recorded faults: if a fault the plan
   said was caught is caught by no kept test, or a kept test now fails, or the plan is stale (a source line or journey changed), or the change set is over 300 lines, it is refused (stage refused, exit 1) and writes nothing.
-  Otherwise drop removes the journeys from .done-done.yaml, deletes their scripts that no kept journey runs and forgets their inventory entries; move sets the smaller size. It reports the tests' summed clean-run seconds
+  Drop is refused because recorded fault overlap does not prove that each outcome and refusal survives. Move sets the smaller size. It reports the tests' summed clean-run seconds
   before and after. Commit each class alone on its own ticket branch; fill gaps with \`done-done qa "<feature>" --write\``],
     },
     'after-commit': {
@@ -413,7 +427,7 @@ each prints the files it changed and runs the journey once as a dirty-tree trial
             ['done-done affected [<base>]', "the journeys a change needs, from the verify skill's feature map and the paths it cites (the core journey when unsure); exit 1 until a receipt for HEAD covers them"],
             ['done-done affected --audit <range>', 'compare failed journey runs with the commits\' receipts, add each missed file/journey pair to the feature map, and print recall'],
         ],
-        flags: ['--audit'],
+        flags: ['--audit', '--shadow <plan.json>', '--report <junit.xml>', '--report-head <commit>'],
         more: [`affected: model-free. The change is the diff from <base>, else from the newest receipt before HEAD (the commits since the last proof),
   else from the merge base with the default branch (origin/HEAD, origin/main, origin/master, main, master), plus uncommitted changes to tracked files;
   evidence.ignore_paths and .done-done-receipts/ need nothing. A journey is needed when its command runs a changed file; a feature
@@ -1343,7 +1357,8 @@ async function runCheck(argv, run) {
     await withChoice('judge', cfg);
     run?.judging(findings.length ? INCONCLUSIVE : PASS, [...findings]);
     const author = () => (run?.author ? agentRun(cfg, run.author.agent, run.author.model) : judgeAuthor(cfg));
-    const j = await judge(cfg, () => selectJudge(cfg, author()), claim.outcome, claimCaptures.length ? claimCaptures : captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author()));
+    const usageRunId = run ? basename(run.dir) : runs.size === 1 ? [...runs.keys()][0] : randomBytes(16).toString('hex');
+    const j = await withShadowRun(usageRunId, () => judge(cfg, () => selectJudge(cfg, author()), claim.outcome, claimCaptures.length ? claimCaptures : captures, run ? join(run.dir, 'agents') : join(home(), 'agents'), () => selectFallback(cfg, author())));
     // The judge's next step leads the help when its verdict decides the result.
     if (j.judged.some((r) => r.verdict === 'fail'))
         judgeLevel = 'fail';
@@ -1388,7 +1403,7 @@ async function runCheck(argv, run) {
     let matches = [];
     if (approved.length) {
         const pairs = approved.map(({ entry, live }) => pairUp(`${entry.screen} / ${entry.size} / ${entry.theme}`, entry.mock, live[0], entry.size));
-        const verdicts = await design(cfg, choice, pairs, agentRecords);
+        const verdicts = await withShadowRun(usageRunId, () => design(cfg, choice, pairs, agentRecords));
         matches = verdicts.map((v, i) => {
             const { screen, size, theme } = approved[i].entry;
             if (v.verdict !== 'pass')
@@ -1404,7 +1419,7 @@ async function runCheck(argv, run) {
     }
     let redesigned = [];
     if (redesigns.length) {
-        const verdicts = await redesign(cfg, choice, redesigns.map(r => r.live[0]), agentRecords);
+        const verdicts = await withShadowRun(usageRunId, () => redesign(cfg, choice, redesigns.map(r => r.live[0]), agentRecords));
         redesigned = verdicts.map((v, i) => {
             const { screen, size, theme } = redesigns[i].entry;
             const reason = v.failed.length ? v.failed.map(d => `${d.kind}: ${d.where}`).join('; ') : v.reason;
@@ -1418,7 +1433,7 @@ async function runCheck(argv, run) {
     const withMock = requirements.filter(({ r }) => r.mock);
     if (withMock.length) {
         const pairs = withMock.map(({ r, live }) => pairUp(`${r.kind} ${r.name}`, r.mock, live[0]));
-        const verdicts = await design(cfg, choice, pairs, agentRecords);
+        const verdicts = await withShadowRun(usageRunId, () => design(cfg, choice, pairs, agentRecords));
         for (const [i, v] of verdicts.entries()) {
             const { r } = withMock[i];
             if (v.verdict !== 'pass')
@@ -1427,7 +1442,7 @@ async function runCheck(argv, run) {
     }
     const written = [];
     for (const { r, live } of specs) {
-        const v = await writtenRequirement(cfg, choice, r.name, r.requirement, live[0], agentRecords);
+        const v = await withShadowRun(usageRunId, () => writtenRequirement(cfg, choice, r.name, r.requirement, live[0], agentRecords));
         v.path = receiptPath(repo, cfg, cite(v.path));
         v.basis = r.mock || approved.some(({ entry }) => entry.capture === r.capture) ? 'judged against approved reference image and written requirements' : 'judged against written requirements (no approved reference image)';
         written.push(v);
@@ -1441,7 +1456,7 @@ async function runCheck(argv, run) {
     }
     if (written.length && judgeBlock)
         judgeBlock.approved_requirements = written;
-    const touches = await interactions(cfg, choice, captures, agentRecords);
+    const touches = await withShadowRun(usageRunId, () => interactions(cfg, choice, captures, agentRecords));
     for (const r of touches) {
         r.captures = r.captures.map(c => ({ ...c, path: receiptPath(repo, cfg, cite(c.path)) }));
         if (r.status === 'flagged')
@@ -1800,25 +1815,36 @@ async function cmdReceipt(argv) {
         if (gut.refusal)
             return emitted({ code: FAIL, result: { command: 'receipt', result: 'fail', reason: `no receipt was written: ${gut.refusal}`, new_tests: newTests, help: ['Fix the declared test, then re-run receipt with the same --new-test flags'] } });
     }
-    return emitted(recordReceipt(repo, cfg, await runCheck(declared.rest), undefined, undefined, newTests));
+    let admission;
+    if (cfg.check.red_before_green) {
+        try {
+            admission = shadowNewTests(repo, declared.files, baseCommit(repo, cfg.base_ref, defaultBranch(repo)));
+        }
+        catch (e) {
+            admission = { base: '', head: head(repo).commit, rows: [], assertion_failures: 0, no_proof: 0, error: `not measured: ${errorText(e)}` };
+        }
+    }
+    return emitted(recordReceipt(repo, cfg, await runCheck(declared.rest), undefined, undefined, newTests, admission));
 }
 function assertCleanForReceipt(repo) {
     if (head(repo).dirty)
         throw new UsageError('receipt: tracked files have uncommitted changes, so no receipt was written; commit or revert them, then re-run receipt', 'Commit the tracked changes, then: done-done receipt --from <file|->');
 }
 // Write the receipt for a check that passed on a clean tree and cited evidence, or say why none was written.
-function recordReceipt(repo, cfg, r, reviewProof, extended, newTests) {
+function recordReceipt(repo, cfg, r, reviewProof, extended, newTests, admission) {
     if (r.code !== PASS || !r.judgeBlock)
         return { code: r.code === PASS ? INCONCLUSIVE : r.code, result: { ...r.result, command: 'receipt', reason: 'the check did not pass its judge, so no receipt was written' } };
+    if (process.env.DONE_DONE_LAYER_PLAN)
+        return { code: INCONCLUSIVE, result: { command: 'receipt', result: 'inconclusive', reason: 'shadow layer outcomes cannot issue a receipt; the existing verification gate remains required' } };
     assertCleanForReceipt(repo);
     // A missing citation is not a verdict: the judge passed, but the receipt cannot bind it, so it stops like a judge error.
     if (!r.cited.length)
         throw new UsageError('receipt: the check cited no evidence files, so no receipt was written; a receipt must bind at least one cited evidence file', 'Cite real proof: done-done receipt --outcome "<claim>" <files...>');
-    let rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(newTests && { new_tests: newTests }), ...(extended && { affected: extended.affected }) };
+    let rec = { schema: 2, repo: cfg.app, head: r.head.commit, tree: r.head.tree, claim: r.claim ?? '', ...(r.skill && { skill: r.skill }), result: 'pass', at: new Date().toISOString(), files: r.cited, runs: r.runs, judge: r.judgeBlock, ...(reviewProof && { review: reviewProof }), ...(r.evals && { evals: r.evals }), ...(r.suite && { suite: r.suite }), ...(r.scope && { scope: r.scope }), ...(newTests && { new_tests: newTests }), ...(admission && { admission_shadow: admission }), ...(extended && { affected: extended.affected }) };
     if (extended)
         rec = extendReceipt(earlierReceipt(cfg, rec.head), rec, extended.journey);
     const path = writeReceipt(cfg, rec);
-    const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), ...(rec.new_tests && { new_tests: rec.new_tests }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
+    const result = { command: 'receipt', result: 'pass', ...(r.judgeBlock.comparison_basis && { comparison_basis: r.judgeBlock.comparison_basis }), head: r.head.commit, tree: r.head.tree, claim: rec.claim, ...(rec.skill && { skill: rec.skill }), ...(rec.evals && { evals: rec.evals }), ...(rec.suite && { suite: rec.suite }), ...(rec.affected && { affected: rec.affected }), ...(rec.new_tests && { new_tests: rec.new_tests }), ...(rec.admission_shadow && { admission_shadow: rec.admission_shadow }), files: rec.files.length, receipt: shown(repo, path), ...(r.warnings.length && { warnings: r.warnings }) };
     return { code: PASS, result: { ...result, ...(r.judge && { judge: r.judge }), help: [`Verify this receipt (merge gate): done-done receipt --verify ${r.head.commit}`] } };
 }
 // Why evidence from `from` no longer proves `to`, or '' if it still does.
@@ -2174,6 +2200,8 @@ async function driveBase(run, cfg, dir, rec, fix, drive) {
                                 : 'npm install');
             if (install) {
                 const child = spawn(install, { cwd: wt, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+                if (child.pid)
+                    registerGroup(child.pid);
                 run.runner.journey_pgid = child.pid;
                 let output = '';
                 child.stdout.on('data', (data) => { output = (output + data).slice(-8192); });
@@ -2182,6 +2210,10 @@ async function driveBase(run, cfg, dir, rec, fix, drive) {
                     child.on('error', (e) => done(e.message));
                     child.on('close', (code) => done(code === 0 ? '' : `exit ${code ?? 'unknown'}${output.trim() ? `: ${output.trim()}` : ''}`));
                 });
+                if (child.pid && process.env.DONE_DONE_LAYER_GROUPS) {
+                    killGroup(child.pid);
+                    unregisterGroup(child.pid);
+                }
                 if (failure)
                     return `base install (${install}) failed: ${failure}`;
             }
@@ -2416,10 +2448,16 @@ async function runSteps(dir) {
                     // An async child keeps the heartbeat going while the journey runs. The journey gets its own process group, so a
                     // timeout or a dead runner can kill it and everything it started.
                     const child = spawn(rec.command, { cwd: at, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), ...skipEnv(cfg.check.skip_is_not_proof), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: runDir(cfg, rec.run_id), ...instEnv, ...(matrix ? cellEnv(cell) : {}) } });
+                    if (child.pid)
+                        registerGroup(child.pid);
                     run.runner.journey_pgid = child.pid;
                     running = child.pid;
                     saveRun(dir, run);
                     const code = await new Promise((done) => child.on('close', (c) => done(c ?? 1)));
+                    if (child.pid && process.env.DONE_DONE_LAYER_GROUPS) {
+                        killGroup(child.pid);
+                        unregisterGroup(child.pid);
+                    }
                     running = undefined;
                     if (timedOut) {
                         failed.push(`${cellName(cell)} (timed out after ${timeout})`);
@@ -2443,9 +2481,15 @@ async function runSteps(dir) {
                     await driveBase(run, cfg, dir, rec, fix, async (where, evidence, env) => {
                         for (const cell of matrix ?? [{}]) {
                             const child = spawn(rec.command, { cwd: where, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), DONE_DONE_RUN_ID: rec.run_id, DONE_DONE_EVIDENCE_ROOT: evidence, ...env, ...(matrix ? cellEnv(cell) : {}) } });
+                            if (child.pid)
+                                registerGroup(child.pid);
                             spawned(child.pid);
                             const timer = setTimeout(() => killGroup(child.pid), limit);
                             const code = await new Promise((done) => child.on('close', (c) => done(c ?? 1)));
+                            if (child.pid && process.env.DONE_DONE_LAYER_GROUPS) {
+                                killGroup(child.pid);
+                                unregisterGroup(child.pid);
+                            }
                             clearTimeout(timer);
                             if (code)
                                 return `the journey exited ${code} for cell ${cellName(cell)}`;
@@ -3033,12 +3077,313 @@ async function preflightVerify(cfg, agentDrives, tries = cfg.auto_fix.verify ?? 
         throw new UsageError(`${cfg.agent} cannot fix the product: done-done runs ACP agents with every tool denied`, `Set auto_fix.verify: 0 to report only, or set agent: to one of ${AGENTS.join(', ')}`);
     await preflightJudge(cfg, false);
 }
+// Layer runs are shadow-only until their outcome and model policy can gate the ordinary receipt.
+// Fast accepts only explicitly sized native commands with a named test file, or a targeted lint/type check.
+const fastLayerCommand = (command, tracked, repo) => {
+    const c = command.trim();
+    if (/^(?:npx --no-install )?tsc(?: --noEmit)?$/.test(c))
+        return true;
+    const match = c.match(/^(?:node|nodejs) --test ([\w./-]+\.(?:test|spec)\.(?:js|cjs|mjs))$/)
+        ?? c.match(/^(?:npx --no-install )?(?:jest|vitest) (?:--runTestsByPath |run )([\w./-]+\.(?:test|spec)\.[\w]+)$/)
+        ?? c.match(/^(?:npx --no-install )?eslint ([\w./-]+\.[\w]+)$/)
+        ?? c.match(/^pytest ([\w./-]+\/test_[\w-]+\.py)$/);
+    const path = match?.[1];
+    return !!path && !path.startsWith('/') && !path.split('/').includes('..') && tracked.has(path.replace(/^\.\//, '')) && !symlinkOnPath(repo, join(repo, path));
+};
+async function superviseLayer(o) {
+    if (process.env.DONE_DONE_LAYER_GROUPS)
+        throw new UsageError('a nested layer cannot own its parent layer process groups');
+    if (process.platform !== 'linux')
+        throw new UsageError('layer needs supported Linux process-group isolation');
+    if (o.plan)
+        o = { ...o, plan: resolve(o.plan) };
+    const started = process.hrtime.bigint();
+    const submittedAt = now();
+    const initial = o.budget === undefined ? (o.layer === 'fast' ? 300_000 : 1_800_000) : parseDuration(o.budget);
+    if (initial === null || initial <= 1000 || (o.layer === 'fast' && initial > 300_000))
+        throw new UsageError('layer budget must be a duration greater than 1s; fast is capped at 300s');
+    const resuming = !!o.plan && existsSync(o.plan);
+    let absoluteDeadline = started + BigInt(initial) * 1000000n;
+    if (resuming) {
+        layerRemaining(o.plan);
+        const prior = JSON.parse(readFileSync(o.plan, 'utf8'));
+        absoluteDeadline = BigInt(prior.deadline_monotonic_ns);
+    }
+    const groups = mkdtempSync(join(tmpdir(), 'done-done-layer-groups-'));
+    const env = { ...process.env, DONE_DONE_LAYER_GROUPS: groups };
+    const child = spawn(process.execPath, [CLI_PATH, '__layer', JSON.stringify({ ...o, startedNs: started.toString(), submittedAt }), ...(OUT === 'json' ? ['--json'] : []), ...(FULL ? ['--full'] : [])], { cwd: process.cwd(), env, detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    try {
+        if (child.pid)
+            registerGroup(child.pid, env);
+    }
+    catch (error) {
+        rmSync(groups, { recursive: true, force: true });
+        throw error;
+    }
+    let timedOut = false, stopping = false, planPath = '', timer, killTimer, shutdownError;
+    const stop = (reason) => {
+        if (stopping)
+            return;
+        stopping = true;
+        timedOut = reason === 'deadline';
+        if (planPath)
+            try {
+                appendFileSync(join(dirname(planPath), 'events.jsonl'), `${JSON.stringify({ kind: 'layer_interrupted', reason, at: now() })}\n`, { mode: 0o600 });
+            }
+            catch (error) {
+                shutdownError = error;
+            }
+        try {
+            cancelGroups(groups, 'SIGTERM');
+        }
+        catch { /* SIGKILL below will retry and report failure if needed */ }
+        killTimer = setTimeout(() => { try {
+            cancelGroups(groups, 'SIGKILL');
+        }
+        catch (error) {
+            shutdownError ??= error;
+        } }, 250);
+    };
+    const schedule = (deadline) => {
+        if (stopping)
+            return;
+        clearTimeout(timer);
+        const left = Number(deadline - process.hrtime.bigint()) / 1_000_000;
+        timer = setTimeout(() => stop('deadline'), Math.max(0, left - 1000));
+    };
+    schedule(absoluteDeadline);
+    child.on('message', (m) => {
+        const row = m;
+        if (typeof row.plan === 'string')
+            planPath = row.plan;
+        if (!resuming && !o.budget && typeof row.budget === 'number' && Number.isInteger(row.budget) && row.budget > 1000 && (o.layer !== 'fast' || row.budget <= 300_000))
+            schedule(started + BigInt(row.budget) * 1000000n);
+    });
+    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+    const handlers = Object.fromEntries(signals.map((sig) => [sig, () => stop(sig)]));
+    for (const sig of signals)
+        process.once(sig, handlers[sig]);
+    try {
+        const code = await new Promise((resolve) => {
+            child.on('error', (error) => { shutdownError = error; resolve(USAGE); });
+            child.on('close', (status) => resolve(status ?? FAIL));
+        });
+        if (stopping && killTimer)
+            await new Promise((resolve) => setTimeout(resolve, 300));
+        if (shutdownError)
+            throw shutdownError;
+        if (timedOut) {
+            emit({ command: 'verify', layer: o.layer, result: 'incomplete', ...(planPath && { plan: planPath }), reason: 'layer deadline expired; no receipt was issued' });
+            return INCONCLUSIVE;
+        }
+        return stopping ? FAIL : code;
+    }
+    finally {
+        clearTimeout(timer);
+        if (killTimer)
+            clearTimeout(killTimer);
+        for (const sig of signals)
+            process.removeListener(sig, handlers[sig]);
+        if (child.pid)
+            unregisterGroup(child.pid, env);
+        try {
+            cancelGroups(groups, 'SIGKILL');
+        }
+        finally {
+            rmSync(groups, { recursive: true, force: true });
+        }
+    }
+}
+async function verifyLayer(o) {
+    const started = o.startedNs && /^\d+$/.test(o.startedNs) ? BigInt(o.startedNs) : process.hrtime.bigint();
+    const executionStartedAt = now();
+    if (!['fast', 'release', 'nightly'].includes(o.layer))
+        throw new UsageError('--layer must be fast, release or nightly');
+    if (!o.base)
+        throw new UsageError('verify --layer needs --base <ref>');
+    if (o.only && o.layer !== 'fast')
+        throw new UsageError('release and nightly require every outcome; a journey cannot be selected');
+    if (!await processGroupSupported())
+        throw new UsageError('layer needs working process-group isolation; the host cancellation probe failed');
+    const repo = repoRoot(), cfg = loadConfig(repo), current = head(repo);
+    if (current.dirty)
+        throw new UsageError('verify --layer requires a clean tracked tree');
+    let base;
+    try {
+        base = git(repo, 'rev-parse', '--verify', '--end-of-options', `${o.base}^{commit}`);
+    }
+    catch {
+        throw new UsageError(`--base ${o.base} is not a commit`);
+    }
+    if (!isAncestor(repo, base, current.commit))
+        throw new UsageError('--base must be an ancestor of HEAD');
+    const budget = o.budget === undefined ? (o.layer === 'fast' ? 300_000 : parseDuration(cfg.suite.timeout)) : parseDuration(o.budget);
+    if (budget === null || budget <= 1000 || (o.layer === 'fast' && budget > 300_000))
+        throw new UsageError('layer budget must be a duration greater than 1s; fast is capped at 300s');
+    process.send?.({ budget });
+    if (o.only && cfg.live[o.only])
+        throw new UsageError(`live journey ${o.only} cannot run in fast`);
+    const all = Object.entries(cfg.journeys);
+    const fastTiers = new Set(['ci', 'local', 'fast', 'lint', 'types', 'unit', 'behavior', 'e2e']);
+    const selected = o.layer === 'fast' ? all.filter(([name, j]) => o.only ? name === o.only : fastTiers.has(j.tier ?? '')) : all;
+    if (o.only && !selected.length)
+        throw new UsageError(`unknown journey ${o.only}`);
+    const tracked = o.layer === 'fast' ? git(repo, 'ls-files', '-z').split('\0').filter(Boolean) : [];
+    const trackedSet = new Set(tracked);
+    if (o.layer === 'fast')
+        for (const [name, j] of selected) {
+            if (j.size === 'large' || ['nightly', 'night', 'live', 'load'].includes(j.tier ?? ''))
+                throw new UsageError(`journey ${name} is nightly or live and cannot run in fast`);
+            if (!isSize(j.size) || !fastLayerCommand(j.command, trackedSet, repo))
+                throw new UsageError(`journey ${name} is unsized or opaque broad work and cannot run in fast`);
+        }
+    const changed = git(repo, 'diff', '--name-only', '--no-renames', '-z', base, current.commit).split('\0').filter(Boolean).filter(needsJourney(cfg));
+    const unresolved = changed.filter((file) => !selected.some(([, j]) => j.command.trim().split(/\s+/).some((part) => part.replace(/^\.\//, '') === file)));
+    if (o.layer === 'fast' && unresolved.length) {
+        const mapping = mapDiff(repo, cfg, unresolved, tracked, undefined, () => {
+            if (process.hrtime.bigint() >= started + BigInt(budget) * 1000000n - 1000000000n)
+                throw new UsageError('layer deadline expired while selecting checks');
+        });
+        const omitted = mapping.journeys.filter((j) => !selected.some(([name]) => name === j.name));
+        const unmapped = mapping.unmapped;
+        if (mapping.features.length || omitted.length || unmapped.length)
+            throw new UsageError(`fast cannot safely cover this change: ${[...mapping.features.map(f => `feature ${f.name}`), ...omitted.map(j => `journey ${j.name}`), ...unmapped.map(file => `unmapped ${file}`)].join(', ')}`);
+    }
+    if (selected.some(([, j]) => j.spends))
+        throw new UsageError('layer includes a spending journey; run it through its existing approval gate');
+    if (o.layer !== 'fast' && Object.values(cfg.live).some((j) => j.spends))
+        throw new UsageError('layer includes a spending live check; no layer work was started');
+    const entries = selected.map(([name, j]) => [name, j.command]);
+    if (o.layer !== 'fast')
+        entries.push(...Object.entries(cfg.live).map(([name, j]) => [name, j.command]));
+    if (!entries.length)
+        throw new UsageError(`no eligible ${o.layer} outcomes`);
+    const limits = Object.fromEntries([...selected.map(([name, j]) => [name, j.timeout ? parseDuration(j.timeout) : isSize(j.size) ? SIZES[j.size] : budget]), ...Object.entries(cfg.live).map(([name, j]) => [name, parseDuration(j.timeout)])].map(([name, ms]) => {
+        if (ms === null)
+            throw new UsageError(`journey ${name} has an invalid timeout`);
+        return [name, ms];
+    }));
+    const planPath = o.plan ? resolve(repo, o.plan) : join(cfg.evidence.root, '.done-done', 'layers', newRunId(current.commit), 'plan.json');
+    mkdirSync(dirname(planPath), { recursive: true });
+    const lock = `${planPath}.run-lock`;
+    try {
+        mkdirSync(lock, { mode: 0o700 });
+    }
+    catch (e) {
+        if (e.code === 'EEXIST')
+            throw new UsageError('layer plan is already running or was interrupted; its allowance cannot be renewed');
+        throw e;
+    }
+    try {
+        if (!existsSync(planPath)) {
+            const plan = { schema: 1, mode: 'shadow', layer: o.layer, base, head: current.commit, changed, submitted_at: o.submittedAt ?? executionStartedAt, queue_started_at: null, queue_source: null, execution_started_at: executionStartedAt, boot_id: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), deadline_monotonic_ns: (started + BigInt(budget) * 1000000n).toString(), budget_ms: budget, required: entries.map(([name]) => name), unfinished: entries.map(([name]) => name), complete: false, model_budget: { limit: 5300, slots: { cheap: null, large: null }, attempts: [] } };
+            writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+        }
+        process.send?.({ plan: planPath });
+        const existing = JSON.parse(readFileSync(planPath, 'utf8'));
+        if (existing.layer !== o.layer || existing.base !== base || existing.head !== current.commit || JSON.stringify(existing.required) !== JSON.stringify(entries.map(([name]) => name)) || existing.complete !== false || !Number.isInteger(existing.budget_ms) || existing.budget_ms <= 1000 || (o.layer === 'fast' && existing.budget_ms > 300_000))
+            throw new UsageError('layer plan does not match this incomplete run');
+        if (existing.report && Array.isArray(existing.unfinished) && existing.unfinished.length === 0 && typeof existing.checks_complete === 'boolean') {
+            emit({ command: 'verify', layer: o.layer, mode: 'shadow', result: existing.checks_complete ? 'checks-passed' : 'incomplete', plan: planPath, required: entries.length, ...existing.report, flakes: existing.flakes, layer_duration_ms: existing.duration_ms, full_batch_p95_ms: existing.full_batch_p95_ms, full_batch_samples: existing.full_batch_samples, help: ['Shadow checks do not issue a receipt; the existing verification gate remains required.'] });
+            return existing.checks_complete ? INCONCLUSIVE : FAIL;
+        }
+        const remaining = layerRemaining(planPath);
+        const journal = join(dirname(planPath), 'events.jsonl');
+        const env = commandEnv(), attempts = [];
+        // Enforcement is a controller setting, not an input exposed to the checks themselves.
+        delete env.DONE_DONE_FLAKE_ENFORCE;
+        const inputsBefore = guardSnapshot(repo, cfg.inputs);
+        const report = await shadowBatch(entries, { cwd: repo, env: { ...env, DONE_DONE_LAYER_PLAN: planPath, DONE_DONE_SHADOW_TIMING: journal }, journal, deadlineMs: remaining + 1000, limits, retry: true, retryWhen: (r, name) => !!cfg.journeys[name] && !r.slow && !r.error && r.code !== null && ![77, 126, 127].includes(r.code), onAttempt: a => attempts.push(a), overTargetIsStatus: false });
+        const finalPlan = JSON.parse(readFileSync(planPath, 'utf8'));
+        const after = head(repo);
+        const inputSnapshots = { before: inputsBefore, after: guardSnapshot(repo, cfg.inputs) };
+        const unchangedInputs = JSON.stringify(inputSnapshots.before) === JSON.stringify(inputSnapshots.after);
+        const receipt = verifyReceipt(repo, cfg, current.commit);
+        const verifiedRepair = new Set();
+        if (receipt.code === PASS) {
+            const rec = JSON.parse(readFileSync(join(receiptsDir(cfg), `${current.commit}.json`), 'utf8'));
+            for (const run of rec.runs)
+                if (run.journey && run.commit === current.commit)
+                    verifiedRepair.add(run.journey);
+        }
+        const flakes = observeFlakes({ root: cfg.evidence.root, env, tree: current.tree, inputs: inputSnapshots, inputsStable: unchangedInputs && !after.dirty && after.commit === current.commit, attempts, journeys: Object.fromEntries(selected), enforce: process.env.DONE_DONE_FLAKE_ENFORCE === '1', passing: new Set(report.rows.filter(r => r.status === 'passed').map(r => r.leaf_id)), verifiedRepair });
+        const safe = unchangedInputs && !after.dirty && after.commit === current.commit;
+        // Store the unmodified native reports and attempt identities before any retry or quarantine
+        // interpretation. A control may only pair with a completed run of the same inputs.
+        const hashControl = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+        const environment = Object.entries(env).filter(([key]) => !/^(PWD|OLDPWD|SHLVL|_|DONE_DONE_LAYER_GROUPS|DONE_DONE_LAYER_ROOT_PGID)$/.test(key)).sort(([a], [b]) => a.localeCompare(b));
+        const control = { schema: 1, project: repo, base, head: current.commit, inputs: hashControl(inputSnapshots.before), environment: hashControl([process.platform, process.arch, process.version, environment]), run: report.run_id, required: entries.map(([name]) => name), complete: safe && report.unfinished_leaves.length === 0 && report.rows.length === entries.length && (o.layer !== 'fast' || report.rows.every(r => r.status === 'passed')), attempts: attempts.map(a => ({ leaf: a.leaf, attempt: a.attempt, episode: a.episode, code: a.result.code, slow: a.result.slow, ...(a.result.error && { error: a.result.error }), report: a.report })) };
+        finalPlan.control = control;
+        if (o.layer !== 'fast') {
+            const layers = join(cfg.evidence.root, '.done-done', 'layers');
+            const candidates = [];
+            if (existsSync(layers))
+                for (const name of readdirSync(layers)) {
+                    const file = join(layers, name, 'plan.json');
+                    if (!existsSync(file))
+                        continue;
+                    try {
+                        const p = JSON.parse(readFileSync(file, 'utf8'));
+                        if (p.layer === 'fast' && p.control?.schema === 1)
+                            candidates.push(p.control);
+                    }
+                    catch { /* An unreadable record is not a paired control. */ }
+                }
+            const intents = Object.fromEntries(selected.map(([name, j]) => [name, j.intent ?? '']));
+            const paired = candidates.reverse().map(c => controlObservations(control, c, intents)).find(x => x.paired) ?? controlObservations(control, null, intents);
+            const misses = join(dirname(planPath), 'misses.jsonl');
+            writeFileSync(misses, paired.rows.map(row => JSON.stringify(row)).join('\n') + (paired.rows.length ? '\n' : ''), { mode: 0o600 });
+            finalPlan.control_comparison = { paired: paired.paired, misses, observations: paired.rows.length, mode: 'advisory' };
+        }
+        // In shadow mode, a retry is observed but the original result remains the gate result.
+        for (const row of report.rows)
+            row.result_status = row.status === 'passed' || (safe && flakes.muted.has(row.leaf_id)) ? 'passed' : row.status;
+        report.status = report.unfinished_leaves.length === 0 && report.rows.every(r => r.result_status === 'passed') ? 'passed' : 'failed';
+        finalPlan.report = report;
+        finalPlan.flakes = flakes.observations;
+        finalPlan.checks_complete = report.status === 'passed' && report.unfinished_leaves.length === 0 && report.rows.length === entries.length && safe;
+        if (after.dirty || after.commit !== current.commit)
+            finalPlan.failure = 'tracked files or HEAD changed during the layer';
+        finalPlan.outcomes = report.rows.map(({ leaf_id, result_status, duration_ms }) => ({ name: leaf_id, status: result_status, duration_ms }));
+        finalPlan.unfinished = report.unfinished_leaves;
+        let fullBatchSamples = 0, fullBatchP95 = null;
+        const totalMs = Number(process.hrtime.bigint() - (BigInt(finalPlan.deadline_monotonic_ns) - BigInt(finalPlan.budget_ms) * 1000000n)) / 1_000_000;
+        finalPlan.duration_ms = totalMs;
+        if (o.layer !== 'fast') {
+            const history = join(cfg.evidence.root, '.done-done', 'layers', 'full-batches.jsonl');
+            mkdirSync(dirname(history), { recursive: true });
+            if (report.unfinished_leaves.length === 0 && report.rows.length === entries.length && report.rows.every((row) => row.result_status !== 'interrupted') && !after.dirty && after.commit === current.commit)
+                appendFileSync(history, `${JSON.stringify({ layer: o.layer, mode: 'shadow', head: current.commit, duration_ms: totalMs, status: report.status })}\n`, { mode: 0o600 });
+            const samples = (existsSync(history) ? readFileSync(history, 'utf8').split('\n').filter(Boolean) : []).map((line) => JSON.parse(line)).filter((row) => row.layer === o.layer && row.mode === 'shadow' && typeof row.duration_ms === 'number' && Number.isFinite(row.duration_ms) && row.duration_ms >= 0).map((row) => row.duration_ms).sort((a, b) => a - b);
+            fullBatchSamples = samples.length;
+            if (samples.length)
+                fullBatchP95 = samples[Math.ceil(samples.length * 0.95) - 1];
+        }
+        finalPlan.full_batch_p95_ms = fullBatchP95;
+        finalPlan.full_batch_samples = fullBatchSamples;
+        const tmp = `${planPath}.${process.pid}.tmp`;
+        writeFileSync(tmp, `${JSON.stringify(finalPlan, null, 2)}\n`, { mode: 0o600 });
+        renameSync(tmp, planPath);
+        emit({ command: 'verify', layer: o.layer, mode: 'shadow', result: finalPlan.checks_complete ? 'checks-passed' : 'incomplete', plan: planPath, required: entries.length, ...report, flakes: flakes.observations, layer_duration_ms: totalMs, full_batch_p95_ms: fullBatchP95, full_batch_samples: fullBatchSamples, help: ['Shadow checks do not issue a receipt; the existing verification gate remains required.'] });
+        return finalPlan.checks_complete ? INCONCLUSIVE : FAIL;
+    }
+    finally {
+        rmdirSync(lock);
+    }
+}
 async function cmdVerify(argv) {
     const { values, positionals } = parseArgs({
         args: argv,
-        options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'affected-by': { type: 'string' }, extends: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' } },
+        options: { outcome: { type: 'string' }, feature: { type: 'string' }, journeys: { type: 'string' }, 'named-by': { type: 'string' }, 'affected-by': { type: 'string' }, extends: { type: 'string' }, 'claim-id': { type: 'string' }, 'fix-tries': { type: 'string' }, wait: { type: 'boolean' }, 'no-wait': { type: 'boolean' }, foreground: { type: 'boolean' }, layer: { type: 'string' }, base: { type: 'string' }, budget: { type: 'string' }, plan: { type: 'string' } },
         allowPositionals: true,
     });
+    if (values.layer !== undefined) {
+        if (positionals.length > 1 || values.outcome !== undefined || values.feature !== undefined || values.journeys !== undefined || values['named-by'] !== undefined || values['affected-by'] !== undefined || values.extends !== undefined || values['claim-id'] !== undefined || values['fix-tries'] !== undefined || values.wait || values['no-wait'] || values.foreground)
+            throw new UsageError('verify --layer takes --base, optional --budget, --plan and at most one fast journey');
+        return superviseLayer({ layer: values.layer, base: values.base, budget: values.budget, plan: values.plan, only: positionals[0] });
+    }
+    if (values.base !== undefined || values.budget !== undefined || values.plan !== undefined)
+        throw new UsageError('--base, --budget and --plan require --layer');
     if (!values.outcome?.trim())
         throw new UsageError('verify needs --outcome "<what a user can now do>"');
     const fixTries = values['fix-tries'] === undefined ? undefined : Number(values['fix-tries']);
@@ -3197,8 +3542,14 @@ async function startRunner(dir, how) {
     const child = spawn(process.execPath, [CLI_PATH, '__runner', dir], { cwd: loadRun(dir).repo, detached: true, stdio: ['ignore', fd, fd] });
     child.unref();
     closeSync(fd);
+    if (child.pid)
+        registerGroup(child.pid);
     if (!how['no-wait'])
         await waitRun(dir, child.pid);
+    if (child.pid && process.env.DONE_DONE_LAYER_GROUPS && !alive(child.pid)) {
+        killGroup(child.pid);
+        unregisterGroup(child.pid);
+    }
     return { gone: !alive(child.pid) };
 }
 async function launch(dir, cfg, command, how) {
@@ -5483,12 +5834,43 @@ function cmdInventory(argv) {
     if (!inv)
         throw new UsageError(`${INVENTORY_FILE} does not exist, so no test ownership is enforced`, 'Create it with: done-done inventory record <files...> --owner <name> from a done-done run');
     const bad = inventoryFindings(repo, inv);
-    emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
-    return bad.length ? FAIL : PASS;
+    const intents = intentInventory(repo);
+    emit({ command: 'inventory', owned: Object.keys(inv).length, findings: bad.map(describeFinding), ...(intents && { intents }), help: bad.length ? ['Record an intended change from a done-done run, or give a new test file an owner: done-done inventory record <file> --owner <name>'] : [] });
+    return bad.length || (intents?.mode === 'enforce' && intents.errors.length) ? FAIL : PASS;
 }
 // `done-done tests measure` (src/size.ts) and `tests value` (src/value.ts): both run the repo's journeys as tests.
 async function cmdTests(argv) {
-    const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
+    if (argv[0] === 'shadow') {
+        const submitted = performance.now();
+        const { values, positionals: names } = parseArgs({ args: argv.slice(1), options: { deadline: { type: 'string' } }, allowPositionals: true });
+        const journal = process.env.DONE_DONE_SHADOW_TIMING;
+        if (!journal)
+            throw new UsageError('tests shadow needs DONE_DONE_SHADOW_TIMING set to a JSONL file');
+        if (!names.length || new Set(names).size !== names.length || names.some(n => n.startsWith('-')))
+            throw new UsageError('tests shadow needs distinct journey names');
+        const budget = values.deadline === undefined ? undefined : parseDuration(values.deadline);
+        if (budget === null || (budget !== undefined && (budget <= 1000 || budget > 300_000)))
+            throw new UsageError('shadow deadline must be greater than 1s and at most 300s');
+        if (budget !== undefined && process.env.DONE_DONE_LAYER_GROUPS)
+            throw new UsageError('a nested shadow deadline cannot own the outer layer process groups');
+        if (budget !== undefined && !await processGroupSupported())
+            throw new UsageError('shadow deadline needs working process-group isolation; the host cancellation probe failed');
+        const repo = repoRoot(), cfg = loadConfig(repo);
+        for (const name of names) {
+            const journey = cfg.journeys[name];
+            if (!journey)
+                throw new UsageError(`unknown journey ${name}`);
+            if (journey.spends || journey.size === 'large')
+                throw new UsageError(`journey ${name} cannot run in the shadow pilot`);
+        }
+        const deadlineMs = budget === undefined ? undefined : budget - (performance.now() - submitted);
+        if (deadlineMs !== undefined && deadlineMs <= 1000)
+            throw new UsageError('shadow deadline expired during setup; nothing ran');
+        const report = await shadowBatch(names.map(name => [name, cfg.journeys[name].command]), { cwd: repo, env: commandEnv(), journal, deadlineMs });
+        emit({ command: 'tests shadow', shadow: true, ...report });
+        return report.status === 'failed' ? FAIL : PASS;
+    }
+    const { values, positionals } = parseArgs({ args: argv, options: { night: { type: 'boolean' }, shadow: { type: 'boolean' }, faults: { type: 'string' }, source: { type: 'string', multiple: true }, 'plan-only': { type: 'boolean' }, apply: { type: 'string' }, plan: { type: 'string' } }, allowPositionals: true });
     const action = positionals[0];
     if ((action !== 'measure' && action !== 'value' && action !== 'improve') || positionals.length > 2)
         throw new UsageError('tests needs the action measure, value or improve and at most one journey', 'Re-run as: done-done tests measure|value|improve [<journey>] [--night]');
@@ -5520,6 +5902,18 @@ async function cmdTests(argv) {
     }
     if (named && !picked.length)
         throw new UsageError(`journey ${named} was not ${action === 'measure' ? 'measured' : 'valued'}: ${skipped[0]}`, `${action === 'measure' ? `Set journeys.${named}.size in .done-done.yaml` : 'Pick a journey that spends nothing'}${cfg.journeys[named].size === 'large' ? ' and pass --night' : ''}`);
+    if (values.shadow && action !== 'value')
+        throw new UsageError('--shadow belongs to tests value');
+    if (action === 'value' && values.shadow) {
+        const budget = values.faults === undefined ? DEFAULT_FAULTS : Number(values.faults);
+        if (!Number.isInteger(budget) || budget < 1)
+            throw new UsageError('--faults must be a whole number of at least 1');
+        if (!picked.length)
+            throw new UsageError('no journey can be valued');
+        const report = await hygiene(repo, picked.map(([name, j]) => ({ name, command: j.command, size: j.size })), cfg, commandEnv(), values.source ?? [], budget);
+        emit({ command: 'tests value', ...report, skipped });
+        return PASS;
+    }
     if (action === 'value')
         return await cmdTestsValue(repo, picked, skipped, values);
     if (action === 'improve' && values.apply)
@@ -5549,15 +5943,15 @@ async function cmdTestsValue(repo, picked, skipped, values) {
     const report = await valueOf(repo, picked, skipped, values);
     const bad = report.tests.filter((t) => t.verdict !== 'real');
     emit({ command: 'tests value', faults: report.faults.map((f) => `${f.file}:${f.line} ${f.was.trim()} => ${f.now.trim()}`), tests: report.tests, skipped,
-        help: bad.length ? [`Not worth keeping as is: ${bad.map((t) => `${t.test} (${t.verdict})`).join(', ')}; delete a slop or duplicate test, or fix a failing one`] : [] });
+        help: bad.length ? [`Review: ${bad.map((t) => `${t.test} (${t.verdict})`).join(', ')}; fault overlap alone does not authorize removal`] : [] });
     return bad.length ? FAIL : PASS;
 }
 // `tests improve --plan-only`: stage proposed. Inventory (the journeys), measure and value (one valued run), then keep/drop/move rows and the gaps. Changes no file.
 async function cmdTestsImprove(repo, picked, skipped, values) {
     const report = await valueOf(repo, picked, skipped, values);
-    const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.faults, report.uncaught);
+    const plan = planImprove(report.tests, Object.fromEntries(picked.map(([name, j]) => [name, j.size])), report.faults, report.uncaught, loadConfig(repo).app);
     const act = (a) => plan.rows.filter((r) => r.action === a).map((r) => r.test);
-    emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, faults: plan.faults, skipped,
+    emit({ command: 'tests improve', stage: plan.stage, inventory: picked.map(([name]) => name), rows: plan.rows, gaps: plan.gaps, faults: plan.faults, combinations: plan.combinations, skipped,
         help: [
             ...(act('drop').length ? [`Drop: ${act('drop').join(', ')}`] : []),
             ...plan.rows.filter((r) => r.action === 'move').map((r) => `Move ${r.test} to size ${r.to}`),
@@ -5800,7 +6194,11 @@ function cmdAffectedAudit(range) {
 }
 // `done-done affected [<base>]`: the journeys a change needs, and exit 1 until a receipt for HEAD covers them.
 function cmdAffected(argv) {
-    const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { audit: { type: 'string' } } });
+    const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: { audit: { type: 'string' }, shadow: { type: 'string' }, report: { type: 'string' }, 'report-head': { type: 'string' } } });
+    if ((values.report !== undefined || values['report-head'] !== undefined) && (!values.shadow || !values.report || !values['report-head']))
+        throw new UsageError('affected --report requires --shadow and --report-head');
+    if (values.audit !== undefined && values.shadow !== undefined)
+        throw new UsageError('affected --shadow cannot be combined with --audit');
     if (values.audit !== undefined) {
         if (positionals.length)
             throw new UsageError('affected --audit takes a range, not a base', 'Re-run as: done-done affected --audit <range>');
@@ -5811,6 +6209,79 @@ function cmdAffected(argv) {
     const repo = repoRoot();
     const cfg = loadConfig(repo);
     const a = affectedOf(repo, cfg, positionals[0]);
+    if (values.shadow !== undefined) {
+        if (!a.base)
+            throw new UsageError('affected --shadow needs a base commit');
+        if (dirtyTracked(repo).length)
+            throw new UsageError('affected --shadow requires a clean tracked tree');
+        const at = (revision) => {
+            const listed = git(repo, 'ls-tree', '-r', '--name-only', '-z', revision).split('\0').filter(Boolean);
+            const conf = spawnSync('git', ['show', `${revision}:.done-done.yaml`], { cwd: repo, encoding: 'utf8' });
+            const owners = loadConfig(repo, conf.status === 0 ? conf.stdout : '').affected.owners;
+            return { tracked: listed, owners };
+        };
+        if (!isAncestor(repo, a.base.commit, a.now.commit))
+            throw new UsageError('affected --shadow requires an ancestor base revision');
+        const states = [at(a.base.commit), at(a.now.commit)];
+        const binary = join(repo, 'node_modules', '.bin', 'jest');
+        const native = { tool: 'jest', version: null, queries: [] };
+        if (!existsSync(binary))
+            native.error = 'installed Jest adapter unavailable';
+        else {
+            const version = spawnSync(binary, ['--version'], { cwd: repo, encoding: 'utf8', timeout: 30000 });
+            if (version.status !== 0)
+                native.error = `Jest version query failed: ${version.error?.message ?? version.stderr.trim()}`;
+            else
+                native.version = version.stdout.trim();
+            if (!native.error)
+                for (const input of a.changed) {
+                    const args = ['--findRelatedTests', input, '--listTests', '--json', '--runInBand'];
+                    if (!states[1].tracked.includes(input)) {
+                        native.queries.push({ input, args, files: [], raw: '', error: `Jest cannot query deleted input ${input}` });
+                        continue;
+                    }
+                    const started = Date.now();
+                    const r = spawnSync(binary, args, { cwd: repo, encoding: 'utf8', timeout: 30000, maxBuffer: 16 << 20 });
+                    let files = [], error;
+                    if (r.status !== 0)
+                        error = `Jest query failed for ${input}: ${r.error?.message ?? r.stderr.trim()}`;
+                    else
+                        try {
+                            const parsed = JSON.parse(r.stdout);
+                            if (!Array.isArray(parsed) || !parsed.every((p) => typeof p === 'string'))
+                                throw new Error('expected a JSON file list');
+                            files = parsed.map((p) => relative(repo, resolve(repo, p)).split(sep).join('/'));
+                            if (files.some((p) => p.startsWith('../') || !states[1].tracked.includes(p)))
+                                throw new Error('file list names paths outside the tracked head');
+                        }
+                        catch (e) {
+                            files = [];
+                            error = `Jest query for ${input}: ${e.message}`;
+                        }
+                    native.queries.push({ input, args, files, raw: r.stdout ?? '', stderr: r.stderr ?? '', duration_ms: Date.now() - started, ...(error && { error }) });
+                }
+        }
+        const plan = shadowPlan({ base: a.base.commit, head: a.now.commit, changed: a.changed, states, native });
+        let report;
+        if (values.report && values['report-head']) {
+            let reportHead;
+            try {
+                reportHead = git(repo, 'rev-parse', '--verify', `${values['report-head']}^{commit}`);
+            }
+            catch {
+                throw new UsageError('affected --report-head is not a commit in this checkout');
+            }
+            if (reportHead !== a.now.commit)
+                throw new UsageError('affected --report-head does not match HEAD');
+            try {
+                report = junit(readFileSync(values.report, 'utf8'));
+            }
+            catch (e) {
+                throw new UsageError(`affected --report: ${e.message}`);
+            }
+        }
+        writeFileSync(values.shadow, `${JSON.stringify({ ...plan, ...(report && { report: { head: a.now.commit, ...report } }) }, null, 2)}\n`);
+    }
     const fresh = a.proof === 'fresh';
     const changed = cap(a.changed);
     const why = (w) => (FULL || w.length <= 3 ? w.join('; ') : `${w.slice(0, 3).join('; ')}; +${w.length - 3} more (--full lists them)`);
@@ -6118,6 +6589,12 @@ async function main(argv) {
         if (cmd === '__runner') {
             await runSteps(rest[0]);
             return PASS;
+        }
+        if (cmd === '__layer') {
+            if (!process.env.DONE_DONE_LAYER_GROUPS || !process.send || rest.length !== 1)
+                throw new UsageError('layer worker needs its parent supervisor');
+            process.env.DONE_DONE_LAYER_ROOT_PGID = String(process.pid);
+            return await verifyLayer(JSON.parse(rest[0]));
         }
         if (cmd === '--version') {
             console.log(VERSION + (PRE_RELEASE ? '\npre-release' : ''));

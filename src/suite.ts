@@ -5,6 +5,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync }
 import { join } from 'node:path';
 import { parseDuration } from './config.js';
 import { commandEnv } from './miseenv.js';
+import { registerGroup, unregisterGroup } from './deadline.js';
 
 // What a receipt records about the suite at its head: command null means the project has none.
 export type SuiteRecord = { command: string | null; exit?: number | null; duration_ms?: number; log?: string; timed_out?: boolean };
@@ -45,14 +46,15 @@ export async function runSuite(repo: string, evidenceRoot: string, commit: strin
   const fd = openSync(log, 'w');
   const started = Date.now();
   let timedOut = false;
-  const exit = await new Promise<number | null>((done) => {
+  let exit: number | null;
+  try { exit = await new Promise<number | null>((done) => {
     const child = spawn(command, { cwd: repo, shell: true, detached: true, stdio: ['ignore', fd, fd], env: { ...commandEnv(), [SUITE_ENV]: commit } });
-    const kill = () => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} };
+    if (child.pid) registerGroup(child.pid);
+    const kill = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} unregisterGroup(child.pid); } };
     const timer = setTimeout(() => { timedOut = true; kill(); }, parseDuration(timeout) ?? 1_800_000);
-    child.on('error', () => { clearTimeout(timer); done(null); });
+    child.on('error', () => { clearTimeout(timer); kill(); done(null); });
     child.on('close', (code) => { clearTimeout(timer); kill(); done(code); });
-  });
-  closeSync(fd);
+  }); } finally { closeSync(fd); }
   return { command, exit, duration_ms: Date.now() - started, log, ...(timedOut ? { timed_out: true } : {}) };
 }
 
